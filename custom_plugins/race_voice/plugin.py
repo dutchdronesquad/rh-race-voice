@@ -45,6 +45,8 @@ logger = logging.getLogger(__name__)
 
 _ASSET_DIR = Path(__file__).parent / "assets"
 _AUDIO_CHECK_WAV = _ASSET_DIR / "moavii-foreign.wav"
+_STAGE_BEEP_WAV = _ASSET_DIR / "stage.wav"
+_BUZZER_WAV = _ASSET_DIR / "buzzer.wav"
 
 # Status messages that are surfaced to the UI as notifications.
 _UI_NOTIFY_PREFIXES = ("Downloading model",)
@@ -132,6 +134,13 @@ class RaceVoicePlugin:
             Evt.DATABASE_RESET,
             self._on_event_cache_reset,
             name="race_voice_database_reset",
+        )
+        if stage_tone_evt := getattr(Evt, "RACE_STAGE_TONE", None):
+            self._rhapi.events.on(
+                stage_tone_evt, self._on_stage_tone, name="local_voice_stage_tone"
+            )
+        self._rhapi.events.on(
+            Evt.RACE_START, self._on_race_start, name="local_voice_race_start"
         )
         self._rhapi.events.on(
             Evt.RACE_SCHEDULE,
@@ -237,6 +246,29 @@ class RaceVoicePlugin:
     def _current_heat_id(self) -> int | None:
         heat_id = self._rhapi.race.heat
         return heat_id or None
+
+    def _on_race_start(self, _args: dict[str, Any]) -> None:
+        """Play the start buzzer when the race begins."""
+        if not self._enabled():
+            return
+        self._audio_queue.enqueue(
+            text="race start",
+            wav_paths=[_BUZZER_WAV],
+            priority=Priority.HIGH,
+            expiry_sec=1.5,
+        )
+
+    def _on_stage_tone(self, args: dict[str, Any]) -> None:
+        """Play the staging beep for this arm tone."""
+        if not self._enabled():
+            return
+        self._audio_queue.enqueue(
+            text="arm tone",
+            wav_paths=[_STAGE_BEEP_WAV],
+            priority=Priority.HIGH,
+            expiry_sec=1.5,
+            play_at=args.get("scheduled_at_monotonic"),
+        )
 
     def _on_event_cache_reset(self, _args: dict[str, Any]) -> None:
         """Wipe event-specific WAVs when RotorHazard starts a new data set."""

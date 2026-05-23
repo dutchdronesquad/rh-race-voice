@@ -12,7 +12,7 @@ The plugin ZIP and service `.deb` are separate release assets. Install both for 
 4. Confirm **Sendspin service URL** is `http://127.0.0.1:8766`.
 5. Choose a voice model and speech settings.
 6. Open the browser player from the RotorHazard UI on the playback device, for example `<RotorHazard UI base URL>/player`.
-7. Set normal RotorHazard browser Voice Volume to `0` on clients that should not play duplicate built-in callouts.
+7. Set normal RotorHazard browser Voice Volume and Tone Volume to `0` on clients that should not play duplicate built-in callouts, staging tones, or start sounds.
 8. Use **Generate test phrase** or **Play audio check**.
 
 ## Sendspin Service
@@ -139,6 +139,8 @@ Race Voice hooks into two RotorHazard filter events and generates the following 
 | Pilot completes a lap | `"{callsign}, Lap {n}, {m:ss.f}"` | Normal |
 | Race winner announced | `"Winner is {callsign}!"` (or localized equivalent) | High |
 | Scheduled race countdown | `"Race begin in 60 seconds"` / `"30"` / `"10"` / `"5"` | High |
+| Race staging tone | Bundled `stage.wav` | High |
+| Race start | Bundled `buzzer.wav` | High |
 
 Lap 0 (first crossing without a completed lap) does not produce a callout. Winner callouts are generated from the RotorHazard phonetic text filter, which fires when RotorHazard determines the race winner.
 
@@ -214,13 +216,26 @@ race_voice_cache/
   tts/<model>/test/       generated test phrases
 ```
 
-Use **Rebuild pre-cache** after startup or voice setting changes to prepare current-heat pilot names, lap segments, and schedule phrases.
+Cache behavior:
+
+- `tmp/` is cleared whenever a heat is selected.
+- `precache/` keeps existing reusable phrases. Use **Rebuild pre-cache** to generate schedule phrases, current-heat pilot-name segments, and lap-number segments on demand.
+- `tmp/` and `precache/` are cleared on RotorHazard data reset.
+- **Clear TTS cache** removes all WAV files for the selected model.
+
+## Operational Notes
+
+- Race Voice does not disable RotorHazard's built-in browser speech or tone playback. Set Voice Volume and Tone Volume to `0` on regular RotorHazard browser clients to avoid duplicate callouts, staging tones, and start sounds.
+- The first use of a voice model requires internet access to download model files. Racing can run offline after the selected model has been cached.
+- Callouts are generated server-side; browser-specific RotorHazard voice settings do not affect Race Voice output.
+- Staging tones and the race-start buzzer are static WAV files played through Sendspin. They require a RotorHazard build that provides `Evt.RACE_STAGE_TONE`.
+- If no Sendspin browser player is connected, generated audio is dropped and logged.
 
 ## Troubleshooting
 
 - **No audio in `/player`**: confirm `sendspin-service` is running, the player Server URL points at the same service RotorHazard sends to, and the player is connected.
 - **Service unreachable**: confirm `curl http://127.0.0.1:8766/health` works from the RotorHazard host.
 - **Player page unreachable**: confirm `<RotorHazard UI base URL>/player` works from the playback device.
-- **Duplicate voice callouts**: set RotorHazard Voice Volume to `0` in regular RotorHazard browser clients.
+- **Duplicate voice callouts or tones**: set RotorHazard Voice Volume and Tone Volume to `0` in regular RotorHazard browser clients.
 - **First phrase is slow**: the selected Piper model may still be downloading or loading.
 - **Browser playback stutters**: test Safari or Chrome incognito with extensions disabled, then validate on the race network.

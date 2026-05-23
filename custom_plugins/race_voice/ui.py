@@ -128,8 +128,8 @@ def register_ui(  # noqa: PLR0913
         "race_voice_notes",
         '<a href="/player" target="_blank" rel="noopener noreferrer">'
         "Open browser player in a new tab</a>\n\n"
-        "⚠ Set Voice Volume to 0 on all browser clients.\n\n"
-        "After startup or voice setting changes, use Rebuild pre-cache to "
+        "⚠ Set Voice Volume and Tone Volume to 0 on all browser clients.\n\n"
+        "After first setup or voice model/settings changes, use Rebuild pre-cache to "
         "prepare schedule and current-heat WAV files.",
     )
 

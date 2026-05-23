@@ -14,6 +14,7 @@ RotorHazard event/filter
 ```
 
 The RotorHazard plugin owns event handling, TTS generation, caching, enqueueing, and the browser player route at `/player`. `sendspin-service` owns `aiosendspin`, player connections, stream state, and the Sendspin player endpoint on port `8927`.
+Staging tones from `Evt.RACE_STAGE_TONE` and the race-start buzzer from `Evt.RACE_START` are queued as static WAV files through the same Sendspin service path.
 
 ## Plugin Package
 
@@ -63,7 +64,7 @@ Both the plugin and the service use a single worker queue to keep event callback
 
 | Priority | Used for |
 |----------|----------|
-| HIGH     | Winner announcements, manual test phrase, audio check, scheduled-race countdowns |
+| HIGH     | Winner announcements, manual test phrase, audio check, scheduled-race countdowns, staging tones, race-start buzzer |
 | NORMAL   | Lap callouts |
 | LOW      | Crossing beeps (earmarked, not yet used by the current plugin) |
 
@@ -109,4 +110,4 @@ This avoids pre-generating every pilot/lap combination while still keeping commo
 
 Manual pre-cache rebuilds are handled by `services/precache.py`. The manager owns stale-generation tracking, directory cleanup, schedule phrase generation, lap segment generation, pilot-name generation, and completion notifications.
 
-Operators should run **Rebuild pre-cache** after startup or voice setting changes when they want predictable phrases prepared before racing.
+Operators should run **Rebuild pre-cache** after first setup or voice model/settings changes when they want predictable phrases prepared before racing.

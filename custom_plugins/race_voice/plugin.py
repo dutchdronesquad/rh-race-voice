@@ -135,10 +135,11 @@ class RaceVoicePlugin:
             self._on_event_cache_reset,
             name="race_voice_database_reset",
         )
-        if stage_tone_evt := getattr(Evt, "RACE_STAGE_TONE", None):
-            self._rhapi.events.on(
-                stage_tone_evt, self._on_stage_tone, name="local_voice_stage_tone"
-            )
+        self._rhapi.events.on(
+            Evt.RACE_STAGE_TONE,
+            self._on_stage_tone,
+            name="local_voice_stage_tone",
+        )
         self._rhapi.events.on(
             Evt.RACE_START, self._on_race_start, name="local_voice_race_start"
         )

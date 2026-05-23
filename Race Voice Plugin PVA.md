@@ -71,7 +71,7 @@ Things that would make the plugin significantly easier or more capable, but don'
 
 **Ideal fix:** Fire `Evt.RACE_STAGE_TONE` from `RHRace.stage()` at each staging beep interval, with payload `{'tone_index': int, 'tones_remaining': int}`. This decouples the audio signal from the browser and lets server-side plugins (LED, audio, video) stay in sync with the actual staging sequence.
 
-**Status: Post-MVP / deferred.** Not implemented in the plugin until RH fires server-side arm tone events. Staging beeps are skipped for now.
+**Status: Implemented.** `Evt.RACE_STAGE_TONE` added to RotorHazard (`eventmanager.py`, `RHRace.stage()`). Plugin plays `stage.wav` on each tone and `buzzer.wav` at race start via Sendspin, with `scheduled_at_monotonic` in the payload for time-sensitive scheduling.
 
 ---
 
@@ -437,7 +437,7 @@ MVP plugin audio profile mirrors the familiar RH categories that can be implemen
 
 Post-MVP profile additions:
 - Race clock callouts
-- Staging tone beeps
+- Staging tone beeps ✓
 - Race tied / overtime callouts
 - Race leader callouts
 
@@ -631,7 +631,7 @@ and expiry. Sendspin services are output targets.
 #### Deferred RH / RHAPI-dependent callouts
 - [ ] `Evt.RACE_PILOT_DONE` → "[callsign] finished"
 - [ ] Race clock callouts via upstream `Evt.RACE_CLOCK_WARNING`
-- [ ] Arm sequence countdown beeps via upstream `Evt.RACE_STAGE_TONE`
+- [x] Staging tone beeps via upstream `Evt.RACE_STAGE_TONE`
 - [ ] Last-5-seconds countdown beeps (one `stage.wav` per second for the final 5s) and `buzzer.wav` at race end — mirrors browser behaviour; needs per-second `Evt.RACE_CLOCK_WARNING` thresholds (5, 4, 3, 2, 1) or a dedicated end-of-race countdown mechanism
 - [ ] Scheduled race start callouts ("Next race begins in 30 seconds" etc.)
 - [ ] Race tied / overtime via upstream `Evt.RACE_TIED` / `Evt.RACE_OVERTIME`

@@ -63,6 +63,8 @@ Things that would make the plugin significantly easier or more capable, but don'
 
 **Status: Implemented.** `Evt.RACE_CLOCK_CALLOUT` added to RotorHazard (`eventmanager.py`, `RHRace.race_expire_thread`). Plugin synthesizes callouts at 60s ("One minute"), 30s ("30 seconds"), and 10s ("10 seconds").
 
+**Open timing note:** The RotorHazard PR is still draft. Before finalizing the clock-warning contract, first merge the upstream stage-tone work and then re-evaluate whether `RACE_CLOCK_WARNING` should behave like a scheduled output event. For exact last-5-second beeps, audio backends may need the event before the threshold moment, with `scheduled_at_monotonic` indicating the true playback time. Keep this unresolved until the stage-tone event semantics are settled.
+
 ---
 
 ### Staging tone events

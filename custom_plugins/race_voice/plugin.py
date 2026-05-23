@@ -145,6 +145,14 @@ class RaceVoicePlugin:
         self._rhapi.events.on(
             Evt.RACE_START, self._on_race_start, name="local_voice_race_start"
         )
+        if clock_callout_evt := getattr(
+            Evt, "RACE_CLOCK_CALLOUT", getattr(Evt, "RACE_CLOCK_WARNING", None)
+        ):
+            self._rhapi.events.on(
+                clock_callout_evt,
+                self._on_clock_callout,
+                name="race_voice_clock_callout",
+            )
         self._rhapi.events.on(
             Evt.RACE_SCHEDULE,
             self._on_race_schedule,
@@ -278,6 +286,20 @@ class RaceVoicePlugin:
                 play_at, _STAGE_TONE_STALE_AFTER_SEC
             ),
             play_at=play_at,
+        )
+
+    def _on_clock_callout(self, args: dict[str, Any]) -> None:
+        """Synthesize and enqueue a race clock callout."""
+        if not self._enabled():
+            return
+        seconds = args.get("seconds_remaining")
+        if seconds is None:
+            return
+        text = self._locale().get("clock_callout", {}).get(
+            str(seconds), f"{seconds} seconds"
+        )
+        self._synth_pool.submit(
+            self._enqueue, text, Priority.NORMAL, time.monotonic() + 8.0
         )
 
     def _on_event_cache_reset(self, _args: dict[str, Any]) -> None:

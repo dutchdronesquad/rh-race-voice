@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 from .schedule import DEFAULT_THRESHOLDS
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from concurrent.futures import Future, ThreadPoolExecutor
     from pathlib import Path
 
@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _PRECACHE_SCHEDULE_SUBDIR = "precache/schedule"
+_PRECACHE_CLOCK_SUBDIR = "precache/clock"
+_DEFAULT_CLOCK_CALLOUT_THRESHOLDS = (60, 30, 10)
 
 
 class PrecacheManager:
@@ -33,9 +35,11 @@ class PrecacheManager:
         synth_pool: ThreadPoolExecutor,
         prepare_model: Callable[[Any], None],
         schedule_phrase: Callable[[int, str], str],
+        clock_callout_phrase: Callable[[int, str], str],
         pilot_names_for_heat: Callable[[int], list[str]],
         heat_name_for_id: Callable[[int], str | int],
         notify: Callable[[str], None],
+        clock_callout_thresholds: Sequence[int] = _DEFAULT_CLOCK_CALLOUT_THRESHOLDS,
     ) -> None:
         """Initialize rebuild dependencies."""
         self._tts = tts
@@ -43,9 +47,11 @@ class PrecacheManager:
         self._synth_pool = synth_pool
         self._prepare_model = prepare_model
         self._schedule_phrase = schedule_phrase
+        self._clock_callout_phrase = clock_callout_phrase
         self._pilot_names_for_heat = pilot_names_for_heat
         self._heat_name_for_id = heat_name_for_id
         self._notify = notify
+        self._clock_callout_thresholds = tuple(clock_callout_thresholds)
         self._generation = 0
         self._lock = threading.Lock()
 
@@ -82,15 +88,33 @@ class PrecacheManager:
         precache_dir = self._tts.precache_dir_for_model(model_name)
         for dir_name in self._lap_callouts.precache_dir_names:
             self._clear_wavs(precache_dir / dir_name, f"pre-cache {dir_name}")
+        self._clear_wavs(precache_dir / "clock", "pre-cache clock")
         self._clear_wavs(precache_dir / "schedule", "pre-cache schedule")
 
     def _rebuild(self, settings: Any, generation: int, heat_id: int | None) -> int:
         count = 0
         self._prepare_model(settings)
+        count += self._precache_clock_callouts(settings, generation)
         count += self._precache_schedule(settings, generation)
         count += self._precache_laps(settings, generation)
         if heat_id and self._is_current(generation):
             count += self._precache_pilots(heat_id, generation, settings)
+        return count
+
+    def _precache_clock_callouts(self, settings: Any, generation: int) -> int:
+        """Regenerate race clock callout phrases for the current params."""
+        if not self._is_current(generation):
+            return 0
+        count = 0
+        for threshold in self._clock_callout_thresholds:
+            if not self._is_current(generation):
+                logger.info("Race Voice stopped stale clock callout pre-cache job")
+                return count
+            count += self._precache_phrase(
+                self._clock_callout_phrase(threshold, settings.model_name),
+                _PRECACHE_CLOCK_SUBDIR,
+                settings,
+            )
         return count
 
     def _precache_schedule(self, settings: Any, generation: int) -> int:

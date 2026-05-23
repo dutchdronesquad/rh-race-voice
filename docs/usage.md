@@ -138,6 +138,7 @@ Race Voice hooks into two RotorHazard filter events and generates the following 
 |---|---|---|
 | Pilot completes a lap | `"{callsign}, Lap {n}, {m:ss.f}"` | Normal |
 | Race winner announced | `"Winner is {callsign}!"` (or localized equivalent) | High |
+| Race clock callout | `"1 minute"` / `"30 seconds"` / `"10 seconds"` | High |
 | Scheduled race countdown | `"Race begin in 60 seconds"` / `"30"` / `"10"` / `"5"` | High |
 | Race staging tone | Bundled `stage.wav` | High |
 | Race start | Bundled `buzzer.wav` | High |
@@ -201,7 +202,7 @@ Use **Sync** for most race-day setups. Switch to **Quality** if playback resets 
 - **Play audio check**: Plays a bundled demo WAV without synthesizing TTS. Confirms `sendspin-service` is reachable and clients receive audio even if no voice model is loaded yet.
 - **Stop audio**: Immediately stops all queued and active audio on the Sendspin service. Useful when a callout needs to be cut mid-playback.
 - **Clear TTS cache**: Removes all generated WAV files. Use after a voice model change to avoid stale audio from the previous model.
-- **Rebuild pre-cache**: Pre-generates WAV files for the current heat's pilot names, lap segments, and schedule phrases. Run this after startup or after changing voice settings so common phrases are ready before racing starts.
+- **Rebuild pre-cache**: Pre-generates WAV files for race-clock callouts, the current heat's pilot names, lap segments, and schedule phrases. Run this after startup or after changing voice settings so common phrases are ready before racing starts.
 
 ## Cache Layout
 
@@ -211,7 +212,14 @@ Generated files live under the RotorHazard data directory:
 race_voice_cache/
   models/                 downloaded Piper ONNX models
   tts/<model>/            cached phrases
-  tts/<model>/precache/   reusable pilot, lap, and schedule phrases
+  tts/<model>/precache/pilots/
+                           pre-generated pilot-name segments
+  tts/<model>/precache/laps/
+                           pre-generated "Lap [n]" segments
+  tts/<model>/precache/clock/
+                           race-clock callout phrases
+  tts/<model>/precache/schedule/
+                           scheduled-race countdown phrases
   tts/<model>/tmp/        ephemeral lap-time phrases
   tts/<model>/test/       generated test phrases
 ```
@@ -219,7 +227,7 @@ race_voice_cache/
 Cache behavior:
 
 - `tmp/` is cleared whenever a heat is selected.
-- `precache/` keeps existing reusable phrases. Use **Rebuild pre-cache** to generate schedule phrases, current-heat pilot-name segments, and lap-number segments on demand.
+- `precache/` keeps existing reusable phrases. Use **Rebuild pre-cache** to generate race-clock warning phrases, schedule phrases, current-heat pilot-name segments, and lap-number segments on demand.
 - `tmp/` and `precache/` are cleared on RotorHazard data reset.
 - **Clear TTS cache** removes all WAV files for the selected model.
 
@@ -229,6 +237,7 @@ Cache behavior:
 - The first use of a voice model requires internet access to download model files. Racing can run offline after the selected model has been cached.
 - Callouts are generated server-side; browser-specific RotorHazard voice settings do not affect Race Voice output.
 - Staging tones and the race-start buzzer are static WAV files played through Sendspin. They require a RotorHazard build that provides `Evt.RACE_STAGE_TONE`.
+- Race-clock callouts require a RotorHazard build that provides `Evt.RACE_CLOCK_CALLOUT`.
 - Scheduled race sounds are sent to `sendspin-service` with a relative playback delay, so the service can run on the RotorHazard host or another reachable machine without sharing a monotonic clock.
 - Race Voice schedules race sounds against RotorHazard's server-side tone time. If RotorHazard browser Tone Volume is still enabled during comparison, its browser-generated tones may sound slightly later because they depend on browser timer and audio scheduling.
 - If no Sendspin browser player is connected, generated audio is dropped and logged.

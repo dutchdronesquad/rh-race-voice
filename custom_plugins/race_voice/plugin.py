@@ -52,6 +52,8 @@ _BUZZER_WAV = _ASSET_DIR / "buzzer.wav"
 _UI_NOTIFY_PREFIXES = ("Downloading model",)
 _DEBUG_STATUS_PREFIXES = ("Loading model", "Model loaded")
 
+_CLOCK_CALLOUT_THRESHOLDS = (60, 30, 10)
+_PRECACHE_CLOCK_SUBDIR = "precache/clock"
 _LAP_CALLOUT_EXPIRY_SEC = 10.0
 _STAGE_TONE_STALE_AFTER_SEC = 1.0
 _START_BUZZER_STALE_AFTER_SEC = 1.0
@@ -107,9 +109,11 @@ class RaceVoicePlugin:
             synth_pool=self._synth_pool,
             prepare_model=self._prepare_model,
             schedule_phrase=self._schedule_phrase,
+            clock_callout_phrase=self._clock_callout_phrase,
             pilot_names_for_heat=self._pilot_names_for_heat,
             heat_name_for_id=self._heat_name_for_id,
             notify=self._rhapi.ui.message_notify,
+            clock_callout_thresholds=_CLOCK_CALLOUT_THRESHOLDS,
         )
 
         register_ui(
@@ -140,14 +144,12 @@ class RaceVoicePlugin:
         self._rhapi.events.on(
             Evt.RACE_STAGE_TONE,
             self._on_stage_tone,
-            name="local_voice_stage_tone",
+            name="race_voice_stage_tone",
         )
         self._rhapi.events.on(
-            Evt.RACE_START, self._on_race_start, name="local_voice_race_start"
+            Evt.RACE_START, self._on_race_start, name="race_voice_race_start"
         )
-        if clock_callout_evt := getattr(
-            Evt, "RACE_CLOCK_CALLOUT", getattr(Evt, "RACE_CLOCK_WARNING", None)
-        ):
+        if clock_callout_evt := getattr(Evt, "RACE_CLOCK_CALLOUT", None):
             self._rhapi.events.on(
                 clock_callout_evt,
                 self._on_clock_callout,
@@ -295,11 +297,18 @@ class RaceVoicePlugin:
         seconds = args.get("seconds_remaining")
         if seconds is None:
             return
-        text = self._locale().get("clock_callout", {}).get(
-            str(seconds), f"{seconds} seconds"
-        )
+        settings = self._settings()
+        text = self._clock_callout_phrase(seconds, settings.model_name)
+        play_at = args.get("scheduled_at_monotonic")
+        expires_at = max(time.monotonic(), play_at or time.monotonic()) + 8.0
         self._synth_pool.submit(
-            self._enqueue, text, Priority.NORMAL, time.monotonic() + 8.0
+            self._enqueue,
+            text,
+            Priority.HIGH,
+            expires_at,
+            _PRECACHE_CLOCK_SUBDIR,
+            settings,
+            play_at,
         )
 
     def _on_event_cache_reset(self, _args: dict[str, Any]) -> None:
@@ -428,6 +437,7 @@ class RaceVoicePlugin:
         expires_at: float,
         subdir: str = "",
         settings: VoiceSettings | None = None,
+        play_at: float | None = None,
     ) -> None:
         """Synthesize text and push it onto the audio queue."""
         if time.monotonic() > expires_at:
@@ -439,6 +449,7 @@ class RaceVoicePlugin:
                 wav_paths=[wav_path],
                 priority=priority,
                 expiry_sec=max(0.0, expires_at - time.monotonic()),
+                play_at=play_at,
             )
 
     def _record_generation(self, result: SynthesisResult) -> None:
@@ -484,6 +495,10 @@ class RaceVoicePlugin:
         return locale.get("race_schedule", {}).get(
             str(threshold), f"Race begins in {threshold} seconds"
         )
+
+    def _clock_callout_phrase(self, seconds: int | str, model_name: str) -> str:
+        locale = self._locale_for_model(model_name)
+        return locale.get("clock_callout", {}).get(str(seconds), f"{seconds} seconds")
 
     def _schedule_phrase_for_settings(
         self, threshold: int, settings: VoiceSettings

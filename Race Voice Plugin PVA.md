@@ -413,7 +413,7 @@ Cache path: `{model_name}/{sha1(normalized_text)}_{speed}_{noise}_{noise_w}.wav`
 Current heat-load behavior:
 - Clears ephemeral lap-time WAV files for the selected model.
 - Pre-cache generation is manual via **Rebuild pre-cache** until RH provides a reliable plugin-ready lifecycle event.
-- Rebuild pre-cache generates schedule phrases, current-heat pilot-name segments, and lap-number segments under `tts/<model>/precache/`.
+- Rebuild pre-cache generates race-clock warning phrases, schedule phrases, current-heat pilot-name segments, and lap-number segments under `tts/<model>/precache/`.
 
 ---
 

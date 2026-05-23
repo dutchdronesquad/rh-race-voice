@@ -13,6 +13,8 @@ RotorHazard event/filter
   -> Sendspin browser/player clients
 ```
 
+The main RotorHazard sources are `Flt.EMIT_PHONETIC_DATA`, `Flt.EMIT_PHONETIC_TEXT`, `Evt.RACE_CLOCK_CALLOUT`, `Evt.RACE_STAGE_TONE`, `Evt.RACE_START`, `Evt.HEAT_SET`, and scheduled race events.
+
 The RotorHazard plugin owns event handling, TTS generation, caching, enqueueing, and the browser player route at `/player`. `sendspin-service` owns `aiosendspin`, player connections, stream state, and the Sendspin player endpoint on port `8927`.
 Staging tones from `Evt.RACE_STAGE_TONE` and the race-start buzzer from `Evt.RACE_START` are queued as static WAV files through the same Sendspin service path.
 
@@ -65,7 +67,7 @@ Both the plugin and the service use a single worker queue to keep event callback
 
 | Priority | Used for |
 |----------|----------|
-| HIGH     | Winner announcements, manual test phrase, audio check, scheduled-race countdowns, staging tones, race-start buzzer |
+| HIGH     | Winner announcements, manual test phrase, audio check, race-clock callouts, scheduled-race countdowns, staging tones, race-start buzzer |
 | NORMAL   | Lap callouts |
 | LOW      | Crossing beeps (earmarked, not yet used by the current plugin) |
 
@@ -89,6 +91,7 @@ race_voice_cache/
       precache/
         pilots/
         laps/
+        clock/
         schedule/
       tmp/
       test/

@@ -54,7 +54,7 @@ Service endpoints:
 Important behavior:
 
 - Consecutive play calls append to the active stream instead of restarting it.
-- Jobs can provide `play_at` for scheduled static sounds.
+- Jobs can provide `play_at` for scheduled static sounds. Staging tones use `scheduled_at_monotonic` from `Evt.RACE_STAGE_TONE`; the race-start buzzer uses `rhapi.race.start_time_internal` from the race state.
 - Late-joining browser clients are added to the active stream group.
 - The stream is stopped after the queued audio has finished.
 

@@ -69,9 +69,9 @@ Things that would make the plugin significantly easier or more capable, but don'
 
 **Original problem:** The staging beeps ("3... 2... 1...") before race start were generated in browser JS. Without `Evt.RACE_STAGE_TONE` or a similar server event, the plugin could not reproduce the countdown sequence without reimplementing the staging logic.
 
-**Ideal fix:** Fire `Evt.RACE_STAGE_TONE` from `RHRace.stage()` at each staging beep interval, with payload `{'tone_index': int, 'tones_remaining': int}`. This decouples the audio signal from the browser and lets server-side plugins (LED, audio, video) stay in sync with the actual staging sequence.
+**Ideal fix:** Fire `Evt.RACE_STAGE_TONE` from `RHRace.stage()` at each staging beep interval, with payload `{'tone_index': int, 'tones_remaining': int, 'scheduled_at_monotonic': float}`. This decouples the audio signal from the browser and lets server-side plugins (LED, audio, video) stay in sync with the actual staging sequence.
 
-**Status: Implemented on the upstream staging-tone branch.** `Evt.RACE_STAGE_TONE` added to RotorHazard (`eventmanager.py`, `RHRace.stage()`). Plugin plays `stage.wav` on each tone and `buzzer.wav` at race start via Sendspin, with `scheduled_at_monotonic` in the payload for time-sensitive scheduling.
+**Status: Implemented on the upstream staging-tone branch.** `Evt.RACE_STAGE_TONE` added to RotorHazard (`eventmanager.py`, `RHRace.stage()`). The stage-tone event payload includes `scheduled_at_monotonic`, which the plugin uses to schedule `stage.wav` accurately through Sendspin. The race-start `buzzer.wav` is handled from `Evt.RACE_START` and uses `rhapi.race.start_time_internal` as its scheduled playback time.
 
 ---
 

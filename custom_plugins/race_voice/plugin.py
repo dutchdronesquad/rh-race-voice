@@ -264,12 +264,12 @@ class RaceVoicePlugin:
         )
 
     def _on_stage_tone(self, args: dict[str, Any]) -> None:
-        """Play the staging beep for this arm tone."""
+        """Play the staging beep for this stage tone."""
         if not self._enabled():
             return
         play_at = _float_or_none(args.get("scheduled_at_monotonic"))
         self._audio_queue.enqueue(
-            text="arm tone",
+            text="stage tone",
             wav_paths=[_STAGE_BEEP_WAV],
             priority=Priority.HIGH,
             expiry_sec=_scheduled_expiry_sec(play_at, _STAGE_TONE_STALE_AFTER_SEC),

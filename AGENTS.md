@@ -13,6 +13,7 @@ Important modules:
 - `ui.py`: RotorHazard settings panel, quick buttons, and `/player` blueprint.
 - `const.py`: option names, defaults, voice model list, and Sendspin port.
 - `services/`: small stateful helpers extracted from `plugin.py`.
+  - `services/clock_callouts.py`: race-clock callout phrase planning and reusable pre-cache phrase lists.
   - `services/lap_callouts.py`: lap callout segment planning and reusable segment lists for pre-cache.
   - `services/precache.py`: manual pre-cache rebuild orchestration, stale-job cancellation, cleanup, and completion notifications.
   - `services/schedule.py`: scheduled-race countdown timers.
@@ -28,7 +29,7 @@ Lap callouts are intentionally segmented:
 - reusable lap-number segment: `"Lap [n]"`, stored in `precache/laps/`.
 - dynamic lap-time phrase: stored in the per-model `tmp/` cache.
 
-Do not clear `precache/` on `HEAT_SET`. A heat change should clear queued audio and `tmp/` only. Operators can use **Rebuild pre-cache** to generate race-clock warnings, scheduled-race countdowns, and reusable schedule phrases, pilot-name segments, and lap-number segments. RotorHazard data reset and the **Clear TTS cache** button may clear all model WAV cache content, including `precache/`.
+Do not clear `precache/` on `HEAT_SET`. A heat change should clear queued audio and `tmp/` only. Operators can use **Rebuild pre-cache** to generate race-clock callouts, scheduled-race countdowns, and reusable schedule phrases, pilot-name segments, and lap-number segments. RotorHazard data reset and the **Clear TTS cache** button may clear all model WAV cache content, including `precache/`.
 
 Lap callouts should expire quickly enough to avoid stale race audio. The current lap expiry is intentionally longer than the queue default to handle several pilots crossing close together, but it should remain race-day conservative.
 
@@ -54,9 +55,11 @@ race_voice_cache/
   models/                 downloaded Piper ONNX models
   tts/<model>/            normal cached phrases
   tts/<model>/precache/pilots/
-                           reusable race-clock, schedule, and pilot-name segments
+                           reusable pilot-name segments
   tts/<model>/precache/laps/
                            reusable lap-number segments
+  tts/<model>/precache/clock/
+                           race-clock callout phrases
   tts/<model>/precache/schedule/
                            scheduled-race countdown phrases
   tts/<model>/tmp/        ephemeral lap-time phrases

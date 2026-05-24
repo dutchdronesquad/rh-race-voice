@@ -36,6 +36,8 @@ from .const import (
 )
 from .output import SendspinServiceClient
 from .piper import PiperSynthesizer, SynthesisParams, SynthesisResult
+from .services import schedule
+from .services.clock_callouts import ClockCallouts
 from .services.lap_callouts import LapCalloutSegments
 from .services.precache import PrecacheManager
 from .services.schedule import ScheduleCalloutManager
@@ -52,8 +54,6 @@ _BUZZER_WAV = _ASSET_DIR / "buzzer.wav"
 _UI_NOTIFY_PREFIXES = ("Downloading model",)
 _DEBUG_STATUS_PREFIXES = ("Loading model", "Model loaded")
 
-_CLOCK_CALLOUT_THRESHOLDS = (60, 30, 10)
-_PRECACHE_CLOCK_SUBDIR = "precache/clock"
 _LAP_CALLOUT_EXPIRY_SEC = 10.0
 _STAGE_TONE_STALE_AFTER_SEC = 1.0
 _START_BUZZER_STALE_AFTER_SEC = 1.0
@@ -102,18 +102,18 @@ class RaceVoicePlugin:
             enqueue_callout=self._enqueue_schedule_callout,
             phrase_for=self._schedule_phrase_for_settings,
         )
+        self._clock_callouts = ClockCallouts(locale_for_model=self._locale_for_model)
         self._lap_callouts = LapCalloutSegments(locale_for_model=self._locale_for_model)
         self._precache = PrecacheManager(
             tts=self._tts,
             lap_callouts=self._lap_callouts,
             synth_pool=self._synth_pool,
             prepare_model=self._prepare_model,
+            clock_callouts=self._clock_callouts,
             schedule_phrase=self._schedule_phrase,
-            clock_callout_phrase=self._clock_callout_phrase,
             pilot_names_for_heat=self._pilot_names_for_heat,
             heat_name_for_id=self._heat_name_for_id,
             notify=self._rhapi.ui.message_notify,
-            clock_callout_thresholds=_CLOCK_CALLOUT_THRESHOLDS,
         )
 
         register_ui(
@@ -298,7 +298,7 @@ class RaceVoicePlugin:
         if seconds is None:
             return
         settings = self._settings()
-        text = self._clock_callout_phrase(seconds, settings.model_name)
+        text = self._clock_callouts.phrase(seconds, settings.model_name)
         play_at = args.get("scheduled_at_monotonic")
         expires_at = max(time.monotonic(), play_at or time.monotonic()) + 8.0
         self._synth_pool.submit(
@@ -306,7 +306,7 @@ class RaceVoicePlugin:
             text,
             Priority.HIGH,
             expires_at,
-            _PRECACHE_CLOCK_SUBDIR,
+            self._clock_callouts.subdir,
             settings,
             play_at,
         )
@@ -341,7 +341,7 @@ class RaceVoicePlugin:
             phrase,
             Priority.HIGH,
             time.monotonic() + 8.0,
-            "precache/schedule",
+            schedule.PRECACHE_SUBDIR,
             settings,
         )
 
@@ -430,7 +430,7 @@ class RaceVoicePlugin:
         self._record_generation(result)
         return result.wav_path
 
-    def _enqueue(
+    def _enqueue(  # noqa: PLR0913
         self,
         text: str,
         priority: Priority,
@@ -473,6 +473,7 @@ class RaceVoicePlugin:
             self._prepared_settings = settings
 
     def _pilot_names_for_heat(self, heat_id: int) -> list[str]:
+        """Return phonetic pilot names for all pilots in the heat."""
         slots = self._rhapi.db.slots_by_heat(heat_id)
         pilot_names: list[str] = []
         for slot in slots:
@@ -495,10 +496,6 @@ class RaceVoicePlugin:
         return locale.get("race_schedule", {}).get(
             str(threshold), f"Race begins in {threshold} seconds"
         )
-
-    def _clock_callout_phrase(self, seconds: int | str, model_name: str) -> str:
-        locale = self._locale_for_model(model_name)
-        return locale.get("clock_callout", {}).get(str(seconds), f"{seconds} seconds")
 
     def _schedule_phrase_for_settings(
         self, threshold: int, settings: VoiceSettings

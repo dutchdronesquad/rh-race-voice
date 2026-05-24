@@ -112,6 +112,8 @@ This avoids pre-generating every pilot/lap combination while still keeping commo
 
 ## Pre-Cache Rebuilds
 
-Manual pre-cache rebuilds are handled by `services/precache.py`. The manager owns stale-generation tracking, directory cleanup, schedule phrase generation, lap segment generation, pilot-name generation, and completion notifications.
+Race-clock callout phrase planning lives in `services/clock_callouts.py`, using the same localized phrase logic for live event playback and manual pre-cache rebuilds.
+
+Manual pre-cache rebuilds are handled by `services/precache.py`. The manager owns stale-generation tracking, directory cleanup, race-clock phrase generation, schedule phrase generation, lap segment generation, pilot-name generation, and completion notifications.
 
 Operators should run **Rebuild pre-cache** after first setup or voice model/settings changes when they want predictable phrases prepared before racing.

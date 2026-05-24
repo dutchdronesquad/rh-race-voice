@@ -57,13 +57,11 @@ Things that would make the plugin significantly easier or more capable, but don'
 
 ### Race clock countdown events
 
-**Problem:** No server-side events for race time warnings ("30 seconds remaining", "10 seconds remaining", etc.). The countdown is handled entirely in browser JS via a local timer.
+**Problem:** No server-side events for race clock callouts ("30 seconds remaining", "10 seconds remaining", etc.). The countdown is handled entirely in browser JS via a local timer.
 
 **Ideal fix:** Add `Evt.RACE_CLOCK_CALLOUT` fired by the RH race thread at configurable thresholds (e.g. 60s, 30s, 10s remaining), with payload `{'seconds_remaining': int, 'scheduled_at_monotonic': float}`. This would let any plugin — not just audio plugins — react to race time milestones without reimplementing a parallel timer.
 
 **Status: Implemented.** `Evt.RACE_CLOCK_CALLOUT` added to RotorHazard (`eventmanager.py`, `RHRace.race_expire_thread`). Plugin synthesizes callouts at 60s ("One minute"), 30s ("30 seconds"), and 10s ("10 seconds").
-
-**Open timing note:** The RotorHazard PR is still draft. Before finalizing the clock-warning contract, first merge the upstream stage-tone work and then re-evaluate whether `RACE_CLOCK_WARNING` should behave like a scheduled output event. For exact last-5-second beeps, audio backends may need the event before the threshold moment, with `scheduled_at_monotonic` indicating the true playback time. Keep this unresolved until the stage-tone event semantics are settled.
 
 ---
 
@@ -367,6 +365,7 @@ RotorHazard server
         │     Evt.HEAT_SET, CROSSING_ENTER/EXIT
         ├── Flt.EMIT_PHONETIC_DATA  (lap data snapshots)
         ├── Flt.EMIT_PHONETIC_TEXT  (server-originated text callouts)
+        ├── services/clock_callouts.py (race-clock callout phrases)
         ├── services/lap_callouts.py (lap callout segment planning)
         ├── services/precache.py    (manual pre-cache rebuilds)
         ├── services/schedule.py    (scheduled-race countdown timers)
@@ -415,7 +414,7 @@ Cache path: `{model_name}/{sha1(normalized_text)}_{speed}_{noise}_{noise_w}.wav`
 Current heat-load behavior:
 - Clears ephemeral lap-time WAV files for the selected model.
 - Pre-cache generation is manual via **Rebuild pre-cache** until RH provides a reliable plugin-ready lifecycle event.
-- Rebuild pre-cache generates race-clock warning phrases, schedule phrases, current-heat pilot-name segments, and lap-number segments under `tts/<model>/precache/`.
+- Rebuild pre-cache generates race-clock callout phrases, schedule phrases, current-heat pilot-name segments, and lap-number segments under `tts/<model>/precache/`.
 
 ---
 

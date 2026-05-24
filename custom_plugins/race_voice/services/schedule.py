@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_THRESHOLDS = (60, 30, 10, 5)
 DEFAULT_MIN_TIMER_DELAY_SEC = 0.25
+PRECACHE_DIR_NAME = "schedule"
+PRECACHE_SUBDIR = f"precache/{PRECACHE_DIR_NAME}"
 
 
 class ScheduleCalloutManager:

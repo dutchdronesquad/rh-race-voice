@@ -227,7 +227,7 @@ race_voice_cache/
 Cache behavior:
 
 - `tmp/` is cleared whenever a heat is selected.
-- `precache/` keeps existing reusable phrases. Use **Rebuild pre-cache** to generate race-clock warning phrases, schedule phrases, current-heat pilot-name segments, and lap-number segments on demand.
+- `precache/` keeps existing reusable phrases. Use **Rebuild pre-cache** to generate race-clock callout phrases, schedule phrases, current-heat pilot-name segments, and lap-number segments on demand.
 - `tmp/` and `precache/` are cleared on RotorHazard data reset.
 - **Clear TTS cache** removes all WAV files for the selected model.
 

@@ -53,6 +53,8 @@ _UI_NOTIFY_PREFIXES = ("Downloading model",)
 _DEBUG_STATUS_PREFIXES = ("Loading model", "Model loaded")
 
 _LAP_CALLOUT_EXPIRY_SEC = 10.0
+_STAGE_TONE_STALE_AFTER_SEC = 1.0
+_START_BUZZER_STALE_AFTER_SEC = 1.0
 
 try:
     with (Path(__file__).parent / "locales.json").open(encoding="utf-8") as _f:
@@ -252,23 +254,26 @@ class RaceVoicePlugin:
         """Play the start buzzer when the race begins."""
         if not self._enabled():
             return
+        play_at = _float_or_none(getattr(self._rhapi.race, "start_time_internal", None))
         self._audio_queue.enqueue(
             text="race start",
             wav_paths=[_BUZZER_WAV],
             priority=Priority.HIGH,
-            expiry_sec=1.5,
+            expiry_sec=_scheduled_expiry_sec(play_at, _START_BUZZER_STALE_AFTER_SEC),
+            play_at=play_at,
         )
 
     def _on_stage_tone(self, args: dict[str, Any]) -> None:
         """Play the staging beep for this arm tone."""
         if not self._enabled():
             return
+        play_at = _float_or_none(args.get("scheduled_at_monotonic"))
         self._audio_queue.enqueue(
             text="arm tone",
             wav_paths=[_STAGE_BEEP_WAV],
             priority=Priority.HIGH,
-            expiry_sec=1.5,
-            play_at=args.get("scheduled_at_monotonic"),
+            expiry_sec=_scheduled_expiry_sec(play_at, _STAGE_TONE_STALE_AFTER_SEC),
+            play_at=play_at,
         )
 
     def _on_event_cache_reset(self, _args: dict[str, Any]) -> None:
@@ -539,3 +544,16 @@ class RaceVoicePlugin:
     def _option(self, name: str, *, default: Any) -> Any:
         value = self._rhapi.db.option(name, default=default)
         return default if value is False else value
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _scheduled_expiry_sec(play_at: float | None, stale_after_sec: float) -> float:
+    if play_at is None:
+        return stale_after_sec
+    return max(stale_after_sec, play_at - time.monotonic() + stale_after_sec)

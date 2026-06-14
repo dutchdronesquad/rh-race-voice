@@ -32,6 +32,8 @@ curl http://127.0.0.1:8766/health
 journalctl -u sendspin-service -n 80 --no-pager
 ```
 
+The `/health` response includes the installed service `version`. Keep the plugin ZIP, `.deb` package, and Docker image on the same Race Voice release version; Race Voice warns in the RotorHazard UI when the plugin and service versions differ.
+
 Default config is stored in `/etc/default/sendspin-service`:
 
 ```shell
@@ -48,6 +50,8 @@ The service API accepts inline WAV payloads via `wav_files`. It does not accept 
 ## Docker Image
 
 The Docker image is the container deployment path for `sendspin-service`. For a normal Raspberry Pi timing-server install, use the `.deb` package instead.
+
+Do not run the `.deb` service and a Docker/container service on the same host for the same timing setup unless you deliberately assign separate ingest and Sendspin ports. If both are active, Race Voice may send audio to one service while browser players connect to the other, or different players may connect to different services.
 
 Basic local container run:
 
@@ -237,7 +241,9 @@ Cache behavior:
 
 - **No audio in `/player`**: confirm `sendspin-service` is running, the player Server URL points at the same service RotorHazard sends to, and the player is connected.
 - **Service unreachable**: confirm `curl http://127.0.0.1:8766/health` works from the RotorHazard host.
+- **Outdated service**: compare the plugin release with `version` from `curl http://127.0.0.1:8766/health`. If they differ, reinstall or upgrade the component that does not match the intended Race Voice release.
 - **Player page unreachable**: confirm `<RotorHazard UI base URL>/player` works from the playback device.
+- **Some players hear different or duplicate audio**: confirm only one Sendspin service is active for the event, or verify each service uses unique ports and every player is configured for the intended Server URL. Check both `systemctl status sendspin-service` and `docker ps` on hosts where you have tested container deployments.
 - **Duplicate voice callouts or tones**: set RotorHazard Voice Volume and Tone Volume to `0` in regular RotorHazard browser clients.
 - **First phrase is slow**: the selected Piper model may still be downloading or loading.
 - **Browser playback stutters**: test Safari or Chrome incognito with extensions disabled, then validate on the race network.

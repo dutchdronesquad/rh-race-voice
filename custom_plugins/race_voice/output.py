@@ -67,6 +67,24 @@ class SendspinServiceClient:
         """Stop service playback and clear queued service audio."""
         self._post_json("/v1/stop", {})
 
+    def service_version(self) -> str | None:
+        """Return the service version from /health, if available."""
+        try:
+            base_url = self._base_url()
+            request = urllib.request.Request(  # noqa: S310
+                f"{base_url}/health",
+                method="GET",
+            )
+            with urllib.request.urlopen(request, timeout=self._timeout_s()) as response:  # noqa: S310
+                payload = json.load(response)
+        except (TimeoutError, ValueError, json.JSONDecodeError, urllib.error.URLError):
+            logger.debug("Race Voice: cannot read Sendspin service version")
+            return None
+        if not isinstance(payload, dict):
+            return None
+        version = payload.get("version")
+        return str(version).strip() if version else None
+
     @staticmethod
     def _wav_files(wav_paths: list[Path]) -> list[dict[str, str]]:
         wav_files: list[dict[str, str]] = []

@@ -45,7 +45,7 @@ Service endpoints:
 - `POST /v1/play`
 - `POST /v1/stop`
 
-`POST /v1/play` accepts `wav_files` entries with base64 WAV data plus optional `text`, `priority`, `expiry_sec`, `play_at`, and `volume`.
+`POST /v1/play` accepts `wav_files` entries with base64 WAV data plus optional `text`, `priority`, `expiry_sec`, `play_at_delay_sec`, and `volume`.
 
 ## Playback Behavior
 
@@ -54,7 +54,7 @@ Service endpoints:
 Important behavior:
 
 - Consecutive play calls append to the active stream instead of restarting it.
-- Jobs can provide `play_at` for scheduled static sounds. Staging tones use `scheduled_at_monotonic` from `Evt.RACE_STAGE_TONE`; the race-start buzzer uses `rhapi.race.start_time_internal` from the race state.
+- Jobs can provide a relative playback delay for scheduled static sounds. The plugin derives that delay from `scheduled_at_monotonic` on `Evt.RACE_STAGE_TONE` and from `rhapi.race.start_time_internal` for the race-start buzzer before sending the job to `sendspin-service`.
 - Late-joining browser clients are added to the active stream group.
 - The stream is stopped after the queued audio has finished.
 

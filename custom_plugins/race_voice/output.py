@@ -56,10 +56,11 @@ class SendspinServiceClient:
             "priority": priority.name.lower(),
             "volume": volume,
         }
+        now = time.monotonic()
         if expires_at is not None:
-            payload["expiry_sec"] = max(0.0, expires_at - time.monotonic())
+            payload["expiry_sec"] = max(0.0, expires_at - now)
         if play_at is not None:
-            payload["play_at"] = play_at
+            payload["play_at_delay_sec"] = max(0.0, play_at - now)
         self._post_json("/v1/play", payload)
 
     def stop(self) -> None:

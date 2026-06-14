@@ -8,7 +8,7 @@ Important modules:
 
 - `plugin.py`: RotorHazard event/filter integration, synthesis scheduling, event cache cleanup, and UI button callbacks.
 - `piper.py`: Piper model download/loading, ONNX Runtime session setup, synthesis, text normalization, WAV validation, and cache-key generation.
-- `audio_queue.py`: single-worker priority queue with expiry handling for stale audio.
+- `audio_queue.py`: single-worker priority queue with expiry handling and optional scheduled playback timestamps for stale/time-sensitive audio.
 - `sendspin.py`: synchronous adapter around `aiosendspin`, owns the background asyncio loop and active Sendspin stream.
 - `ui.py`: RotorHazard settings panel, quick buttons, and `/player` blueprint.
 - `const.py`: option names, defaults, voice model list, and Sendspin port.
@@ -32,11 +32,15 @@ Do not clear `precache/` on `HEAT_SET`. A heat change should clear queued audio 
 
 Lap callouts should expire quickly enough to avoid stale race audio. The current lap expiry is intentionally longer than the queue default to handle several pilots crossing close together, but it should remain race-day conservative.
 
+Staging tones depend on upstream `Evt.RACE_STAGE_TONE`. Keep them as direct event integrations for branches that target the RotorHazard version containing that event; do not add a fallback timer that reimplements staging logic in the plugin.
+
 ## Sendspin Notes
 
 `SendSpinServer.play()` appends normal queued audio to the active stream instead of stopping and restarting playback. Preserve this behavior unless the user explicitly asks for interrupt-style playback.
 
 The Sendspin backend checks expiry again before scheduling audio. Keep this Sendspin-side check when changing queue behavior, because queue delay and stream scheduling delay are separate concerns.
+
+Preserve `play_at` handling for staging tones and other time-sensitive static WAVs. Normal voice callouts should continue to use appended playback unless a change explicitly needs scheduled playback.
 
 Late-joining Sendspin clients should be synced into the active group while playback is still scheduled to continue. Do not remove the periodic late-join sync during idle-tail waiting without replacing it with equivalent behavior.
 
@@ -88,7 +92,7 @@ The browser player source lives in `sendspin_player/`:
 
 The README should stay selective: keep it focused on what Race Voice is, what it needs, and how to get started. Move day-to-day operation, settings, cache behavior, and troubleshooting details into files under `docs/`.
 
-Keep user-facing docs aligned with actual race behavior, especially cache cleanup, browser playback, Sendspin port `8927`, and the need to set RotorHazard browser Voice Volume to `0` when Race Voice handles callouts.
+Keep user-facing docs aligned with actual race behavior, especially cache cleanup, browser playback, Sendspin port `8927`, and the need to set RotorHazard browser Voice Volume and Tone Volume to `0` when Race Voice handles callouts and race sounds.
 
 ## PR Style
 

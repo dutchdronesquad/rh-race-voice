@@ -10,6 +10,7 @@ import hmac
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -104,9 +105,9 @@ class SendspinService:
         if not wav_items:
             raise ValueError("wav_files must contain at least one WAV")
         priority = _priority(payload.get("priority"))
-        expiry_sec = _float_value(payload.get("expiry_sec"), DEFAULT_EXPIRY_SEC)
-        play_at = _optional_float(payload.get("play_at"))
-        volume = _clamped_float(payload.get("volume"), 1.0, 0.0, 1.0)
+        expiry_sec = _expiry_sec(payload)
+        play_at = _play_at(payload)
+        volume = _volume(payload)
         text = str(payload.get("text") or "service audio")
         self._queue.enqueue(
             text=text,
@@ -259,23 +260,33 @@ def _priority(value: object) -> Priority:
     return Priority.NORMAL
 
 
-def _optional_float(value: object) -> float | None:
-    if value is None:
-        return None
-    return _float_value(value, 0.0)
+def _play_at(payload: dict[str, Any]) -> float | None:
+    """Return a local monotonic playback target from absolute or relative input."""
+    if "play_at_delay_sec" in payload:
+        with contextlib.suppress(TypeError, ValueError):
+            delay_sec = float(payload.get("play_at_delay_sec"))
+            return time.monotonic() + max(0.0, delay_sec)
+        return time.monotonic()
+    if "play_at" in payload:
+        with contextlib.suppress(TypeError, ValueError):
+            return float(payload.get("play_at"))
+        return 0.0
+    return None
 
 
-def _float_value(value: object, default: float) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
+def _expiry_sec(payload: dict[str, Any]) -> float:
+    """Return playback expiry seconds from the request payload."""
+    with contextlib.suppress(TypeError, ValueError):
+        return float(payload.get("expiry_sec"))
+    return DEFAULT_EXPIRY_SEC
 
 
-def _clamped_float(
-    value: object, default: float, minimum: float, maximum: float
-) -> float:
-    return max(minimum, min(maximum, _float_value(value, default)))
+def _volume(payload: dict[str, Any]) -> float:
+    """Return clamped playback volume from the request payload."""
+    with contextlib.suppress(TypeError, ValueError):
+        volume = float(payload.get("volume"))
+        return max(0.0, min(1.0, volume))
+    return 1.0
 
 
 def _env_str(name: str, default: str) -> str:

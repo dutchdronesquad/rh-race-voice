@@ -37,7 +37,7 @@ An RHAPI-only RotorHazard plugin that:
 - The plugin cannot edit the built-in Audio Control tab or disable browser TTS automatically on other clients.
 - The plugin cannot inject JavaScript into existing RotorHazard pages.
 
-Consequence: **duplicate prevention is operational**, not automatic. The operator must manually set Voice Volume to 0 on all regular RotorHazard browser clients when the plugin is active.
+Consequence: **duplicate prevention is operational**, not automatic. The operator must manually set Voice Volume and Tone Volume to 0 on all regular RotorHazard browser clients when the plugin is active.
 
 ---
 
@@ -51,7 +51,7 @@ Things that would make the plugin significantly easier or more capable, but don'
 
 **Ideal fix:** Add a post-plugin-load event such as `Evt.PLUGINS_READY` or `Evt.SETTINGS_READY`, fired after plugin loading and registered setting defaults are initialized. This gives plugins a stable point to read options and start background work.
 
-**Status: Post-MVP / deferred.** Race Voice does not automatically build startup pre-cache until RH exposes a reliable lifecycle event. Operators can use **Rebuild pre-cache** after startup.
+**Status: Post-MVP / deferred.** Race Voice does not automatically build startup pre-cache until RH exposes a reliable lifecycle event. Operators can use **Rebuild pre-cache** after first setup or voice model/settings changes.
 
 ---
 
@@ -67,11 +67,11 @@ Things that would make the plugin significantly easier or more capable, but don'
 
 ### Staging tone events
 
-**Problem:** The staging beeps ("3... 2... 1...") before race start are generated in browser JS. There is no `Evt.RACE_ARM_TONE` or similar server event. Plugin cannot reproduce the countdown sequence without reimplementing the staging logic.
+**Original problem:** The staging beeps ("3... 2... 1...") before race start were generated in browser JS. Without `Evt.RACE_STAGE_TONE` or a similar server event, the plugin could not reproduce the countdown sequence without reimplementing the staging logic.
 
-**Ideal fix:** Fire `Evt.RACE_ARM_TONE` from `RHRace.stage()` at each staging beep interval, with payload `{'tone_index': int, 'tones_remaining': int}`. This decouples the audio signal from the browser and lets server-side plugins (LED, audio, video) stay in sync with the actual staging sequence.
+**Ideal fix:** Fire `Evt.RACE_STAGE_TONE` from `RHRace.stage()` at each staging beep interval, with payload `{'tone_index': int, 'tones_remaining': int, 'scheduled_at_monotonic': float}`. This decouples the audio signal from the browser and lets server-side plugins (LED, audio, video) stay in sync with the actual staging sequence.
 
-**Status: Post-MVP / deferred.** Not implemented in the plugin until RH fires server-side arm tone events. Staging beeps are skipped for now.
+**Status: Implemented on the upstream staging-tone branch.** `Evt.RACE_STAGE_TONE` added to RotorHazard (`eventmanager.py`, `RHRace.stage()`). The stage-tone event payload includes `scheduled_at_monotonic`, which the plugin uses to schedule `stage.wav` accurately through Sendspin. The race-start `buzzer.wav` is handled from `Evt.RACE_START` and uses `rhapi.race.start_time_internal` as its scheduled playback time.
 
 ---
 
@@ -424,7 +424,7 @@ The plugin cannot take over the built-in Audio Control tab. The operating model 
 1. Install and enable the plugin.
 2. Configure Piper in the plugin panel.
 3. Run a Sendspin player on the device connected to the speakers and connect it to the RotorHazard host on port `8927`.
-4. On every regular RotorHazard browser client: set Voice Volume to 0 and disable browser beeps if the plugin handles beeps.
+4. On every regular RotorHazard browser client: set Voice Volume and Tone Volume to 0 if the plugin handles callouts and race sounds.
 
 **Built-in Audio Control → used only to silence browser clients**
 **Plugin Audio Profile → planned place to decide what the speakers announce**
@@ -437,7 +437,7 @@ MVP plugin audio profile mirrors the familiar RH categories that can be implemen
 
 Post-MVP profile additions:
 - Race clock callouts
-- Staging tone beeps
+- Staging tone beeps ✓
 - Race tied / overtime callouts
 - Race leader callouts
 
@@ -456,7 +456,7 @@ Implemented:
 - Play audio check quick button
 - Stop audio quick button
 - Clear TTS cache quick button
-- Duplicate prevention warning for browser Voice Volume
+- Duplicate prevention warning for browser Voice Volume and Tone Volume
 - Model download/load status surfaced to UI as notifications
 
 MVP planned / not implemented yet:
@@ -563,7 +563,7 @@ Deferred RHAPI-dependent features, external/cloud Sendspin output, QR codes, Wyo
 - [x] Log how many new WAVs were generated and how long it took
 
 #### Duplicate prevention UI
-- [x] Plugin panel shows two separate markdown warnings (Voice Volume + browser beeps)
+- [x] Plugin panel warns operators to set browser Voice Volume and Tone Volume to 0
 
 #### Error handling
 - [x] Piper fails → log error with phrase text, skip callout, continue
@@ -631,7 +631,7 @@ and expiry. Sendspin services are output targets.
 #### Deferred RH / RHAPI-dependent callouts
 - [ ] `Evt.RACE_PILOT_DONE` → "[callsign] finished"
 - [ ] Race clock callouts via upstream `Evt.RACE_CLOCK_WARNING`
-- [ ] Arm sequence countdown beeps via upstream `Evt.RACE_ARM_TONE`
+- [x] Staging tone beeps via upstream `Evt.RACE_STAGE_TONE`
 - [ ] Last-5-seconds countdown beeps (one `stage.wav` per second for the final 5s) and `buzzer.wav` at race end — mirrors browser behaviour; needs per-second `Evt.RACE_CLOCK_WARNING` thresholds (5, 4, 3, 2, 1) or a dedicated end-of-race countdown mechanism
 - [ ] Scheduled race start callouts ("Next race begins in 30 seconds" etc.)
 - [ ] Race tied / overtime via upstream `Evt.RACE_TIED` / `Evt.RACE_OVERTIME`
@@ -750,7 +750,7 @@ server fallback. The first service API smoke test has passed for `/health`,
 - [ ] Sendspin player: install on NUC / laptop / Pi
 - [ ] Local Sendspin service: install/upgrade/remove packaged `.deb` on Pi
 - [ ] Cloud Sendspin server: deploy with Docker behind HTTPS
-- [ ] RotorHazard browser clients: how to set Voice Volume to 0
+- [ ] RotorHazard browser clients: how to set Voice Volume and Tone Volume to 0
 - [ ] End-to-end test checklist for a new installation
 
 **Success criteria:**

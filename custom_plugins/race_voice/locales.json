@@ -29,16 +29,16 @@
   },
   "de": {
     "lap": "Runde",
-    "clock_callout": {
-      "60": "1 Minute",
-      "30": "30 Sekunden",
-      "10": "10 Sekunden"
-    },
     "race_schedule": {
       "60": "Nächstes Rennen beginnt in 1 Minute",
       "30": "Nächstes Rennen beginnt in 30 Sekunden",
       "10": "Nächstes Rennen beginnt in 10 Sekunden",
       "5": "Nächstes Rennen beginnt in 5 Sekunden"
+    },
+    "clock_callout": {
+      "60": "1 Minute",
+      "30": "30 Sekunden",
+      "10": "10 Sekunden"
     }
   }
 }

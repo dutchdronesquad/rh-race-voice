@@ -22,6 +22,14 @@ class ClockCalloutPhrase:
     subdir: str = PRECACHE_SUBDIR
 
 
+@dataclass(frozen=True)
+class ClockCalloutPlan:
+    """Playback plan for one race clock callout event."""
+
+    kind: str
+    seconds: int
+
+
 class ClockCallouts:
     """Build race clock callout phrases for live playback and pre-cache."""
 
@@ -33,7 +41,7 @@ class ClockCallouts:
     ) -> None:
         """Initialize phrase generation helpers."""
         self._locale_for_model = locale_for_model
-        self._thresholds = thresholds
+        self._thresholds = tuple(thresholds)
 
     @property
     def subdir(self) -> str:
@@ -44,6 +52,20 @@ class ClockCallouts:
     def precache_dir_name(self) -> str:
         """Return the race clock callout directory under the model pre-cache root."""
         return PRECACHE_DIR_NAME
+
+    def plan(self, seconds: object) -> ClockCalloutPlan | None:
+        """Return the playback plan for a race clock callout event."""
+        try:
+            seconds = int(seconds)
+        except (TypeError, ValueError):
+            return None
+        if seconds in self._thresholds:
+            return ClockCalloutPlan("voice", seconds)
+        if 1 <= seconds <= 5:
+            return ClockCalloutPlan("tone", seconds)
+        if seconds == 0:
+            return ClockCalloutPlan("buzzer", seconds)
+        return None
 
     def phrase(self, seconds: int | str, model_name: str) -> str:
         """Return the localized phrase for a race clock callout threshold."""

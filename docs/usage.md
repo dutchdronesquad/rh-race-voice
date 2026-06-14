@@ -138,7 +138,7 @@ Race Voice hooks into two RotorHazard filter events and generates the following 
 |---|---|---|
 | Pilot completes a lap | `"{callsign}, Lap {n}, {m:ss.f}"` | Normal |
 | Race winner announced | `"Winner is {callsign}!"` (or localized equivalent) | High |
-| Race clock callout | `"1 minute"` / `"30 seconds"` / `"10 seconds"` | High |
+| Race clock callout | `"1 minute"` / `"30 seconds"` / `"10 seconds"`; final `5` to `1` uses `stage.wav`, `0` uses `buzzer.wav` | High |
 | Scheduled race countdown | `"Race begin in 60 seconds"` / `"30"` / `"10"` / `"5"` | High |
 | Race staging tone | Bundled `stage.wav` | High |
 | Race start | Bundled `buzzer.wav` | High |
@@ -237,7 +237,7 @@ Cache behavior:
 - The first use of a voice model requires internet access to download model files. Racing can run offline after the selected model has been cached.
 - Callouts are generated server-side; browser-specific RotorHazard voice settings do not affect Race Voice output.
 - Staging tones and the race-start buzzer are static WAV files played through Sendspin. They require a RotorHazard build that provides `Evt.RACE_STAGE_TONE`.
-- Race-clock callouts require a RotorHazard build that provides `Evt.RACE_CLOCK_CALLOUT`.
+- Race-clock callouts require a RotorHazard build that provides `Evt.RACE_CLOCK_CALLOUT`. During the final five seconds of a running countdown heat, Race Voice uses static stage tones and a buzzer instead of spoken TTS.
 - Scheduled race sounds are sent to `sendspin-service` with a relative playback delay, so the service can run on the RotorHazard host or another reachable machine without sharing a monotonic clock.
 - Race Voice schedules race sounds against RotorHazard's server-side tone time. If RotorHazard browser Tone Volume is still enabled during comparison, its browser-generated tones may sound slightly later because they depend on browser timer and audio scheduling.
 - If no Sendspin browser player is connected, generated audio is dropped and logged.

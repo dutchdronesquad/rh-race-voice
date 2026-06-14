@@ -294,12 +294,34 @@ class RaceVoicePlugin:
         """Synthesize and enqueue a race clock callout."""
         if not self._enabled():
             return
-        seconds = args.get("seconds_remaining")
-        if seconds is None:
+        plan = self._clock_callouts.plan(args.get("seconds_remaining"))
+        if plan is None:
+            return
+        play_at = args.get("scheduled_at_monotonic")
+        if plan.kind == "tone":
+            self._audio_queue.enqueue(
+                text="race clock tone",
+                wav_paths=[_STAGE_BEEP_WAV],
+                priority=Priority.HIGH,
+                expiry_sec=_expiry_sec_after_scheduled_play(
+                    play_at, _STAGE_TONE_STALE_AFTER_SEC
+                ),
+                play_at=play_at,
+            )
+            return
+        if plan.kind == "buzzer":
+            self._audio_queue.enqueue(
+                text="race clock buzzer",
+                wav_paths=[_BUZZER_WAV],
+                priority=Priority.HIGH,
+                expiry_sec=_expiry_sec_after_scheduled_play(
+                    play_at, _START_BUZZER_STALE_AFTER_SEC
+                ),
+                play_at=play_at,
+            )
             return
         settings = self._settings()
-        text = self._clock_callouts.phrase(seconds, settings.model_name)
-        play_at = args.get("scheduled_at_monotonic")
+        text = self._clock_callouts.phrase(plan.seconds, settings.model_name)
         expires_at = max(time.monotonic(), play_at or time.monotonic()) + 8.0
         self._synth_pool.submit(
             self._enqueue,

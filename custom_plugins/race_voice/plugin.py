@@ -254,12 +254,14 @@ class RaceVoicePlugin:
         """Play the start buzzer when the race begins."""
         if not self._enabled():
             return
-        play_at = _float_or_none(getattr(self._rhapi.race, "start_time_internal", None))
+        play_at = getattr(self._rhapi.race, "start_time_internal", None)
         self._audio_queue.enqueue(
             text="race start",
             wav_paths=[_BUZZER_WAV],
             priority=Priority.HIGH,
-            expiry_sec=_scheduled_expiry_sec(play_at, _START_BUZZER_STALE_AFTER_SEC),
+            expiry_sec=_expiry_sec_after_scheduled_play(
+                play_at, _START_BUZZER_STALE_AFTER_SEC
+            ),
             play_at=play_at,
         )
 
@@ -267,12 +269,14 @@ class RaceVoicePlugin:
         """Play the staging beep for this stage tone."""
         if not self._enabled():
             return
-        play_at = _float_or_none(args.get("scheduled_at_monotonic"))
+        play_at = args.get("scheduled_at_monotonic")
         self._audio_queue.enqueue(
             text="stage tone",
             wav_paths=[_STAGE_BEEP_WAV],
             priority=Priority.HIGH,
-            expiry_sec=_scheduled_expiry_sec(play_at, _STAGE_TONE_STALE_AFTER_SEC),
+            expiry_sec=_expiry_sec_after_scheduled_play(
+                play_at, _STAGE_TONE_STALE_AFTER_SEC
+            ),
             play_at=play_at,
         )
 
@@ -546,14 +550,11 @@ class RaceVoicePlugin:
         return default if value is False else value
 
 
-def _float_or_none(value: Any) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _scheduled_expiry_sec(play_at: float | None, stale_after_sec: float) -> float:
-    if play_at is None:
-        return stale_after_sec
-    return max(stale_after_sec, play_at - time.monotonic() + stale_after_sec)
+def _expiry_sec_after_scheduled_play(
+    play_at: float | None, stale_after_sec: float
+) -> float:
+    """Return queue expiry seconds for audio that may be scheduled in the future."""
+    now = time.monotonic()
+    scheduled_at = play_at if play_at is not None else now
+    expires_at = max(now, scheduled_at) + stale_after_sec
+    return max(0.0, expires_at - now)

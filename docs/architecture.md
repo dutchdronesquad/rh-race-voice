@@ -55,6 +55,7 @@ Important behavior:
 
 - Consecutive play calls append to the active stream instead of restarting it.
 - Jobs can provide a relative playback delay for scheduled static sounds. The plugin derives that delay from `scheduled_at_monotonic` on `Evt.RACE_STAGE_TONE` and from `rhapi.race.start_time_internal` for the race-start buzzer before sending the job to `sendspin-service`.
+- Scheduled race sounds target RotorHazard's server-side tone time. Built-in RotorHazard browser tones may not line up exactly because they are driven by browser timer and audio scheduling.
 - Late-joining browser clients are added to the active stream group.
 - The stream is stopped after the queued audio has finished.
 

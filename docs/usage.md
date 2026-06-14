@@ -230,6 +230,7 @@ Cache behavior:
 - Callouts are generated server-side; browser-specific RotorHazard voice settings do not affect Race Voice output.
 - Staging tones and the race-start buzzer are static WAV files played through Sendspin. They require a RotorHazard build that provides `Evt.RACE_STAGE_TONE`.
 - Scheduled race sounds are sent to `sendspin-service` with a relative playback delay, so the service can run on the RotorHazard host or another reachable machine without sharing a monotonic clock.
+- Race Voice schedules race sounds against RotorHazard's server-side tone time. If RotorHazard browser Tone Volume is still enabled during comparison, its browser-generated tones may sound slightly later because they depend on browser timer and audio scheduling.
 - If no Sendspin browser player is connected, generated audio is dropped and logged.
 
 ## Troubleshooting

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import gevent
 from eventmanager import Evt
 from filtermanager import Flt
 
@@ -61,6 +62,12 @@ try:
         _LOCALES: dict[str, dict] = json.load(_f)
 except (OSError, json.JSONDecodeError) as exc:
     raise RuntimeError("Race Voice: failed to load locales.json") from exc
+
+try:
+    with (Path(__file__).parent / "manifest.json").open(encoding="utf-8") as _f:
+        _PLUGIN_VERSION = str(json.load(_f).get("version") or "").strip()
+except (OSError, json.JSONDecodeError) as exc:
+    raise RuntimeError("Race Voice: failed to load manifest.json") from exc
 
 
 @dataclass(frozen=True)
@@ -122,6 +129,7 @@ class RaceVoicePlugin:
         )
         self._register_events()
         self._register_filters()
+        gevent.spawn_later(3.0, self._warn_if_service_version_mismatch)
         logger.info("Race Voice plugin initialized")
 
     # ------------------------------------------------------------------
@@ -339,6 +347,7 @@ class RaceVoicePlugin:
         if not _AUDIO_CHECK_WAV.exists():
             self._rhapi.ui.message_alert("Race Voice audio check WAV is missing")
             return
+        gevent.spawn(self._warn_if_service_version_mismatch)
         self._audio_queue.enqueue(
             text="Sendspin audio check",
             wav_paths=[_AUDIO_CHECK_WAV],
@@ -438,6 +447,30 @@ class RaceVoicePlugin:
             return
         if self._tts.prepare_model(settings.model_name, settings.params):
             self._prepared_settings = settings
+
+    def _warn_if_service_version_mismatch(self) -> None:
+        service_version = self._sendspin.service_version()
+        if not service_version:
+            return
+        if service_version.removeprefix("v") == _PLUGIN_VERSION.removeprefix("v"):
+            return
+        warning = (
+            f"Plugin {_PLUGIN_VERSION} and sendspin-service {service_version} "
+            "do not match. Install the same release for both."
+        )
+        message = f"Race Voice: {warning}"
+        logger.warning(message)
+        rhui = self._rhapi._racecontext.rhui  # noqa: SLF001
+        rhui.set_ui_message(
+            "race-voice-service-version",
+            warning,
+            header="Race Voice",
+            subclass="warning",
+        )
+        self._rhapi.ui.socket_broadcast(
+            "update_server_messages",
+            rhui.get_ui_server_messages_str(),
+        )
 
     def _pilot_names_for_heat(self, heat_id: int) -> list[str]:
         slots = self._rhapi.db.slots_by_heat(heat_id)

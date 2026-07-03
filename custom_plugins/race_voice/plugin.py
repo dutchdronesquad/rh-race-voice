@@ -37,6 +37,8 @@ from .const import (
 )
 from .output import SendspinServiceClient
 from .piper import PiperSynthesizer, SynthesisParams, SynthesisResult
+from .services import schedule
+from .services.clock_callouts import ClockCallouts
 from .services.lap_callouts import LapCalloutSegments
 from .services.precache import PrecacheManager
 from .services.schedule import ScheduleCalloutManager
@@ -107,12 +109,14 @@ class RaceVoicePlugin:
             enqueue_callout=self._enqueue_schedule_callout,
             phrase_for=self._schedule_phrase_for_settings,
         )
+        self._clock_callouts = ClockCallouts(locale_for_model=self._locale_for_model)
         self._lap_callouts = LapCalloutSegments(locale_for_model=self._locale_for_model)
         self._precache = PrecacheManager(
             tts=self._tts,
             lap_callouts=self._lap_callouts,
             synth_pool=self._synth_pool,
             prepare_model=self._prepare_model,
+            clock_callouts=self._clock_callouts,
             schedule_phrase=self._schedule_phrase,
             pilot_names_for_heat=self._pilot_names_for_heat,
             heat_name_for_id=self._heat_name_for_id,
@@ -148,11 +152,17 @@ class RaceVoicePlugin:
         self._rhapi.events.on(
             Evt.RACE_STAGE_TONE,
             self._on_stage_tone,
-            name="local_voice_stage_tone",
+            name="race_voice_stage_tone",
         )
         self._rhapi.events.on(
-            Evt.RACE_START, self._on_race_start, name="local_voice_race_start"
+            Evt.RACE_START, self._on_race_start, name="race_voice_race_start"
         )
+        if clock_callout_evt := getattr(Evt, "RACE_CLOCK_CALLOUT", None):
+            self._rhapi.events.on(
+                clock_callout_evt,
+                self._on_clock_callout,
+                name="race_voice_clock_callout",
+            )
         self._rhapi.events.on(
             Evt.RACE_SCHEDULE,
             self._on_race_schedule,
@@ -288,6 +298,49 @@ class RaceVoicePlugin:
             play_at=play_at,
         )
 
+    def _on_clock_callout(self, args: dict[str, Any]) -> None:
+        """Synthesize and enqueue a race clock callout."""
+        if not self._enabled():
+            return
+        plan = self._clock_callouts.plan(args.get("seconds_remaining"))
+        if plan is None:
+            return
+        play_at = args.get("scheduled_at_monotonic")
+        if plan.kind == "tone":
+            self._audio_queue.enqueue(
+                text="race clock tone",
+                wav_paths=[_STAGE_BEEP_WAV],
+                priority=Priority.HIGH,
+                expiry_sec=_expiry_sec_after_scheduled_play(
+                    play_at, _STAGE_TONE_STALE_AFTER_SEC
+                ),
+                play_at=play_at,
+            )
+            return
+        if plan.kind == "buzzer":
+            self._audio_queue.enqueue(
+                text="race clock buzzer",
+                wav_paths=[_BUZZER_WAV],
+                priority=Priority.HIGH,
+                expiry_sec=_expiry_sec_after_scheduled_play(
+                    play_at, _START_BUZZER_STALE_AFTER_SEC
+                ),
+                play_at=play_at,
+            )
+            return
+        settings = self._settings()
+        text = self._clock_callouts.phrase(plan.seconds, settings.model_name)
+        expires_at = max(time.monotonic(), play_at or time.monotonic()) + 8.0
+        self._synth_pool.submit(
+            self._enqueue,
+            text,
+            Priority.HIGH,
+            expires_at,
+            self._clock_callouts.subdir,
+            settings,
+            play_at,
+        )
+
     def _on_event_cache_reset(self, _args: dict[str, Any]) -> None:
         """Wipe event-specific WAVs when RotorHazard starts a new data set."""
         self._precache.cancel()
@@ -318,7 +371,7 @@ class RaceVoicePlugin:
             phrase,
             Priority.HIGH,
             time.monotonic() + 8.0,
-            "precache/schedule",
+            schedule.PRECACHE_SUBDIR,
             settings,
         )
 
@@ -408,13 +461,14 @@ class RaceVoicePlugin:
         self._record_generation(result)
         return result.wav_path
 
-    def _enqueue(
+    def _enqueue(  # noqa: PLR0913
         self,
         text: str,
         priority: Priority,
         expires_at: float,
         subdir: str = "",
         settings: VoiceSettings | None = None,
+        play_at: float | None = None,
     ) -> None:
         """Synthesize text and push it onto the audio queue."""
         if time.monotonic() > expires_at:
@@ -426,6 +480,7 @@ class RaceVoicePlugin:
                 wav_paths=[wav_path],
                 priority=priority,
                 expiry_sec=max(0.0, expires_at - time.monotonic()),
+                play_at=play_at,
             )
 
     def _record_generation(self, result: SynthesisResult) -> None:
@@ -473,6 +528,7 @@ class RaceVoicePlugin:
         )
 
     def _pilot_names_for_heat(self, heat_id: int) -> list[str]:
+        """Return phonetic pilot names for all pilots in the heat."""
         slots = self._rhapi.db.slots_by_heat(heat_id)
         pilot_names: list[str] = []
         for slot in slots:

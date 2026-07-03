@@ -13,6 +13,7 @@ Important modules:
 - `ui.py`: RotorHazard settings panel, quick buttons, and `/player` blueprint.
 - `const.py`: option names, defaults, voice model list, and Sendspin port.
 - `services/`: small stateful helpers extracted from `plugin.py`.
+  - `services/clock_callouts.py`: race-clock callout phrase planning and reusable pre-cache phrase lists.
   - `services/lap_callouts.py`: lap callout segment planning and reusable segment lists for pre-cache.
   - `services/precache.py`: manual pre-cache rebuild orchestration, stale-job cancellation, cleanup, and completion notifications.
   - `services/schedule.py`: scheduled-race countdown timers.
@@ -20,7 +21,7 @@ Important modules:
 
 ## Runtime Behavior
 
-RotorHazard phonetic filters are used as the callout source. Heavy work must stay off the RotorHazard event/filter thread; schedule synthesis through the existing executor instead of doing Piper work inline.
+RotorHazard phonetic filters and server-side race events are used as callout sources. Heavy work must stay off the RotorHazard event/filter thread; schedule synthesis through the existing executor instead of doing Piper work inline.
 
 Lap callouts are intentionally segmented:
 
@@ -28,11 +29,12 @@ Lap callouts are intentionally segmented:
 - reusable lap-number segment: `"Lap [n]"`, stored in `precache/laps/`.
 - dynamic lap-time phrase: stored in the per-model `tmp/` cache.
 
-Do not clear `precache/` on `HEAT_SET`. A heat change should clear queued audio and `tmp/` only. Operators can use **Rebuild pre-cache** to generate reusable schedule phrases, pilot-name segments, and lap-number segments. RotorHazard data reset and the **Clear TTS cache** button may clear all model WAV cache content, including `precache/`.
+Do not clear `precache/` on `HEAT_SET`. A heat change should clear queued audio and `tmp/` only. Operators can use **Rebuild pre-cache** to generate race-clock callouts, scheduled-race countdowns, and reusable schedule phrases, pilot-name segments, and lap-number segments. RotorHazard data reset and the **Clear TTS cache** button may clear all model WAV cache content, including `precache/`.
 
 Lap callouts should expire quickly enough to avoid stale race audio. The current lap expiry is intentionally longer than the queue default to handle several pilots crossing close together, but it should remain race-day conservative.
 
 Staging tones depend on upstream `Evt.RACE_STAGE_TONE`. Keep them as direct event integrations for branches that target the RotorHazard version containing that event; do not add a fallback timer that reimplements staging logic in the plugin.
+Race-clock callouts depend on upstream `Evt.RACE_CLOCK_CALLOUT`. Keep them as direct event integrations for branches that target the RotorHazard version containing that event; do not add a fallback timer that reimplements race-clock countdown logic in the plugin.
 
 ## Sendspin Notes
 
@@ -56,6 +58,8 @@ race_voice_cache/
                            reusable pilot-name segments
   tts/<model>/precache/laps/
                            reusable lap-number segments
+  tts/<model>/precache/clock/
+                           race-clock callout phrases
   tts/<model>/precache/schedule/
                            scheduled-race countdown phrases
   tts/<model>/tmp/        ephemeral lap-time phrases

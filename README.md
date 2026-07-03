@@ -58,7 +58,7 @@ Server-side voice callouts for the [RotorHazard] timing platform, powered by [Pi
 
 ## Requirements
 
-- [RotorHazard] with RHAPI support for `Evt.RACE_STAGE_TONE`.
+- [RotorHazard] with RHAPI support for `Evt.RACE_STAGE_TONE` and `Evt.RACE_CLOCK_CALLOUT`.
 - Python 3.12 or newer.
 - `sendspin-service` installed on the RotorHazard host or another reachable machine.
 - Network access from playback clients to `sendspin-service`.
@@ -73,7 +73,7 @@ Server-side voice callouts for the [RotorHazard] timing platform, powered by [Pi
 5. Open the RotorHazard settings page and enable **Race Voice**.
 6. Confirm **Sendspin service URL** points to the service, normally `http://127.0.0.1:8766`.
 7. Open `<RotorHazard UI base URL>/player` from the playback device.
-8. Use **Rebuild pre-cache** to prepare schedule, pilot-name, and lap-number WAV files.
+8. Use **Rebuild pre-cache** to prepare race-clock, schedule, pilot-name, and lap-number WAV files.
 9. Use **Generate test phrase** or **Play audio check** to verify playback.
 
 Set RotorHazard browser Voice Volume and Tone Volume to `0` on clients that should only use Race Voice audio.

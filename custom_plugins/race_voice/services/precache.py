@@ -8,18 +8,17 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any
 
-from .schedule import DEFAULT_THRESHOLDS
+from . import schedule
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from concurrent.futures import Future, ThreadPoolExecutor
     from pathlib import Path
 
+    from .clock_callouts import ClockCallouts
     from .lap_callouts import LapCalloutSegments
 
 logger = logging.getLogger(__name__)
-
-_PRECACHE_SCHEDULE_SUBDIR = "precache/schedule"
 
 
 class PrecacheManager:
@@ -32,6 +31,7 @@ class PrecacheManager:
         lap_callouts: LapCalloutSegments,
         synth_pool: ThreadPoolExecutor,
         prepare_model: Callable[[Any], None],
+        clock_callouts: ClockCallouts,
         schedule_phrase: Callable[[int, str], str],
         pilot_names_for_heat: Callable[[int], list[str]],
         heat_name_for_id: Callable[[int], str | int],
@@ -42,6 +42,7 @@ class PrecacheManager:
         self._lap_callouts = lap_callouts
         self._synth_pool = synth_pool
         self._prepare_model = prepare_model
+        self._clock_callouts = clock_callouts
         self._schedule_phrase = schedule_phrase
         self._pilot_names_for_heat = pilot_names_for_heat
         self._heat_name_for_id = heat_name_for_id
@@ -82,15 +83,35 @@ class PrecacheManager:
         precache_dir = self._tts.precache_dir_for_model(model_name)
         for dir_name in self._lap_callouts.precache_dir_names:
             self._clear_wavs(precache_dir / dir_name, f"pre-cache {dir_name}")
-        self._clear_wavs(precache_dir / "schedule", "pre-cache schedule")
+        self._clear_wavs(
+            precache_dir / self._clock_callouts.precache_dir_name,
+            "pre-cache clock",
+        )
+        self._clear_wavs(
+            precache_dir / schedule.PRECACHE_DIR_NAME,
+            "pre-cache schedule",
+        )
 
     def _rebuild(self, settings: Any, generation: int, heat_id: int | None) -> int:
         count = 0
         self._prepare_model(settings)
+        count += self._precache_clock_callouts(settings, generation)
         count += self._precache_schedule(settings, generation)
         count += self._precache_laps(settings, generation)
         if heat_id and self._is_current(generation):
             count += self._precache_pilots(heat_id, generation, settings)
+        return count
+
+    def _precache_clock_callouts(self, settings: Any, generation: int) -> int:
+        """Regenerate race clock callout phrases for the current params."""
+        if not self._is_current(generation):
+            return 0
+        count = 0
+        for phrase in self._clock_callouts.precache_phrases(settings.model_name):
+            if not self._is_current(generation):
+                logger.info("Race Voice stopped stale clock callout pre-cache job")
+                return count
+            count += self._precache_phrase(phrase.text, phrase.subdir, settings)
         return count
 
     def _precache_schedule(self, settings: Any, generation: int) -> int:
@@ -98,13 +119,13 @@ class PrecacheManager:
         if not self._is_current(generation):
             return 0
         count = 0
-        for threshold in DEFAULT_THRESHOLDS:
+        for threshold in schedule.DEFAULT_THRESHOLDS:
             if not self._is_current(generation):
                 logger.info("Race Voice stopped stale schedule pre-cache job")
                 return count
             count += self._precache_phrase(
                 self._schedule_phrase(threshold, settings.model_name),
-                _PRECACHE_SCHEDULE_SUBDIR,
+                schedule.PRECACHE_SUBDIR,
                 settings,
             )
         return count

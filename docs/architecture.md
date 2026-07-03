@@ -13,6 +13,8 @@ RotorHazard event/filter
   -> Sendspin browser/player clients
 ```
 
+The main RotorHazard sources are `Flt.EMIT_PHONETIC_DATA`, `Flt.EMIT_PHONETIC_TEXT`, `Evt.RACE_CLOCK_CALLOUT`, `Evt.RACE_STAGE_TONE`, `Evt.RACE_START`, `Evt.HEAT_SET`, and scheduled race events.
+
 The RotorHazard plugin owns event handling, TTS generation, caching, enqueueing, and the browser player route at `/player`. `sendspin-service` owns `aiosendspin`, player connections, stream state, and the Sendspin player endpoint on port `8927`.
 Staging tones from `Evt.RACE_STAGE_TONE` and the race-start buzzer from `Evt.RACE_START` are queued as static WAV files through the same Sendspin service path.
 
@@ -65,7 +67,7 @@ Both the plugin and the service use a single worker queue to keep event callback
 
 | Priority | Used for |
 |----------|----------|
-| HIGH     | Winner announcements, manual test phrase, audio check, scheduled-race countdowns, staging tones, race-start buzzer |
+| HIGH     | Winner announcements, manual test phrase, audio check, race-clock callouts, scheduled-race countdowns, staging tones, race-start buzzer |
 | NORMAL   | Lap callouts |
 | LOW      | Crossing beeps (earmarked, not yet used by the current plugin) |
 
@@ -89,6 +91,7 @@ race_voice_cache/
       precache/
         pilots/
         laps/
+        clock/
         schedule/
       tmp/
       test/
@@ -109,6 +112,8 @@ This avoids pre-generating every pilot/lap combination while still keeping commo
 
 ## Pre-Cache Rebuilds
 
-Manual pre-cache rebuilds are handled by `services/precache.py`. The manager owns stale-generation tracking, directory cleanup, schedule phrase generation, lap segment generation, pilot-name generation, and completion notifications.
+Race-clock callout phrase planning lives in `services/clock_callouts.py`, using the same localized phrase logic for live event playback and manual pre-cache rebuilds.
+
+Manual pre-cache rebuilds are handled by `services/precache.py`. The manager owns stale-generation tracking, directory cleanup, race-clock phrase generation, schedule phrase generation, lap segment generation, pilot-name generation, and completion notifications.
 
 Operators should run **Rebuild pre-cache** after first setup or voice model/settings changes when they want predictable phrases prepared before racing.

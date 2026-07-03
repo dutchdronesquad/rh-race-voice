@@ -6,6 +6,11 @@
       "30": "Next race begins in 30 seconds",
       "10": "Next race begins in 10 seconds",
       "5": "Next race begins in 5 seconds"
+    },
+    "clock_callout": {
+      "60": "1 minute",
+      "30": "30 seconds",
+      "10": "10 seconds"
     }
   },
   "nl": {
@@ -15,6 +20,11 @@
       "30": "Volgende race begint over 30 seconden",
       "10": "Volgende race begint over 10 seconden",
       "5": "Volgende race begint over 5 seconden"
+    },
+    "clock_callout": {
+      "60": "1 minuut",
+      "30": "30 seconden",
+      "10": "10 seconden"
     }
   },
   "de": {
@@ -24,6 +34,11 @@
       "30": "Nächstes Rennen beginnt in 30 Sekunden",
       "10": "Nächstes Rennen beginnt in 10 Sekunden",
       "5": "Nächstes Rennen beginnt in 5 Sekunden"
+    },
+    "clock_callout": {
+      "60": "1 Minute",
+      "30": "30 Sekunden",
+      "10": "10 Sekunden"
     }
   }
 }

@@ -28,7 +28,7 @@ runs:
         python-version: ${{ inputs.python-version }}
         enable-cache: true
     - name: 🏗 Set up Go
-      uses: actions/setup-go@v6.5.0
+      uses: actions/setup-go@v7.0.0
       with:
         go-version: stable
         cache: false

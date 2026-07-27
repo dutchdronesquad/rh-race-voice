@@ -19,7 +19,7 @@ sendspin-service = [
 [dependency-groups]
 dev = [
   "pre-commit-hooks==6.0.0",
-  "prek==0.4.10",
+  "prek==0.4.11",
   "ruff==0.15.22",
 ]
 

@@ -31,7 +31,7 @@ jobs:
       - name: 📦 Package plugin
         run: zip -r race_voice.zip custom_plugins
       - name: ⬆️ Upload release asset
-        uses: softprops/action-gh-release@v3.0.2
+        uses: softprops/action-gh-release@v3.0.3
         with:
           files: race_voice.zip
 
@@ -60,7 +60,7 @@ jobs:
             sha256sum "$deb" > "$deb.sha256"
           done
       - name: ⬆️ Upload release asset
-        uses: softprops/action-gh-release@v3.0.2
+        uses: softprops/action-gh-release@v3.0.3
         with:
           files: |
             dist/sendspin-service_*.deb

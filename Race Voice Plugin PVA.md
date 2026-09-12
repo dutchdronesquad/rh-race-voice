@@ -326,7 +326,7 @@ Ownership note: the RotorHazard plugin owns the local browser player because it 
     "dev": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
     "check": "tsc --noEmit",
-    "lint": "eslint .",
+    "lint": "oxlint .",
     "preview": "vite preview --host 0.0.0.0"
   }
 }

@@ -60,6 +60,9 @@ jobs:
   player:
     name: Player build
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sendspin_player
     steps:
       - name: ⤵️ Check out code from GitHub
         uses: actions/checkout@v7.0.1
@@ -71,7 +74,7 @@ jobs:
           cache-dependency-path: sendspin_player/package-lock.json
       - name: 🏗 Install player dependencies
         run: npm ci
-        working-directory: sendspin_player
+      - name: 🚀 Lint player with Oxlint
+        run: npm run lint
       - name: 🚀 Build player
         run: npm run build:plugin
-        working-directory: sendspin_player

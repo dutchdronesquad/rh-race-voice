@@ -23,11 +23,17 @@ export function useAudioAnalyser(
     if (!player || !playing) return;
 
     try {
-      // AudioScheduler is private on SendspinPlayer, but accessible at runtime
-      const scheduler = (player as any).scheduler; // eslint-disable-line @typescript-eslint/no-explicit-any
-      const audioCtx: AudioContext | null = scheduler?.getAudioContext?.() ?? null;
-      const gainNode: AudioNode | null = scheduler?.gainNode ?? null;
-      if (!audioCtx || !gainNode) return;
+      // SDK internals are private: validate their runtime shape before using them.
+      const scheduler: unknown = Reflect.get(player, "scheduler");
+      if (
+        typeof scheduler !== "object" || scheduler === null ||
+        !("getAudioContext" in scheduler) || typeof scheduler.getAudioContext !== "function" ||
+        !("gainNode" in scheduler)
+      ) return;
+
+      const audioCtx: unknown = scheduler.getAudioContext();
+      const gainNode = scheduler.gainNode;
+      if (!(audioCtx instanceof AudioContext) || !(gainNode instanceof AudioNode)) return;
 
       const analyser = audioCtx.createAnalyser();
       analyser.fftSize = 128;               // 64 frequency bins

@@ -31,7 +31,6 @@ const STORE_SERVER_URL = "raceVoice.player.serverUrl";
 const STORE_VOLUME = "raceVoice.player.volume";
 const STORE_MUTED = "raceVoice.player.muted";
 const STORE_MODE = "raceVoice.player.correctionMode";
-const STORE_PLAYER_ID = "raceVoice.player.id";
 const SENDSPIN_DEMO_URL = "https://sendspin-demo.openhomefoundation.org";
 const DEFAULT_VOLUME = 80;
 const DEFAULT_CORRECTION_MODE: CorrectionMode = "sync";
@@ -126,17 +125,6 @@ function normalizeBaseUrl(input: string): string {
   url.search = "";
   url.hash = "";
   return url.toString().replace(/\/$/, "");
-}
-
-function getOrCreatePlayerId(): string {
-  const existing = window.localStorage.getItem(STORE_PLAYER_ID);
-  if (existing) return existing;
-  const id =
-    typeof crypto.randomUUID === "function"
-      ? crypto.randomUUID()
-      : `local-voice-${Math.random().toString(16).slice(2)}`;
-  window.localStorage.setItem(STORE_PLAYER_ID, id);
-  return id;
 }
 
 function initialVolume(): number {
@@ -244,7 +232,6 @@ export function App() {
     trackLabel: null,
   });
 
-  const playerId = useMemo(() => getOrCreatePlayerId(), []);
   const shareUrl = useMemo(() => playerPageUrl(), []);
   const analyserRef = useAudioAnalyser(playerRef, state === "playing");
 
@@ -356,7 +343,6 @@ export function App() {
 
     const player = new SendspinPlayer({
       baseUrl: normalizedUrl,
-      playerId,
       clientName: "Race Voice Browser Player",
       codecs: [...CODECS],
       correctionMode,
@@ -403,6 +389,7 @@ export function App() {
     player.setMuted(muted);
 
     try {
+      await player.unlock();
       await player.connect();
       hasConnectedRef.current = true;
       const nextSnapshot = readSnapshot(player);

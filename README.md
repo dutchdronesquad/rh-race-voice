@@ -60,7 +60,7 @@ Server-side voice callouts for the [RotorHazard] timing platform, powered by [Pi
 
 - [RotorHazard] with RHAPI support for `Evt.RACE_STAGE_TONE` and `Evt.RACE_CLOCK_CALLOUT`.
 - Python 3.12 or newer.
-- `sendspin-service` installed on the RotorHazard host or another reachable machine.
+- `sendspin-service` installed on the RotorHazard host or another reachable machine. Use the automatic installer below on 64-bit Debian or Raspberry Pi OS.
 - Network access from playback clients to `sendspin-service`.
 - A browser on the playback device. RotorHazard serves the Sendspin player at `<RotorHazard UI base URL>/player`.
 
@@ -69,7 +69,15 @@ Server-side voice callouts for the [RotorHazard] timing platform, powered by [Pi
 1. Download `race_voice.zip` from the latest GitHub release.
 2. In RotorHazard, open the plugin manager and upload the ZIP file.
 3. Restart RotorHazard if requested.
-4. Download the matching `sendspin-service_*.deb` from the same GitHub release and install it on the RotorHazard host.
+4. Open a terminal on the **RotorHazard host** (or connect over SSH) and paste:
+
+   ```shell
+   curl -fL https://github.com/dutchdronesquad/rh-race-voice/releases/latest/download/install-sendspin-service.sh -o install-sendspin-service.sh &&
+     bash install-sendspin-service.sh
+   ```
+
+   Enter your sudo password if prompted. The installer selects the right package and starts the service automatically. Wait for **installed and running**. See the [installation guide](docs/usage.md#sendspin-service) for a separate machine, a specific release, or manual installation.
+
 5. Open the RotorHazard settings page and enable **Race Voice**.
 6. Confirm **Sendspin service URL** points to the service, normally `http://127.0.0.1:8766`.
 7. Open `<RotorHazard UI base URL>/player` from the playback device.
@@ -83,6 +91,7 @@ The first generated phrase for a voice model downloads the Piper model into the 
 ## Documentation
 
 - [Usage Guide](docs/usage.md): setup, settings, browser player, cache layout, operational notes, and troubleshooting.
+- [Sendspin service installation](docs/usage.md#sendspin-service): package selection, installation commands, connection checks, and remote-host setup.
 - [Changelog](CHANGELOG.md): release history.
 - [Contributing](CONTRIBUTING.md): development setup and contribution guidelines.
 

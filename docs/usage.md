@@ -6,10 +6,10 @@ The plugin ZIP and service `.deb` are separate release assets. Install both for 
 
 ## Setup
 
-1. Install and start `sendspin-service`.
+1. [Install and verify `sendspin-service`](#sendspin-service).
 2. In RotorHazard, open **Settings** -> **Race Voice**.
 3. Enable **Plugin audio**.
-4. Confirm **Sendspin service URL** is `http://127.0.0.1:8766`.
+4. Set **Sendspin service URL** to `http://127.0.0.1:8766` for a service on the RotorHazard host, or `http://<service-host>:8766` for a [separate machine](#running-on-a-separate-machine).
 5. Choose a voice model and speech settings.
 6. Open the browser player from the RotorHazard UI on the playback device, for example `<RotorHazard UI base URL>/player`.
 7. Set normal RotorHazard browser Voice Volume and Tone Volume to `0` on clients that should not play duplicate built-in callouts, staging tones, or start sounds.
@@ -17,22 +17,80 @@ The plugin ZIP and service `.deb` are separate release assets. Install both for 
 
 ## Sendspin Service
 
-Download the `.deb` for your architecture from the [GitHub Releases page](https://github.com/dutchdronesquad/rh-race-voice/releases). Use `arm64` for 64-bit Raspberry Pi OS (the default since Raspberry Pi OS Bookworm) and `amd64` for x86 machines.
+### Install on Debian or Raspberry Pi OS
+
+The easiest setup is to install the service on the **RotorHazard host**. On 64-bit Debian or Raspberry Pi OS with systemd, open a terminal (or connect over SSH) and paste:
 
 ```shell
-wget https://github.com/dutchdronesquad/rh-race-voice/releases/download/v<version>/sendspin-service_<version>_arm64.deb
-sudo apt install ./sendspin-service_<version>_arm64.deb
+curl -fL https://github.com/dutchdronesquad/rh-race-voice/releases/latest/download/install-sendspin-service.sh -o install-sendspin-service.sh &&
+  bash install-sendspin-service.sh
 ```
 
-Common checks:
+Enter your sudo password if prompted. The installer detects `arm64` or `amd64`, downloads the latest release package, verifies its checksum, installs it, and ensures the service runs and starts at boot. It includes its own Python runtime and dependencies. Wait for **installed and running** before continuing.
+
+Use `race_voice.zip` from the same latest release. In RotorHazard, enable **Plugin audio** and leave **Sendspin service URL** at `http://127.0.0.1:8766`. Open the `/player` page on your playback device, press **Connect**, then use **Play audio check** in RotorHazard.
+
+If `curl` is missing, run `sudo apt update && sudo apt install -y curl`, then repeat the command. A 32-bit OS (`armhf`) is not supported by the release packages.
+
+For an older plugin release, pass its exact release tag to the downloaded installer: `bash install-sendspin-service.sh v<version>` (replace `v<version>` with the tag shown on its GitHub release).
+
+<details>
+<summary>Manual package installation</summary>
+
+Run `dpkg --print-architecture` on the service machine. Download the matching `sendspin-service_<version>_arm64.deb` or `sendspin-service_<version>_amd64.deb` from the [same release as your plugin](https://github.com/dutchdronesquad/rh-race-voice/releases). In the directory containing the downloaded package, run `sudo apt install ./<filename>`, replacing `<filename>` with its actual name. The package enables and starts the service automatically.
+
+</details>
+
+### Verify the service and connect a player
+
+On the service machine, check that the service is running and its HTTP API responds:
 
 ```shell
-systemctl status sendspin-service
-curl http://127.0.0.1:8766/health
+systemctl status sendspin-service --no-pager
+curl --fail http://127.0.0.1:8766/health
+```
+
+The status should show `active (running)`, and `/health` should return JSON including the installed service `version`. Keep the plugin ZIP, `.deb` package, and Docker image on the same Race Voice release version; Race Voice warns in the RotorHazard UI when the plugin and service versions differ.
+
+In RotorHazard, enable **Plugin audio** under **Settings** -> **Race Voice** and set **Sendspin service URL** to `http://127.0.0.1:8766` when both run on the same host. On the playback device, open `<RotorHazard UI base URL>/player`, set the player's **Server URL** to `http://<service-host>:8927`, and press **Connect**. Replace `<service-host>` with the service machine's LAN IP address or hostname reachable from that device. Use **Play audio check** in RotorHazard to confirm sound.
+
+Port `8766` is the HTTP API used by RotorHazard; port `8927` is the Sendspin endpoint used by players. Allow playback devices to reach TCP port `8927` if the service machine has a firewall. On a separate playback device, `127.0.0.1` refers to that device, so use the service machine's LAN address in the player.
+
+If the service is not running or the health check fails, inspect its logs:
+
+```shell
 journalctl -u sendspin-service -n 80 --no-pager
 ```
 
-The `/health` response includes the installed service `version`. Keep the plugin ZIP, `.deb` package, and Docker image on the same Race Voice release version; Race Voice warns in the RotorHazard UI when the plugin and service versions differ.
+### Running on a separate machine
+
+Install the package on the service machine using the steps above. By default, the HTTP API listens only on `127.0.0.1`, so RotorHazard on another machine cannot reach it.
+
+1. On the service machine, open the configuration:
+
+   ```shell
+   sudo nano /etc/default/sendspin-service
+   ```
+
+   Change `SENDSPIN_INGEST_HOST=127.0.0.1` to `SENDSPIN_INGEST_HOST=0.0.0.0` to listen on its network interfaces, then save the file.
+
+2. Apply the change:
+
+   ```shell
+   sudo systemctl restart sendspin-service
+   ```
+
+3. From the **RotorHazard host**, check the connection, replacing `<service-host>` with the service machine's LAN IP address or hostname:
+
+   ```shell
+   curl --fail http://<service-host>:8766/health
+   ```
+
+4. Set RotorHazard's **Sendspin service URL** to `http://<service-host>:8766`. In each browser player, set **Server URL** to `http://<service-host>:8927`, connect, and run **Play audio check**.
+
+If a firewall is enabled, allow TCP port `8766` from the RotorHazard host and TCP port `8927` from playback devices. The default API has no authentication; keep it on a trusted LAN and restrict access to port `8766` to the RotorHazard host.
+
+### Configuration and upgrades
 
 Default config is stored in `/etc/default/sendspin-service`:
 
@@ -44,6 +102,8 @@ SENDSPIN_PORT=8927
 SENDSPIN_ADVERTISE=true
 SENDSPIN_MAX_BODY_MB=50
 ```
+
+Restart the service with `sudo systemctl restart sendspin-service` after editing the configuration. To upgrade to the latest release, run the installer again and update the plugin to the same release. For a specific release, pass its tag to the installer as shown above. The installer preserves `/etc/default/sendspin-service` and restarts the service; verify `/health` and playback again afterwards.
 
 The service API accepts inline WAV payloads via `wav_files`. It does not accept filesystem paths. This keeps the packaged service independent of RotorHazard/plugin directory permissions while running with `DynamicUser=yes`.
 

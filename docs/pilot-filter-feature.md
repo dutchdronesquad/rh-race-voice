@@ -98,7 +98,8 @@ Replace the single `_stream_group` / `_stream` / `_next_play_start_us` / `_idle_
 ```python
 # sendspin.py
 
-_FILTER_ALL = "__all__"   # sentinel for "all pilots" group
+_FILTER_ALL = "__all__"  # sentinel for "all pilots" group
+
 
 @dataclass
 class _ChannelState:
@@ -106,6 +107,7 @@ class _ChannelState:
     stream: _PushStream | None = None
     next_play_start_us: int | None = None
     idle_stop_task: asyncio.Task[None] | None = None
+
 
 class SendSpinServer:
     def __init__(self, ...):
@@ -130,13 +132,14 @@ async def _on_server_event(
     if isinstance(event, ClientAddedEvent | ClientUpdatedEvent):
         await self._route_client(event.client)
 
+
 async def _route_client(self, client: SendspinClient) -> None:
     filter_key = _parse_pilot_filter(client.name)  # reads clientName
     self._client_filter[client.client_id] = filter_key
     channel = self._channels.setdefault(filter_key, _ChannelState())
     if channel.group is None or client not in channel.group.clients:
         if channel.group is None:
-            channel.group = client.group   # first client creates the group
+            channel.group = client.group  # first client creates the group
         else:
             await channel.group.add_client(client)
 ```
@@ -144,15 +147,19 @@ async def _route_client(self, client: SendspinClient) -> None:
 ### 4. Audio routing in `_append_to_stream`
 
 ```python
-async def _append_to_stream(self, clips, pilot_id, expires_at, play_at, duration_s, volume):
-    target_keys = {_FILTER_ALL}           # always send to "all pilots" group
+async def _append_to_stream(
+    self, clips, pilot_id, expires_at, play_at, duration_s, volume
+):
+    target_keys = {_FILTER_ALL}  # always send to "all pilots" group
     if pilot_id is not None:
-        target_keys.add(pilot_id)         # also send to pilot-specific group
+        target_keys.add(pilot_id)  # also send to pilot-specific group
 
     for key in target_keys:
         channel = self._channels.get(key)
         if channel and channel.group:
-            await self._append_to_channel(channel, clips, expires_at, play_at, duration_s, volume)
+            await self._append_to_channel(
+                channel, clips, expires_at, play_at, duration_s, volume
+            )
 ```
 
 ### 5. `_parse_pilot_filter` helper
@@ -161,6 +168,7 @@ async def _append_to_stream(self, clips, pilot_id, expires_at, play_at, duration
 def _parse_pilot_filter(client_name: str) -> str:
     """Extract pilot ID from clientName, e.g. 'Race Voice [pilot:abc-123]'."""
     import re
+
     m = re.search(r"\[pilot:([^\]]+)\]", client_name)
     return m.group(1) if m else _FILTER_ALL
 ```

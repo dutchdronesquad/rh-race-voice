@@ -20,7 +20,7 @@ sendspin-service = [
 dev = [
   "pre-commit-hooks==6.0.0",
   "prek==0.5.2",
-  "ruff==0.15.22",
+  "ruff==0.16.7",
 ]
 
 [tool.ruff]
@@ -44,4 +44,6 @@ lint.ignore = [
 
   # Custom ignores
   "G004",    # Allow f-string in logging
+  "CPY001",  # Project does not require per-file copyright notices
+  "PLR0917", # Existing callback/API signatures can require more than five positional arguments
 ]

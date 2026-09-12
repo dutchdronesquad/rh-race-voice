@@ -40,6 +40,8 @@ export function StatusRing({ state }: { state: ConnectionState }) {
   const [wasPulsing, setWasPulsing] = useState(pulsing);
 
   // Show the LP immediately when playback starts, including during an exit.
+  // This guarded update adjusts only this component's state before committing.
+  // https://react.dev/reference/react/useState#storing-information-from-previous-renders
   if (pulsing !== wasPulsing) {
     setWasPulsing(pulsing);
     if (pulsing) setLpVisible(true);

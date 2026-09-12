@@ -21,6 +21,7 @@ export function useAudioAnalyser(
 
     const player = playerRef.current;
     if (!player || !playing) return;
+    if (typeof AudioContext === "undefined" || typeof AudioNode === "undefined") return;
 
     try {
       // SDK internals are private: validate their runtime shape before using them.

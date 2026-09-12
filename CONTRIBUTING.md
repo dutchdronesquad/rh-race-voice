@@ -70,7 +70,7 @@ The Sendspin browser player source lives in `sendspin_player/` and is built with
 ```bash
 cd sendspin_player
 npm run dev      # local dev server
-npm run lint     # lint
+npm run lint     # lint with Oxlint
 npm run build    # standalone production build at /
 npm run build:plugin # RotorHazard plugin production build at /player/
 ```

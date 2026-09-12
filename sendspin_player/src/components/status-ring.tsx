@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 export type ConnectionState = "disconnected" | "connecting" | "connected" | "playing" | "reconnecting" | "error";
 
@@ -37,24 +37,25 @@ export function StatusRing({ state }: { state: ConnectionState }) {
   const pulsing  = state === "playing";
 
   const [lpVisible, setLpVisible] = useState(pulsing);
-  const [lpExiting, setLpExiting] = useState(false);
-  const lpVisibleRef = useRef(pulsing);
+  const [wasPulsing, setWasPulsing] = useState(pulsing);
+
+  // Show the LP immediately when playback starts, including during an exit.
+  // This guarded update adjusts only this component's state before committing.
+  // https://react.dev/reference/react/useState#storing-information-from-previous-renders
+  if (pulsing !== wasPulsing) {
+    setWasPulsing(pulsing);
+    if (pulsing) setLpVisible(true);
+  }
+
+  const lpExiting = lpVisible && !pulsing;
 
   useEffect(() => {
-    if (pulsing) {
-      lpVisibleRef.current = true;
-      setLpVisible(true);
-      setLpExiting(false);
-    } else if (lpVisibleRef.current) {
-      lpVisibleRef.current = false;
-      setLpExiting(true);
-      const t = setTimeout(() => {
-        setLpVisible(false);
-        setLpExiting(false);
-      }, LP_EXIT_MS);
-      return () => clearTimeout(t);
-    }
-  }, [pulsing]);
+    if (!lpExiting) return;
+
+    // Keep the LP mounted until its exit finishes; cancel if playback resumes.
+    const t = setTimeout(() => setLpVisible(false), LP_EXIT_MS);
+    return () => clearTimeout(t);
+  }, [lpExiting]);
 
   const showRing = !lpVisible;
   const filter   = svgGlow[lpVisible ? "playing" : state];

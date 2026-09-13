@@ -1,12 +1,12 @@
 # Race events v1: standalone service contract
 
-Status: implementation contract for #297, part of epic #296. The existing `/v1/play` API remains operational. An explicit [local HTTP preview](service-audio-planner.md#local-http-preview) now wires admission, synthesis and playback. It does not advertise the complete capability: enable `race-events/1` only when the RH adapter, manual commands and remaining integration checks are complete.
+Status: implementation contract for #297, part of epic #296. The existing `/v1/play` API remains operational. An explicit [local HTTP preview](service-audio-planner.md#local-http-preview) now wires admission, synthesis and playback. It does not advertise the complete capability: enable `race-events/1` only when adapter follow-through, manual commands and remaining integration checks are complete.
 
 ## Decision and boundaries
 
 Keep the first working path small: one RH adapter sends events to one primary service, one persistent Piper worker generates audio, and one default Sendspin output plays it. Complete and measure that path before adding cloud relay routing or personal pilot selections. Those remain later epic steps; mixing speech and beeps is optional follow-up work.
 
-Use concrete components and the existing HTTP and Sendspin libraries. Do not introduce a broker, generic routing framework, automatic failover or relay chains. Preparation and playback have separate queues because synthesis is shared while each output must be able to stop or stall independently. The new path should replace legacy scheduling when enabled, not pass through both schedulers.
+Use concrete components and the existing HTTP and Sendspin libraries. Do not introduce a broker, generic routing framework, automatic failover or relay chains. Preparation and playback have separate queues because synthesis is shared while each output must be able to stop or stall independently. Version 2 replaces the old scheduling path completely; no v1 compatibility path is part of the target architecture.
 
 Use bounded HTTP JSON requests over a persistent connection for race events and full state snapshots. Separate the state/control sender from disposable audio events so a slow audio request cannot hold a stop or heat change hostage. Both operate on a single destination-owned state machine. No message broker is needed. Use a separate binary/content-addressed asset API for primary-to-relay audio.
 
@@ -113,7 +113,7 @@ Convert scheduled target and expiry once at admission into destination monotonic
 
 ## Compatibility and rollout
 
-Existing `/v1/play`, cache references, local/cloud output, and default Sendspin clients remain unchanged until the new path is enabled. An old plugin uses v1. A new plugin may use its explicit legacy mode with an old service during the transition, or reports a required-service-upgrade error for standalone mode. Never infer support from package version or silently dual-publish. A new primary can adapt audio to a legacy cloud relay using v1, but must report unavailable personal selection/context guarantees and must not advertise full relay support. Changing mode drains/fences the old producer before enabling the new one.
+Release this architecture as v2.0.0 with a hard cutover. Upgrade the RH plugin and service together. The v2 plugin always publishes events; it has no legacy mode, synthesis fallback or adapter for an old cloud relay. Finish local/cloud output, manual cache controls and the remaining required workflows before release. Remove obsolete v1 entry points and packaging during #303. Capability checks report an incompatible service instead of choosing another execution path. Rollback means reinstalling the previous release with its matching service; stop audio before changing versions.
 
 ## Conformance and follow-through
 

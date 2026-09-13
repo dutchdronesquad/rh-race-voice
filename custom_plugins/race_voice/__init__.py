@@ -5,13 +5,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .plugin import RaceVoicePlugin
+    from .event_adapter import RaceEventAdapter
 
 
-def initialize(rhapi: Any) -> RaceVoicePlugin:
-    """RotorHazard plugin entry point."""
-    # Allow the standalone worker to reuse Piper without importing RH modules.
-    # Runtime dependencies still fail normally when RH initializes the plugin.
-    from .plugin import RaceVoicePlugin  # noqa: PLC0415
+def initialize(rhapi: Any) -> RaceEventAdapter:
+    """Initialize the v2 event adapter; synthesis belongs to the voice service."""
+    # Shared worker modules must remain importable without RotorHazard modules.
+    from .event_adapter import RaceEventAdapter  # noqa: PLC0415
 
-    return RaceVoicePlugin(rhapi)
+    return RaceEventAdapter(rhapi)

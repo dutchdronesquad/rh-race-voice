@@ -21,7 +21,7 @@ Important modules:
 
 ## Runtime Behavior
 
-Keep architecture changes incremental and concrete. For the standalone-service epic, finish and measure one local event-to-audio path before adding cloud routing or personal pilot selections. Reuse existing libraries and phrase logic; avoid generic frameworks or speculative automation. Keep preparation and per-output playback separate where needed for isolation, and do not run events through both the legacy and replacement schedulers.
+Keep architecture changes incremental and concrete. For the standalone-service epic, finish and measure one local event-to-audio path before adding cloud routing or personal pilot selections. Reuse existing libraries and phrase logic; avoid generic frameworks or speculative automation. Keep preparation and per-output playback separate where needed for isolation, and use one event-to-audio path.
 
 RotorHazard phonetic filters and server-side race events are used as callout sources. Heavy work must stay off the RotorHazard event/filter thread. The existing executor schedules callout orchestration, but RotorHazard monkey-patches threading with gevent, so that executor alone does not provide native-thread isolation. Keep Piper synthesis and ONNX session construction behind `PiperSynthesizer._run_native()`; keep RH API calls, queue mutations, and status callbacks outside that native boundary.
 
@@ -71,7 +71,7 @@ Cache keys must include normalized phrase text and synthesis parameters so chang
 
 ## Dependency Policy
 
-The plugin currently imports Piper and ONNX Runtime at module import time. Missing runtime dependencies are expected to fail through the normal RotorHazard/plugin dependency path rather than through a custom lazy-import layer.
+Target a hard cutover in v2.0.0. The plugin entry point always uses the event adapter and must not load Piper or ONNX inside RH. Do not add legacy modes, automatic fallbacks or compatibility adapters for v1. Complete the required local/cloud and cache workflows before releasing v2; rollback means installing the previous release. Remove obsolete implementation and packaging as the shared service code is extracted. Missing runtime dependencies should fail through the normal dependency path.
 
 Keep dependencies aligned between `pyproject.toml` and `custom_plugins/race_voice/manifest.json`.
 

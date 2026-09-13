@@ -2,12 +2,7 @@
 
 Race Voice generates RotorHazard callout WAV files on the timing server and sends them to `sendspin-service` over HTTP. The RotorHazard plugin serves its browser player at `/player`; the Docker image also includes a player at `/`.
 
-Choose the deployment that matches where you want the service to run:
-
-| Deployment | Intended use |
-|---|---|
-| [`.deb` package](#sendspin-service) | Standard race-day setup: a standalone systemd service on **the same Raspberry Pi OS machine as RotorHazard**, with local playback clients. |
-| [Docker Compose](#docker-image) | Cloud hosting: the Sendspin service runs on a cloud server, with the browser player included in the container. |
+**For use with the RotorHazard plugin, we recommend the [`.deb` installation](#sendspin-service) on the same Raspberry Pi OS machine as RotorHazard.** [Docker Compose](#docker-image) is an optional extra for hosting the service in the cloud.
 
 For the standard Raspberry Pi setup, install both the plugin ZIP and service `.deb` from the same release. The plugin provides RotorHazard integration and the `/player` page. The `.deb` runs Sendspin independently as a systemd service on that same Pi, with its own Python runtime and dependencies.
 
@@ -120,7 +115,7 @@ The service API accepts inline WAV payloads via `wav_files`. It does not accept 
 
 ## Docker Image
 
-Docker Compose is the intended deployment path for **running `sendspin-service` in the cloud**. The container runs independently of the RotorHazard machine and includes a browser player at `/`. RotorHazard and playback clients must be able to reach that cloud service. The standard local Raspberry Pi OS setup uses the [`.deb` package](#sendspin-service) on the same Pi as RotorHazard.
+Docker Compose is an **optional extra for cloud hosting**. For use with the RotorHazard plugin, the recommended installation is the [`.deb` package](#sendspin-service) on the same Raspberry Pi OS machine as RotorHazard. The container runs independently of the RotorHazard machine and includes a browser player at `/`. RotorHazard and playback clients must be able to reach that cloud service.
 
 **Already running the `.deb` service on this machine?** [Stop and disable it first](#port-conflicts). Docker publishes the same host ports (`8766` and `8927`) by default and cannot start while the service occupies them. Use one deployment per machine for the normal setup.
 

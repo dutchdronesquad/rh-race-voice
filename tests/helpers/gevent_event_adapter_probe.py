@@ -442,6 +442,24 @@ class AdapterTests(unittest.TestCase):
         self.assertIsNone(publisher._commands._connection)
         self.assertFalse(self.service.command_release.is_set())
 
+    def test_schedule_is_captured_as_state_and_stop_removes_it(self) -> None:
+        """RH publishes the authoritative target without creating countdown timers."""
+        self.connect()
+        target = time.monotonic() + 70
+        generation = self.adapter._generation
+        self.adapter._race_schedule({"scheduled_at": target})
+        wait_for(self.adapter._publisher._ready)
+        self.assertEqual(self.service.state["scheduled_start"], target)
+        self.assertGreater(self.adapter._generation, generation)
+        self.assertFalse(hasattr(self.adapter, "_schedule"))
+        self.adapter._refresh()
+        wait_for(self.adapter._publisher._ready)
+        self.assertEqual(self.service.state["scheduled_start"], target)
+        self.adapter.stop_audio()
+        wait_for(self.adapter._publisher._ready)
+        self.assertIsNone(self.service.state["scheduled_start"])
+        self.assertEqual(self.service.events, [])
+
     def test_clock_refresh_retains_source_session(self) -> None:
         """Refresh clocks independently of synthesis and keep the same publisher."""
         self.connect()
@@ -465,6 +483,10 @@ def integration(url: str) -> None:
         wait_for(lambda: channel.request(url, "GET", "/test/playback")[1]["count"] >= 1)
         adapter._stage({"scheduled_at_monotonic": time.monotonic() + 1})
         wait_for(lambda: channel.request(url, "GET", "/test/playback")[1]["count"] >= 2)
+        adapter.stop_audio()
+        wait_for(adapter._publisher._ready)
+        adapter._race_schedule({"scheduled_at": time.monotonic() + 6})
+        wait_for(lambda: channel.request(url, "GET", "/test/playback")[1]["count"] >= 3)
         adapter.stop_audio()
         wait_for(adapter._publisher._ready)
         adapter.prepare_cache()

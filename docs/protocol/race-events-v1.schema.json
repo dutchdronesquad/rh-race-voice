@@ -339,6 +339,14 @@
         },
         "voice": {
           "$ref": "#/$defs/voice"
+        },
+        "scheduled_start": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Planned race start in the publisher monotonic clock; null or absent means no scheduled countdown."
         }
       },
       "required": [

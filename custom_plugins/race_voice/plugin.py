@@ -212,12 +212,14 @@ class RaceVoicePlugin:
         lap_number: int = payload.get("lap", 0)
         if lap_number == 0:
             return payload  # holeshot - not announced
+        received_at = time.monotonic()
         snapshot = {
+            "received_at": received_at,
             "lap": lap_number,
             "pilot": payload.get("pilot"),
             "callsign": payload.get("callsign"),
             "phonetic": payload.get("phonetic"),
-            "expires_at": time.monotonic() + _LAP_CALLOUT_EXPIRY_SEC,
+            "expires_at": received_at + _LAP_CALLOUT_EXPIRY_SEC,
             "settings": self._settings(),
         }
         self._lap_synthesis.submit(snapshot)
@@ -230,6 +232,7 @@ class RaceVoicePlugin:
             logger.info("Race Voice dropped expired lap synthesis job")
             return
 
+        synthesis_started = time.monotonic()
         settings = snapshot["settings"]
         callout = self._lap_callouts.plan(snapshot, settings.model_name)
 
@@ -241,6 +244,15 @@ class RaceVoicePlugin:
                 wav_paths.append(path)
 
         if wav_paths:
+            ready_at = time.monotonic()
+            received_at = snapshot["received_at"]
+            log = logger.info if ready_at - received_at >= 1.0 else logger.debug
+            log(
+                "Race Voice lap audio ready: wait=%.0fms synthesis=%.0fms total=%.0fms",
+                (synthesis_started - received_at) * 1000,
+                (ready_at - synthesis_started) * 1000,
+                (ready_at - received_at) * 1000,
+            )
             self._enqueue_audio(
                 text=callout.label,
                 wav_paths=wav_paths,

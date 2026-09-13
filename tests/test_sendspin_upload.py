@@ -48,8 +48,18 @@ class SendspinUploadTests(unittest.IsolatedAsyncioTestCase):
     async def test_complete_demo_streams_without_base64(self) -> None:
         """Preserve every byte of the full 132-second track using a raw upload."""
         path = _DEMO_WAV
-        with patch.object(
-            self.adapter, "_wav_files", side_effect=AssertionError("base64 path used")
+        await asyncio.to_thread(self.adapter.health)
+        with (
+            patch.object(
+                self.adapter,
+                "health",
+                side_effect=AssertionError("repeated health check"),
+            ),
+            patch.object(
+                self.adapter,
+                "_wav_files",
+                side_effect=AssertionError("base64 path used"),
+            ),
         ):
             await asyncio.to_thread(
                 self.adapter.play, "audio check", [path], Priority.HIGH

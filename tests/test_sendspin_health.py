@@ -1,7 +1,7 @@
 """Check diagnostics for independently deployed Sendspin services."""
 
 # Use the standard-library test runner; no pytest dependency is needed.
-# ruff: noqa: PT009, PT027
+# ruff: noqa: PT009, PT027, SLF001
 
 from __future__ import annotations
 
@@ -117,6 +117,34 @@ class ServiceHealthTests(unittest.TestCase):
         self.assertEqual(health["aiosendspin_version"], version("aiosendspin"))
         self.assertTrue(health["ok"])
         self.assertEqual(health["connected_clients"], 0)
+
+    def test_startup_health_is_reused_until_service_url_changes(self) -> None:
+        """Avoid repeated health requests while keeping capabilities server-specific."""
+        settings = {"url": "http://localhost:8766"}
+        client = output.SendspinServiceClient(
+            service_url=lambda: settings["url"], timeout_s=lambda: 2.0
+        )
+        wav = Mock()
+        wav.stat.return_value.st_size = 1024 * 1024
+        with patch.object(
+            output.urllib.request,
+            "urlopen",
+            side_effect=[
+                io.BytesIO(b'{"supports_multipart_play":true}'),
+                io.BytesIO(b'{"ok":true}'),
+            ],
+        ) as request:
+            client.health()
+            self.assertTrue(client._use_multipart([wav]))
+            self.assertTrue(client._use_multipart([wav]))
+            request.assert_called_once()
+            settings["url"] = "http://other-timer:8766"
+            self.assertFalse(client._use_multipart([wav]))
+            self.assertFalse(client._use_multipart([wav]))
+            self.assertEqual(request.call_count, 2)
+            self.assertEqual(
+                request.call_args.args[0].full_url, "http://other-timer:8766/health"
+            )
 
 
 if __name__ == "__main__":

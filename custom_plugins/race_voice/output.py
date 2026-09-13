@@ -60,16 +60,23 @@ class SendspinServiceClient:
         """Configure lazy option lookups for each request."""
         self._service_url = service_url
         self._timeout_s = timeout_s
+        self._multipart_support: tuple[str, bool] | None = None
 
     def health(self) -> dict[str, Any]:
         """Read the running service's metadata, propagating request failures."""
+        base_url = self._base_url()
+        self._multipart_support = None
         request = urllib.request.Request(  # noqa: S310
-            f"{self._base_url()}/health", headers={"Accept": "application/json"}
+            f"{base_url}/health", headers={"Accept": "application/json"}
         )
         with urllib.request.urlopen(request, timeout=self._timeout_s()) as response:  # noqa: S310
             payload = json.load(response)
         if not isinstance(payload, dict):
             raise TypeError("Sendspin service health response must be a JSON object")
+        self._multipart_support = (
+            base_url,
+            payload.get("supports_multipart_play") is True,
+        )
         return payload
 
     def play(  # noqa: PLR0913
@@ -114,6 +121,11 @@ class SendspinServiceClient:
                 < _MULTIPART_THRESHOLD_BYTES
             ):
                 return False
+            if (
+                self._multipart_support is not None
+                and self._multipart_support[0] == self._base_url()
+            ):
+                return self._multipart_support[1]
             return self.health().get("supports_multipart_play") is True
         except (OSError, ValueError, TypeError):
             logger.debug("Race Voice: raw upload capability unavailable", exc_info=True)

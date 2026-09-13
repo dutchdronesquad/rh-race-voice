@@ -93,6 +93,7 @@ class RaceVoicePlugin:
         self._sendspin = SendspinServiceClient(
             service_url=self._sendspin_service_url,
             timeout_s=self._sendspin_service_timeout,
+            reuse_audio=True,
         )
         self._audio_queue = AudioQueue(player=self._sendspin.play)
         self._cloud_sendspin = SendspinServiceClient(

@@ -107,7 +107,7 @@ URL and token changes apply to subsequent requests without restarting RotorHazar
 
 Update both the plugin and cloud service to use audio reuse. The service image and `.deb` include the full audio-check track and race tones. The plugin identifies matching files by content and sends a small playback request instead of uploading them, including on the first audio check. The full track remains unchanged.
 
-For generated callouts, the service keeps recently uploaded WAVs in a bounded memory cache (up to 64 MiB and 2,048 entries). Subsequent callouts upload only new segments, such as a new lap time; cached pilot names and lap numbers are referenced directly. Cache eviction or a service restart triggers re-upload only after an explicit cache-miss response, before any audio was queued. A timeout never automatically retries playback.
+For both local and cloud playback, the service keeps recently uploaded WAVs in a bounded memory cache (up to 64 MiB and 2,048 entries). Subsequent callouts upload only new segments, such as a new lap time; cached pilot names and lap numbers are referenced directly. Cache eviction or a service restart triggers re-upload only after an explicit cache-miss response, before any audio was queued. A timeout never automatically retries playback.
 
 Older services continue to receive ordinary uploads and do not gain this optimization until updated. Local output continues independently with no added waiting. Cloud playback still includes network and player buffering delays; this does not promise exact synchronization between servers.
 

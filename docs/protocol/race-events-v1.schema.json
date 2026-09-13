@@ -369,7 +369,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 128,
-          "pattern": "\\S"
+          "pattern": "^\\S+:command:[1-9][0-9]*$"
         },
         "operation": {
           "enum": [

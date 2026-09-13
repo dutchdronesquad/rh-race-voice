@@ -105,6 +105,26 @@ class PreparationPlannerTests(unittest.IsolatedAsyncioTestCase):
         await until(lambda: self.planner._active is None)
         self.ready.assert_not_called()
 
+    async def test_cache_flush_cannot_revive_cancelled_inference(self) -> None:
+        """Restoring admission after a flush cannot revive a swallowed cancellation."""
+        entered = asyncio.Event()
+
+        async def stubborn(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                return (b"obsolete",)
+
+        self.speech.synthesize.side_effect = stubborn
+        self.planner.submit(plan(1), {})
+        await entered.wait()
+        self.current = False
+        self.planner.invalidate()
+        self.current = True
+        await until(lambda: self.planner._active is None)
+        self.ready.assert_not_called()
+
     async def test_rejected_or_expired_tone_cannot_interrupt(self) -> None:
         """A missing asset or missed deadline must not silence usable speech."""
         bad = plan(1, EventKind.TONE)

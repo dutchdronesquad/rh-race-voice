@@ -64,8 +64,8 @@ class RaceEventAdapter:
             self.generate_test_phrase,
             self.audio_check,
             self.stop_audio,
-            self._unavailable,
-            self._unavailable,
+            self.clear_cache,
+            self.prepare_cache,
             event_mode=True,
         )
         for name, label, function in (
@@ -352,10 +352,30 @@ class RaceEventAdapter:
 
     def show_status(self, _args: dict | None = None) -> None:
         """Read publisher status on the RH side, without performing a request."""
-        self._rhapi.ui.message_notify(f"Race Voice: {self._publisher.status}")
+        self._rhapi.ui.message_notify(
+            f"Race Voice: {self._publisher.status}; {self._publisher.command_status}"
+        )
 
-    def _unavailable(self, _args: dict | None = None) -> None:
-        self._rhapi.ui.message_alert("Cache commands are not available in this preview")
+    def prepare_cache(self, _args: dict | None = None) -> None:
+        """Prepare the captured heat roster and reusable phrases in the service."""
+        self._cache_command("prepare")
+
+    def clear_cache(self, _args: dict | None = None) -> None:
+        """Fence old callouts before asking the service to clear the voice cache."""
+        self._cache_command("clear_cache")
+
+    def _cache_command(self, operation: str) -> None:
+        if not self._publisher.can_command():
+            self._rhapi.ui.message_alert(
+                "Check service status: disconnected or a cache command is still running"
+            )
+            return
+        if operation == "clear_cache":
+            self.stop_audio()
+        self._publisher.command(operation)
+        self._rhapi.ui.message_notify(
+            "Cache command queued; use Service status to check progress"
+        )
 
     def close(self, _args: dict | None = None) -> None:
         """Discard timers and transport work on RH shutdown."""

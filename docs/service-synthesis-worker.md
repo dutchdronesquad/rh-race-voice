@@ -1,6 +1,6 @@
 # Standalone synthesis worker
 
-Implementation step for #298, following the contract in #297. The local HTTP preview connects this worker to event admission and playback; the v2 RH adapter publishes events, while manual command forwarding, cache lifecycle completion and primary packaging remain before normal activation. The plugin entry point always uses the v2 adapter; rollback uses the previous release.
+Implementation step for #298, following the contract in #297. The local HTTP preview connects this worker to event admission and playback; the v2 RH adapter publishes events, with manual cache commands and temporary lap cleanup also executed by the service. Primary packaging remains before normal activation. The plugin entry point always uses the v2 adapter; rollback uses the previous release.
 
 `SynthesisWorker` supervises a long-lived Python child through bounded JSON lines over private pipes. The child starts with a fresh interpreter rather than inheriting RotorHazard's monkey-patched process. Only the child imports Piper/ONNX. A failed or timed-out operation reaps that process; the next request starts a new one. Closing the supervisor settles active and pending callers and reaps the child.
 
@@ -10,7 +10,7 @@ Eight pending unique requests and 64 subscribers are allowed initially, alongsid
 
 The worker currently shares `custom_plugins/race_voice/piper.py` and the phrase modules. The plugin initializer defers its RH-specific import until RH calls `initialize`; missing runtime dependencies still fail there. Packaging #303 must include these shared files and Piper dependencies for primary deployments; relay deployments must not start the worker. A source checkout has the shared files; the existing release packages are not yet standalone-primary packages.
 
-New cache filenames include normalized case-sensitive text, canonical tuning, Piper version, and a content digest of the model/config. Existing legacy files are left intact. Reuse/import of legacy filenames requires the compatibility checks in #303 rather than assuming matching model names mean identical audio. File revision signatures avoid hashing the same model for every phrase. A changed model revision invalidates the loaded voice. The serial child needs one cache lock, avoiding a growing lock dictionary for dynamic lap phrases.
+New cache filenames include normalized case-sensitive text, canonical tuning, Piper version, and a content digest of the model/config. Existing v1 files are not imported or used as a fallback; v2 preparation generates entries with the current cache identity. File revision signatures avoid hashing the same model for every phrase. A changed model revision invalidates the loaded voice. The serial child needs one cache lock, avoiding a growing lock dictionary for dynamic lap phrases.
 
 Before admitting the next worker command the supervisor reads generated WAVs into bounded immutable bytes off the asyncio loop (4 MiB per clip). Thus eviction/clear cannot invalidate a returned callout, and multiple destinations can share those bytes. The planner must bound its own retained audio. Worker stderr is inherited instead of being an undrained pipe that can deadlock inference.
 

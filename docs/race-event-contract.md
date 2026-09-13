@@ -1,6 +1,6 @@
 # Race events v1: standalone service contract
 
-Status: implementation contract for #297, part of epic #296. The existing `/v1/play` API remains operational. An explicit [local HTTP preview](service-audio-planner.md#local-http-preview) now wires admission, synthesis and playback. It does not advertise the complete capability: enable `race-events/1` only when adapter follow-through, manual commands and remaining integration checks are complete.
+Status: implementation contract for #297, part of epic #296. The existing `/v1/play` API remains operational. An explicit [local HTTP preview](service-audio-planner.md#local-http-preview) now wires admission, synthesis and playback. It does not advertise the complete capability: enable `race-events/1` only when remaining adapter follow-through and integration checks are complete.
 
 ## Decision and boundaries
 
@@ -93,7 +93,9 @@ Machine-readable wire shapes are in [`protocol/race-events-v1.schema.json`](prot
 
 The inspected RH `emit_phonetic_data` payload contains `pilot_id`, while `pilot` is spoken text. Use `pilot_id` directly. For unassigned nodes RH emits a null ID and may supply the frequency as the spoken name: preserve those laps on the all-pilots programme only; never assign them to a selected pilot by name or node. Do not subscribe to both an underlying lap event and its phonetic filter as independent speakers. Scheduled countdown planning may derive announcement targets from the supplied RH schedule, but may not invent fallback stage/race-clock timers.
 
-Manual commands contain version/session/context, a unique `command_id`, operation `prepare|clear_cache`, and an immutable settings revision. Deduplicate command IDs within the bounded job history; expired history returns "unknown", never silently reruns a destructive command. Return a job ID and expose queued/running/completed/failed/cancelled status. Cache clear increments audio generation, cancels work and uses safe cache ownership; a request cannot supply a filesystem path. Preparation is explicit, fills missing entries, and yields between phrases to live work.
+## Manual commands
+
+Manual commands contain version/session/context, a unique `command_id` in the form `<session_id>:command:<positive sequence>`, operation `prepare|clear_cache`, and an immutable settings revision. Command sequences increase within a source session and do not reset on reconnect. `POST /v2/commands` admits one job at a time; `GET /v2/commands/{command_id}` reads progress. Deduplicate command IDs within the latest 32 job results and retain the session sequence high-water mark; expired history returns "unknown", never silently reruns a destructive command. Return a job ID and expose queued/running/completed/failed/cancelled status. Before requesting cache clear, the publisher increments audio generation and waits for state acknowledgement. Clear cancels work and uses safe cache ownership; a request cannot supply a filesystem path. Preparation is explicit, fills missing entries, and yields between phrases to live work.
 
 ## Ordering, retry and recovery
 

@@ -73,13 +73,15 @@ class WorkerSynthesizer(PiperSynthesizer):
         return hashlib.sha256(content.encode()).hexdigest()
 
 
-def validate_request(data: object) -> dict:
+def validate_request(data: object) -> dict:  # noqa: C901
     """Validate bounded private requests before any file/model operation."""
     if not isinstance(data, dict):
         raise TypeError("Request must be an object")
     operation = data.get("operation")
     if operation not in ("synthesize", "warmup", "clear"):
         raise ValueError("Unknown worker operation")
+    if operation == "clear" and data.get("subdir", "") not in ("", "tmp"):
+        raise ValueError("Clear supports only the full cache or temporary laps")
     if data.get("model") not in VOICE_MODELS:
         raise ValueError("Unknown voice model")
     for key in ("speed", "noise", "noise_w"):
@@ -115,7 +117,8 @@ def execute(tts: WorkerSynthesizer, data: dict) -> dict:
     )
     if data["operation"] == "clear":
         count = 0
-        for path in (tts._tts_dir / model).rglob("*.wav"):  # noqa: SLF001
+        directory = tts._tts_dir / model / data.get("subdir", "")  # noqa: SLF001
+        for path in directory.rglob("*.wav"):
             path.unlink(missing_ok=True)
             count += 1
         return {"cleared": count}

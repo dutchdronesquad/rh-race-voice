@@ -70,6 +70,10 @@ class EventAdapterTests(unittest.IsolatedAsyncioTestCase):
         clips = backend.play.call_args_list[0].args[0]
         self.assertEqual(len(clips), 3)
         self.assertEqual(worker.calls[0]["text"], "Alfa,")
-        self.assertEqual(worker.calls[-1]["text"], "twenty seconds")
-        self.assertEqual(len(worker.calls), 3)
+        self.assertEqual(worker.calls[2]["text"], "twenty seconds")
+        self.assertGreater(len(worker.calls), 3)
+        self.assertEqual(worker.calls[-1]["operation"], "clear")
+        self.assertTrue(
+            any(call.get("subdir") == "precache/clock" for call in worker.calls)
+        )
         self.assertTrue(worker.closed)

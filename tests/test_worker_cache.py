@@ -74,10 +74,22 @@ class WorkerCacheTests(unittest.TestCase):
         first = execute(self.tts, self.request)
         supervisor = SynthesisWorker(self.root)
         audio = supervisor._pin_audio(first["path"])
-        execute(self.tts, self.request | {"operation": "clear"})
+        execute(self.tts, self.request | {"operation": "clear", "subdir": ""})
         self.assertFalse(Path(first["path"]).exists())
         self.assertGreater(len(audio), 44)
         self.assertEqual(audio[:4], b"RIFF")
+
+    def test_temporary_cleanup_preserves_prepared_audio_and_models(self) -> None:
+        """Heat cleanup only removes dynamic lap files, even with a warm cache."""
+        prepared = execute(self.tts, self.request)
+        temporary = execute(self.tts, self.request | {"subdir": "tmp"})
+        result = execute(
+            self.tts, self.request | {"operation": "clear", "subdir": "tmp"}
+        )
+        self.assertEqual(result, {"cleared": 1})
+        self.assertFalse(Path(temporary["path"]).exists())
+        self.assertTrue(Path(prepared["path"]).exists())
+        self.assertTrue(self.model.exists())
 
     def test_paths_and_invalid_tuning_are_rejected(self) -> None:
         """Reject filesystem paths and nonfinite synthesis settings."""

@@ -348,7 +348,7 @@ class RaceVoicePlugin:
         self._synth_pool.submit(
             self._enqueue,
             text,
-            Priority.HIGH,
+            Priority.SIGNAL,
             expires_at,
             self._clock_callouts.subdir,
             settings,
@@ -383,7 +383,7 @@ class RaceVoicePlugin:
         self._synth_pool.submit(
             self._enqueue,
             phrase,
-            Priority.HIGH,
+            Priority.SIGNAL,
             time.monotonic() + 8.0,
             schedule.PRECACHE_SUBDIR,
             settings,

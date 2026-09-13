@@ -187,3 +187,34 @@ class PluginStartupTests(unittest.TestCase):
                 release_cloud.set()
                 self.plugin._audio_queue._queue.join()
                 self.plugin._cloud_audio_queue._queue.join()
+
+    def test_spoken_race_countdown_has_signal_priority(self) -> None:
+        """Remaining-time voice announcements can interrupt ordinary speech."""
+        self.options[plugin_module.ENABLE_OPTION] = True
+        for seconds in (60, 30, 10):
+            with self.subTest(seconds=seconds):
+                self.plugin._on_clock_callout({"seconds_remaining": seconds})
+                job = self.plugin._synth_pool.submit.call_args
+                with patch.object(
+                    self.plugin, "_synthesize", return_value=Path("clock.wav")
+                ):
+                    job.args[0](*job.args[1:], **job.kwargs)
+                self.assertEqual(
+                    self.plugin._audio_queue.enqueue.call_args.kwargs["priority"],
+                    plugin_module.Priority.SIGNAL,
+                )
+
+    def test_spoken_scheduled_start_has_signal_priority(self) -> None:
+        """A spoken pre-start countdown has the same priority as race tones."""
+        self.plugin._enqueue_schedule_callout(
+            "Race begins in 5 seconds", self.plugin._settings()
+        )
+        job = self.plugin._synth_pool.submit.call_args
+        with patch.object(
+            self.plugin, "_synthesize", return_value=Path("schedule.wav")
+        ):
+            job.args[0](*job.args[1:], **job.kwargs)
+        self.assertEqual(
+            self.plugin._audio_queue.enqueue.call_args.kwargs["priority"],
+            plugin_module.Priority.SIGNAL,
+        )

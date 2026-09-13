@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 import binascii
 import contextlib
@@ -15,9 +16,11 @@ from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote
 
-from aiohttp import web
+from aiohttp import BodyPartReader, web
 
+from .audio_cache import AudioCache, MissingAudioError
 from .audio_queue import DEFAULT_EXPIRY_SEC, AudioQueue, Priority, WavItem
 from .player import add_player_routes
 from .sendspin import SendSpinServer
@@ -57,6 +60,12 @@ class SendspinService:
     def __init__(self, config: ServiceConfig) -> None:
         """Initialize the service backend."""
         self._config = config
+        asset_dir = Path(__file__).parent / "assets"
+        if not asset_dir.is_dir():
+            asset_dir = (
+                Path(__file__).resolve().parents[1] / "custom_plugins/race_voice/assets"
+            )
+        self._audio_cache = AudioCache(asset_dir)
         self._sendspin = SendSpinServer(
             host=config.sendspin_host,
             port=config.sendspin_port,
@@ -84,6 +93,9 @@ class SendspinService:
             "connected_players": connected_clients,
             "max_body_bytes": self._config.max_body_bytes,
             "api_auth_required": bool(self._config.api_token),
+            "supports_multipart_play": True,
+            "supports_audio_references": True,
+            "bundled_audio": self._audio_cache.bundled_hashes,
         }
 
     @property
@@ -101,9 +113,17 @@ class SendspinService:
         """Return the optional API bearer token."""
         return self._config.api_token
 
-    def play(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Queue a playback request from a JSON payload."""
-        wav_items = _wav_items(payload)
+    def play(
+        self, payload: dict[str, Any], wav_items: list[WavItem] | None = None
+    ) -> dict[str, Any]:
+        """Queue playback options with inline or separately uploaded WAV data."""
+        if wav_items is None:
+            wav_items = _wav_items(payload)
+        cached_audio = None
+        if "wav_refs" in payload:
+            wav_items, cached_audio = self._audio_cache.resolve(
+                payload["wav_refs"], wav_items
+            )
         if not wav_items:
             raise ValueError("wav_files must contain at least one WAV")
         priority = _priority(payload.get("priority"))
@@ -119,7 +139,10 @@ class SendspinService:
             play_at=play_at,
             volume=volume,
         )
-        return {"queued": True, "count": len(wav_items)}
+        result = {"queued": True, "count": len(wav_items)}
+        if cached_audio is not None:
+            result["cached_audio"] = cached_audio
+        return result
 
     def stop(self) -> dict[str, Any]:
         """Stop active playback and clear queued jobs."""
@@ -153,23 +176,45 @@ async def _health(request: web.Request) -> web.Response:
 
 
 async def _play(request: web.Request) -> web.Response:
-    """Queue playback from a JSON request body."""
+    """Queue playback from JSON or streaming multipart uploads."""
+    started = time.monotonic()
+    logger.info(
+        "Sendspin service received %s: content_length=%s",
+        request.path,
+        request.content_length,
+    )
     try:
-        payload = await _read_json(request)
-        return web.json_response(_service(request).play(payload), status=202)
+        if request.content_type == "multipart/form-data":
+            payload, wav_items = await _read_multipart_play(request)
+            result = await asyncio.to_thread(_service(request).play, payload, wav_items)
+        else:
+            payload = await _read_json(request)
+            result = await asyncio.to_thread(_service(request).play, payload)
+        return web.json_response(result, status=202)
     except web.HTTPRequestEntityTooLarge:
         return web.json_response({"error": "request body too large"}, status=413)
+    except MissingAudioError as exc:
+        return web.json_response({"missing_audio": exc.hashes}, status=409)
     except (TypeError, ValueError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception:
         logger.exception("Sendspin service request failed: %s", request.path)
         return web.json_response({"error": "internal server error"}, status=500)
+    finally:
+        elapsed = time.monotonic() - started
+        if elapsed >= 1.0:
+            logger.warning(
+                "Sendspin service slow request: %s took %.3fs",
+                request.path,
+                elapsed,
+            )
 
 
 async def _stop(request: web.Request) -> web.Response:
     """Stop active playback and clear queued audio."""
     try:
-        return web.json_response(_service(request).stop())
+        result = await asyncio.to_thread(_service(request).stop)
+        return web.json_response(result)
     except Exception:
         logger.exception("Sendspin service stop request failed")
         return web.json_response({"error": "internal server error"}, status=500)
@@ -211,12 +256,55 @@ async def _read_json(request: web.Request) -> dict[str, Any]:
             actual_size=content_length,
         )
     try:
-        payload = await request.json(loads=json.loads)
+        body = await request.read()
+        payload = await asyncio.to_thread(json.loads, body)
     except json.JSONDecodeError as exc:
         raise ValueError("invalid JSON body") from exc
     if not isinstance(payload, dict):
         raise TypeError("JSON body must be an object")
     return payload
+
+
+async def _read_multipart_play(
+    request: web.Request,
+) -> tuple[dict[str, Any], list[WavItem]]:
+    """Read metadata and raw WAV parts without base64 or a large JSON document."""
+    limit = _service(request).max_body_bytes
+    if request.content_length is not None and request.content_length > limit:
+        raise web.HTTPRequestEntityTooLarge(
+            max_size=limit, actual_size=request.content_length
+        )
+    reader = await request.multipart()
+    payload: dict[str, Any] | None = None
+    items: list[WavItem] = []
+    total = 0
+    async for part in reader:
+        if not isinstance(part, BodyPartReader):
+            raise TypeError("nested multipart bodies are not supported")
+        if part.name not in {"metadata", "wav_files"}:
+            raise ValueError("unexpected multipart field")
+        data = await _read_upload_part(part, limit - total)
+        total += len(data)
+        if part.name == "metadata":
+            if payload is not None:
+                raise ValueError("duplicate metadata field")
+            payload = await asyncio.to_thread(json.loads, data)
+            if not isinstance(payload, dict):
+                raise TypeError("metadata must be a JSON object")
+        else:
+            items.append(WavItem(name=unquote(part.filename or "audio.wav"), data=data))
+    if payload is None:
+        raise ValueError("missing metadata field")
+    return payload, items
+
+
+async def _read_upload_part(part: BodyPartReader, limit: int) -> bytes:
+    data = bytearray()
+    while chunk := await part.read_chunk(size=64 * 1024):
+        data.extend(chunk)
+        if len(data) > limit:
+            raise web.HTTPRequestEntityTooLarge(max_size=limit, actual_size=len(data))
+    return bytes(data)
 
 
 def _service(request: web.Request) -> SendspinService:

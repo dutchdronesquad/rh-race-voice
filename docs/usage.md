@@ -1,11 +1,11 @@
 # Usage Guide
 
-Race Voice sends RotorHazard audio to one Sendspin server at a time:
+Race Voice can send the same RotorHazard audio to local and cloud Sendspin servers simultaneously:
 
 - **Recommended:** the `.deb` service on the same Raspberry Pi OS machine as RotorHazard. Listen through the plugin's `/player` page or WindowsSpin on another LAN device.
-- **Optional:** [Docker Compose in the cloud](#docker-image), with its own browser player. Change **Sendspin service URL** in RotorHazard to select it.
+- **Optional:** [Docker Compose in the cloud](#docker-image), with its own browser player. Fill in **Cloud Sendspin service URL** and **Cloud Sendspin API token** in RotorHazard to add it alongside local playback.
 
-Parallel output to both servers is not supported. The plugin and selected service can be updated independently while the service supports the API required by the plugin.
+Each output has its own queue: a slow or unavailable cloud server does not block local uploads. The plugin and services can be updated independently while each service supports the API required by the plugin.
 
 ## Setup
 
@@ -92,13 +92,24 @@ docker compose up -d
 
 The Compose file builds from source. To use the published image, replace its `build:` block with `image: ghcr.io/dutchdronesquad/sendspin-service:latest`. Runtime settings are in `.env`.
 
-To use the cloud service:
+To add cloud playback alongside the local service, keep **Sendspin service URL** at `http://127.0.0.1:8766`:
 
-1. Set RotorHazard's **Sendspin service URL** to the cloud HTTP API base URL (port `8766` by default).
-2. Open the cloud player at `http://<cloud-host>:8766/` and connect it to that server's Sendspin endpoint on port `8927`.
-3. Run **Play audio check** in RotorHazard.
+1. Set RotorHazard's **Cloud Sendspin service URL** to the cloud HTTP(S) API base URL, for example `https://audio.example.com` when using an HTTPS reverse proxy (direct HTTP uses port `8766` by default). This must be the Race Voice `sendspin-service` API, not a player WebSocket URL or an arbitrary Sendspin server.
+2. Set **Cloud Sendspin API token** to the same value as `SENDSPIN_API_TOKEN` in the cloud service's `.env`. Enter only the token, without the `Bearer` prefix. Use HTTPS for public cloud API connections.
+3. Open the cloud player and connect it to that server's Sendspin endpoint (port `8927` by default).
+4. Run **Play audio check** in RotorHazard.
 
-The plugin sends only to the selected server. Set its URL back to `http://127.0.0.1:8766` to use the local service again.
+Callouts, staging tones, test phrases and the audio check now go to both servers. **Stop audio** clears both queues and requests a stop on both services. Each queue retains audio priorities, expiry and scheduled playback. The two servers synchronize their own players; exact synchronization between local and cloud listeners is not guaranteed.
+
+URL and token changes apply to subsequent requests without restarting RotorHazard. Clear **Cloud Sendspin service URL** to return to local-only playback. Stop audio before changing a destination so the old service does not retain scheduled audio. An identical primary and cloud URL is sent to only once.
+
+### Faster cloud playback
+
+Update both the plugin and cloud service to use audio reuse. The service image and `.deb` include the full audio-check track and race tones. The plugin identifies matching files by content and sends a small playback request instead of uploading them, including on the first audio check. The full track remains unchanged.
+
+For generated callouts, the service keeps recently uploaded WAVs in a bounded memory cache (up to 64 MiB and 2,048 entries). Subsequent callouts upload only new segments, such as a new lap time; cached pilot names and lap numbers are referenced directly. Cache eviction or a service restart triggers re-upload only after an explicit cache-miss response, before any audio was queued. A timeout never automatically retries playback.
+
+Older services continue to receive ordinary uploads and do not gain this optimization until updated. Local output continues independently with no added waiting. Cloud playback still includes network and player buffering delays; this does not promise exact synchronization between servers.
 
 For a public deployment, set `SENDSPIN_API_TOKEN`; producers must send `Authorization: Bearer <token>` for `/v1/play` and `/v1/stop`. Keep the token unset only for local testing on a trusted machine.
 
@@ -183,9 +194,9 @@ Multiple devices can connect simultaneously and will receive the same audio in s
 
 The player stores the server URL in the browser's local storage and reconnects automatically if the connection drops.
 
-Use **Check Sendspin service** in the Race Voice panel to check the configured service's health and the installed `aiosendspin` version. **Play audio check** runs the same check before queuing audio. The bundled browser player requires `aiosendspin` 9.0.0 or newer; the plugin and service release numbers do not need to match. Passing the minimum-version check does not verify browser connectivity or audio output.
+Race Voice checks each configured Sendspin service's health and installed `aiosendspin` version automatically in the background when RotorHazard starts. Successful checks are logged; problems produce warnings. **Play audio check** queues the test audio directly. The bundled browser player requires `aiosendspin` 9.0.0 or newer; the plugin and service release numbers do not need to match. Passing the minimum-version check does not verify browser connectivity or audio output.
 
-An older service may not report its `aiosendspin` version. In that case the plugin warns that browser compatibility cannot be verified. Version warnings still allow the audio check to run for existing players; an unreachable or unhealthy service prevents it from being queued. Update the separate `sendspin-service` installation to address a backend version mismatch: updating RotorHazard's venv does not update the service's bundled Python environment. If an update prevents the service from starting, check `journalctl -u sendspin-service` for dependency or startup errors.
+An older service may not report its `aiosendspin` version. In that case the plugin warns that browser compatibility cannot be verified. A startup warning does not disable later playback attempts. Update the separate `sendspin-service` installation to address a backend version mismatch: updating RotorHazard's venv does not update the service's bundled Python environment. If an update prevents the service from starting, check `journalctl -u sendspin-service` for dependency or startup errors.
 
 The service supports `aiosendspin` 9.x and stores its server identity and pairing data in systemd's state directory (`/var/lib/sendspin-service` for the `.deb`). Standalone runs default to `~/.local/share/sendspin-service`; `SENDSPIN_STATE_DIR` overrides the location. Docker Compose keeps this directory in the `sendspin-state` volume. Preserve these files across updates so the server retains its identity. Playback remains open to clients that can reach port `8927`: encrypted browser players are admitted automatically, and legacy unencrypted players remain supported.
 
@@ -214,8 +225,9 @@ Use **Sync** for most race-day setups. Switch to **Quality** if playback resets 
 ### Options
 
 - **Enable plugin audio**: Turns Race Voice callout generation on or off.
-- **Sendspin service URL**: HTTP endpoint for `sendspin-service`. Default: `http://127.0.0.1:8766` when the plugin and service run on the same host.
-- **Sendspin service timeout**: HTTP timeout for queue/stop requests to `sendspin-service`.
+- **Sendspin service URL**: Local HTTP API endpoint for `sendspin-service`; no API token is sent. Default: `http://127.0.0.1:8766` when the plugin and service run on the same host.
+- **Cloud Sendspin service URL**: Additional HTTP(S) API endpoint for simultaneous cloud playback. Empty by default; leave empty to disable the additional output.
+- **Cloud Sendspin API token**: Token matching `SENDSPIN_API_TOKEN` on the cloud service. The local service does not need a token.
 - **Voice model**: Piper voice model. Models are downloaded once and reused.
 - **Speech speed**: Speaking rate. `1.0` is Piper default. Range: `0.5`–`2.0`.
 - **Noise scale**: Voice variation. `0.0` is monotone, `1.0` is expressive. Default: `0.667`.
@@ -274,7 +286,7 @@ Cache behavior:
 
 The `.deb` service and Docker variant both use TCP ports `8766` (HTTP API) and `8927` (Sendspin) by default. If you start both on the same machine, the second deployment can fail with `Address already in use` or `port is already allocated`.
 
-This conflict applies only to overlapping ports on the same host. A `.deb` service on the RotorHazard Pi and a Docker service on a separate cloud host can both run. RotorHazard still sends to only the server selected in its settings.
+This conflict applies only to overlapping ports on the same host. A `.deb` service on the RotorHazard Pi and a Docker service on a separate cloud host can both run. Configure the primary and cloud URLs in RotorHazard to send audio to both.
 
 If both deployments occupy the same host, choose which one should use the default ports:
 
@@ -283,7 +295,13 @@ If both deployments occupy the same host, choose which one should use the defaul
 
 Check `systemctl status sendspin-service --no-pager` and `docker ps` to confirm which deployment is running. If a port is still occupied, `sudo ss -ltnp '( sport = :8766 or sport = :8927 )'` shows the listeners. Verify the retained service with **Play audio check**.
 
-Running both on the same host requires separate host ports for each deployment. Set RotorHazard and the intended playback clients to the same selected server; using separate ports does not enable parallel output from the plugin.
+Running both on the same host requires separate host ports for each deployment. Set the primary and cloud URLs to the respective API ports and connect each player to its intended service.
+
+### Cloudflare blocks uploads (403 / error code 1010)
+
+[Cloudflare error 1010](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1010/) means Cloudflare rejected the client's browser signature before the request reached Sendspin. Changing the API token or timeout does not resolve this block.
+
+The plugin identifies its requests with a `RaceVoice/1.0` User-Agent. This does not guarantee admission through Cloudflare. If the block persists, configure a [Browser Integrity Check exception](https://developers.cloudflare.com/waf/tools/browser-integrity-check/#disable-selectively) limited to your cloud API hostname and the `/health`, `/v1/play` and `/v1/stop` paths. Keep the service's API token enabled. Then retry **Play audio check**.
 
 ### Other issues
 
@@ -291,7 +309,7 @@ Running both on the same host requires separate host ports for each deployment. 
 - **Service unreachable**: confirm `curl http://127.0.0.1:8766/health` works from the RotorHazard host.
 - **Playback fails after an update**: check service health, RotorHazard logs, and service logs for the actual failure. Record the plugin release and the service `version` from `curl http://127.0.0.1:8766/health` for diagnosis; different release numbers alone do not indicate incompatibility. Check release notes for any service requirement before upgrading, then retry **Play audio check**.
 - **Player page unreachable**: confirm `<RotorHazard UI base URL>/player` works from the playback device.
-- **Some players hear different or duplicate audio**: verify that each player connects to the server selected by RotorHazard's **Sendspin service URL**. If multiple services run on the same host, give them distinct host ports. Check both `systemctl status sendspin-service` and `docker ps` on hosts where you have tested container deployments.
+- **Some players hear different or duplicate audio**: verify that each player connects to the intended primary or cloud service. Avoid playing both streams on the same device. If multiple services run on the same host, give them distinct host ports. Check both `systemctl status sendspin-service` and `docker ps` on hosts where you have tested container deployments.
 - **Duplicate voice callouts or tones**: set RotorHazard Voice Volume and Tone Volume to `0` in regular RotorHazard browser clients.
 - **First phrase is slow**: the selected Piper model may still be downloading or loading.
 - **Browser playback stutters**: test Safari or Chrome incognito with extensions disabled, then validate on the race network.

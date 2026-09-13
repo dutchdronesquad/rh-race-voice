@@ -8,3 +8,7 @@
 !sendspin_player/**
 !sendspin_service/
 !sendspin_service/**
+!custom_plugins/
+!custom_plugins/race_voice/
+!custom_plugins/race_voice/assets/
+!custom_plugins/race_voice/assets/*.wav

@@ -1,0 +1,55 @@
+---
+name: Build Sendspin Service Docker image
+description: Build the service image and optionally publish it to GHCR.
+
+inputs:
+  platforms:
+    description: Docker target platforms
+    default: linux/amd64
+  tags:
+    description: Tag rules for docker/metadata-action
+    default: type=sha,prefix=sha-
+  service-version:
+    description: Service version override; otherwise use the generated Docker version
+    required: false
+  push:
+    description: Publish the image to GHCR
+    default: "false"
+  registry-token:
+    description: GitHub token with packages write permission, required when pushing
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - name: 🏗 Set up QEMU
+      if: contains(inputs.platforms, 'arm64')
+      uses: docker/setup-qemu-action@v4.3.0
+    - name: 🏗 Set up Docker Buildx
+      uses: docker/setup-buildx-action@v4.3.0
+    - name: 🔐 Log in to GHCR
+      if: inputs.push == 'true'
+      uses: docker/login-action@v4.6.0
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ inputs.registry-token }}
+    - name: 🧾 Docker metadata
+      id: meta
+      uses: docker/metadata-action@v6.2.0
+      with:
+        images: ghcr.io/${{ github.repository_owner }}/sendspin-service
+        tags: ${{ inputs.tags }}
+    - name: 🏗 Build Docker image
+      uses: docker/build-push-action@v7.3.0
+      with:
+        context: .
+        file: Dockerfile
+        platforms: ${{ inputs.platforms }}
+        push: ${{ inputs.push }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        build-args: |
+          SERVICE_VERSION=${{ inputs.service-version || steps.meta.outputs.version }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max

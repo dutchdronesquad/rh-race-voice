@@ -6,8 +6,7 @@ on:
     types: [published]
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 jobs:
   build-player:
@@ -30,10 +29,12 @@ jobs:
         working-directory: sendspin_player
       - name: 📦 Package plugin
         run: zip -r race_voice.zip custom_plugins
-      - name: ⬆️ Upload release asset
-        uses: softprops/action-gh-release@v3.0.3
+      - name: ⬆️ Upload plugin artifact
+        uses: actions/upload-artifact@v7.0.1
         with:
-          files: race_voice.zip
+          name: release-plugin
+          path: race_voice.zip
+          if-no-files-found: error
 
   build-deb:
     name: Build ${{ matrix.arch }} .deb
@@ -59,59 +60,53 @@ jobs:
           for deb in dist/sendspin-service_*_${{ matrix.arch }}.deb; do
             sha256sum "$deb" > "$deb.sha256"
           done
-      - name: ⬆️ Upload release asset
-        uses: softprops/action-gh-release@v3.0.3
+      - name: ⬆️ Upload package artifacts
+        uses: actions/upload-artifact@v7.0.1
         with:
-          files: |
+          name: release-deb-${{ matrix.arch }}
+          if-no-files-found: error
+          path: |
             dist/sendspin-service_*.deb
             dist/sendspin-service_*.deb.sha256
 
-  publish-installer:
-    name: Publish service installer
+  publish:
+    name: Publish release assets and Docker image
     needs: [build-player, build-deb]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
     steps:
       - name: ⤵️ Check out code from GitHub
         uses: actions/checkout@v7.0.1
-      - name: ⬆️ Upload installer
-        uses: softprops/action-gh-release@v3.0.3
+      - name: ⤵️ Download release artifacts
+        uses: actions/download-artifact@v8.0.1
         with:
-          files: tools/install-sendspin-service.sh
-
-  build-docker:
-    name: Build Docker image
-    runs-on: ubuntu-latest
-    steps:
-      - name: ⤵️ Check out code from GitHub
-        uses: actions/checkout@v7.0.1
-      - name: 🏗 Set up QEMU
-        uses: docker/setup-qemu-action@v4.3.0
-      - name: 🏗 Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4.3.0
-      - name: 🔐 Log in to GHCR
-        uses: docker/login-action@v4.6.0
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: 🧾 Verify release assets
+        run: |
+          test -s dist/race_voice.zip
+          for arch in amd64 arm64; do
+            sha256sum --check "dist/sendspin-service_"*"_${arch}.deb.sha256"
+          done
+          test -s tools/install-sendspin-service.sh
+      - name: 🏗 Build and publish Docker image
+        uses: ./.github/actions/build-sendspin-docker
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: 🧾 Docker metadata
-        id: meta
-        uses: docker/metadata-action@v6.2.0
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/sendspin-service
+          platforms: linux/amd64,linux/arm64
+          push: "true"
+          registry-token: ${{ secrets.GITHUB_TOKEN }}
           tags: |
             type=semver,pattern={{version}}
             type=raw,value=latest,enable=${{ !github.event.release.prerelease }}
-      - name: 🏗 Build and publish Docker image
-        uses: docker/build-push-action@v7.3.0
+      - name: ⬆️ Upload release assets
+        uses: softprops/action-gh-release@v3.0.3
         with:
-          context: .
-          file: Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            SERVICE_VERSION=${{ steps.meta.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          fail_on_unmatched_files: true
+          files: |
+            dist/race_voice.zip
+            dist/sendspin-service_*.deb
+            dist/sendspin-service_*.deb.sha256
+            tools/install-sendspin-service.sh

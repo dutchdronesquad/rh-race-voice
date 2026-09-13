@@ -173,6 +173,11 @@ def _build_app(runtime_python: Path) -> None:
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
         dirs_exist_ok=True,
     )
+    shutil.copytree(
+        PROJECT_ROOT / "custom_plugins/race_voice/assets",
+        APP_BUILD_ROOT / "sendspin_service/assets",
+        dirs_exist_ok=True,
+    )
 
 
 def _uv_python(python_version: str) -> Path:

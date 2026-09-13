@@ -7,6 +7,7 @@ import contextlib
 import io
 import logging
 import os
+import socket
 import threading
 import time
 import wave
@@ -280,7 +281,7 @@ class SendSpinServer:
         server = AioSendspinServer(
             loop=asyncio.get_running_loop(),
             identity=identity,
-            server_name="Sendspin Service",
+            server_name=f"Sendspin ({socket.gethostname()})",
             pairing_store=pairing_store,
             allow_unencrypted=True,
         )

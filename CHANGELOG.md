@@ -4,9 +4,27 @@ All notable shipped changes to Race Voice should be documented in this file.
 
 This changelog is intentionally concise. GitHub Releases can carry the fuller change list and release assets.
 
-## [1.1.0] - Unreleased
+## [Unreleased]
 
-### Upgrade requirements
+## [1.2.0] - 2026-09-13
+
+### Cloud playback
+
+Stream the same callouts and race sounds locally and to an authenticated cloud service simultaneously. Keep the local service URL and fill in **Cloud Sendspin service URL** and **Cloud Sendspin API token**. Separate queues keep cloud delays from holding up local audio; **Stop audio** acts on both outputs.
+
+### Faster cloud audio
+
+The audio check and race tones can play from files included with the cloud service, avoiding a full upload on each click. Repeated callouts reuse previously uploaded segments. Update both plugin and service for this optimization; older services retain the upload-based behavior. The complete test track is preserved, and local race audio keeps playing immediately.
+
+### Sendspin reliability and diagnostics
+
+- Large audio uploads, including the full audio-check track, are streamed to the service to avoid request-size failures.
+- Each configured service is checked automatically in the background when RotorHazard starts. Successful checks are logged and problems produce warnings; **Play audio check** plays the test audio directly.
+- Sendspin server names now include the hostname, making local and cloud services easier to distinguish in players.
+
+## [1.1.0] - 2026-09-13
+
+### ⚠️ Upgrade requirements
 
 Requires **RHAPI 1.5 or newer**, currently available in RotorHazard 4.5.0-beta.1. RotorHazard 4.4.0 is unsupported. Update the Sendspin service to **1.1.0** for the new scheduled race sounds; service 1.0.0 lacks the required timing support.
 
@@ -23,10 +41,6 @@ Adds staging beeps, a race-start buzzer, spoken reminders at 60, 30, and 10 seco
 ### Sendspin 9.x playback
 
 Fixes service startup and browser connections with `aiosendspin` 9.x. The service keeps its server identity across restarts and admits browser players using the encrypted handshake. Existing unencrypted players remain supported.
-
-### Sendspin service diagnostics
-
-**Check Sendspin service** reports service health and checks the backend version needed by the browser player. **Play audio check** also shows these diagnostics, including when an older service cannot report its dependency version.
 
 ## [1.0.0] - 2026-05-30
 

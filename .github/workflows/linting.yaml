@@ -11,7 +11,7 @@ env:
   DEFAULT_PYTHON: "3.13"
 
 jobs:
-  service-installer:
+  shellcheck:
     name: Shell scripts
     runs-on: ubuntu-latest
     steps:

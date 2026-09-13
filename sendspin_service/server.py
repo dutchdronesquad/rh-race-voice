@@ -12,6 +12,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
+from importlib.metadata import version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -74,6 +75,7 @@ class SendspinService:
             "ok": True,
             "status": "ok",
             "version": SERVICE_VERSION,
+            "aiosendspin_version": version("aiosendspin"),
             "api_host": self._config.api_host,
             "api_port": self._config.api_port,
             "sendspin_host": self._config.sendspin_host,

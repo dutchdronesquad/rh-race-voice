@@ -87,9 +87,11 @@ Expired jobs are dropped before playback starts. This avoids playing stale lap c
 
 ## TTS Concurrency
 
-Piper synthesis uses ONNX Runtime on CPU. ONNX Runtime serializes `session.run()` calls within a process, so multiple concurrent synthesis threads do not improve throughput.
+Piper inference and ONNX session construction run through `gevent.get_hub().threadpool.apply()`. RotorHazard calls `gevent.monkey.patch_all()` before loading plugins, so the ordinary `ThreadPoolExecutor` can use greenlets on RH's event-loop thread instead of native worker threads. It remains responsible for callout orchestration, while the blocking synthesis/model-loading operations explicitly cross the native-thread boundary.
 
-The plugin uses one shared `InferenceSession` with `intra_op_num_threads` set to the available CPU count. A `ThreadPoolExecutor` is still used to keep RotorHazard event callbacks non-blocking and to absorb bursts of race events.
+A cooperative lock serializes those native operations, including manual warmup and test phrases. ONNX uses at most two compute threads (one on a single- or dual-core host). The bounded lap queue still keeps at most four pending laps. RH API access, status notifications, queue admission and completion callbacks stay on the calling side; do not move those operations into the native pool.
+
+This prevents a synchronous Piper call from directly occupying the RH event-loop thread. It does not remove synthesis time, CPU contention, or Sendspin playback buffering. The regression suite reproduces RH monkey-patching in a subprocess and checks heartbeat progress during synthesis, warmup and model loading, as well as cache reuse, failure recovery and callback thread affinity.
 
 ## Cache Layout
 

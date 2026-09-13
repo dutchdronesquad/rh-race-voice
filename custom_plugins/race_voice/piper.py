@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import onnxruntime
+from gevent import get_hub
 from piper import PiperVoice
 from piper.config import PiperConfig, SynthesisConfig
 
@@ -69,6 +70,7 @@ class PiperSynthesizer:
         self._voice: Any | None = None
         self._loaded_model: str | None = None
         self._voice_lock = threading.Lock()
+        self._native_lock = threading.Lock()
         self._cache_locks: dict[tuple[str, str, str], threading.Lock] = {}
         self._cache_locks_lock = threading.Lock()
 
@@ -124,7 +126,8 @@ class PiperSynthesizer:
             try:
                 buf = io.BytesIO()
                 with wave.open(buf, "wb") as wav_file:
-                    voice.synthesize_wav(
+                    self._run_native(
+                        voice.synthesize_wav,
                         normalized_text,
                         wav_file,
                         syn_config=self._make_syn_config(params),
@@ -179,8 +182,11 @@ class PiperSynthesizer:
         try:
             buf = io.BytesIO()
             with wave.open(buf, "wb") as wav_file:
-                voice.synthesize_wav(
-                    "ready", wav_file, syn_config=self._make_syn_config(params)
+                self._run_native(
+                    voice.synthesize_wav,
+                    "ready",
+                    wav_file,
+                    syn_config=self._make_syn_config(params),
                 )
         except Exception:
             logger.exception("Race Voice: model preparation failed for %s", model_name)
@@ -188,6 +194,18 @@ class PiperSynthesizer:
         else:
             logger.info("Race Voice: model prepared for %s", model_name)
             return True
+
+    def _run_native[T](
+        self, function: Callable[..., T], *args: Any, **kwargs: Any
+    ) -> T:
+        """Offload only blocking Piper/ONNX work, retaining RH calls on the hub.
+
+        RotorHazard monkey-patches threading, so its ordinary executor does not
+        isolate inference from the gevent event loop. The hub's native pool does.
+        Hold a cooperative lock on the calling side to serialize native work.
+        """
+        with self._native_lock:
+            return get_hub().threadpool.apply(function, args, kwargs)
 
     def _load_voice(self, model_name: str) -> Any | None:
         """Load the selected Piper model once, downloading files if necessary."""
@@ -213,7 +231,8 @@ class PiperSynthesizer:
                 )
                 self._voice = PiperVoice(
                     config=PiperConfig.from_dict(config_dict),
-                    session=onnxruntime.InferenceSession(
+                    session=self._run_native(
+                        onnxruntime.InferenceSession,
                         str(model_path),
                         sess_options=sess_options,
                         providers=["CPUExecutionProvider"],

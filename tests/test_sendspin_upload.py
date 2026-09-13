@@ -347,3 +347,23 @@ class SendspinUploadTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.to_thread(self.adapter.play, "test", [path], Priority.NORMAL)
         request.assert_called_once()
         self.queue.enqueue.assert_not_called()
+
+    async def test_local_reuse_reduces_repeated_uploads(self) -> None:
+        """Reuse a local clip without changing its playback metadata."""
+        adapter = self.cloud_adapter()
+        path = self.directory / "pilot.wav"
+        path.write_bytes(b"pilot segment" * 1000)
+        await asyncio.to_thread(adapter.play, "first", [path], Priority.NORMAL)
+        with patch.object(
+            output.urllib.request, "urlopen", wraps=output.urllib.request.urlopen
+        ) as request:
+            await asyncio.to_thread(
+                adapter.play, "second", [path], Priority.HIGH, None, None, 0.4
+            )
+        body = request.call_args.args[0].data
+        self.assertLess(len(body), path.stat().st_size // 10)
+        self.assertEqual(json.loads(body)["wav_files"], [])
+        job = self.queue.enqueue.call_args.kwargs
+        self.assertEqual(job["priority"], Priority.HIGH)
+        self.assertEqual(job["volume"], 0.4)
+        self.assertEqual(job["wav_items"][0].data, path.read_bytes())

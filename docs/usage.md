@@ -2,7 +2,9 @@
 
 Race Voice generates RotorHazard callout WAV files on the timing server and sends them to `sendspin-service` over HTTP. The RotorHazard plugin serves its browser player at `/player`; the Docker image also includes a player at `/`.
 
-**For use with the RotorHazard plugin, we recommend the [`.deb` installation](#sendspin-service) on the same Raspberry Pi OS machine as RotorHazard.** [Docker Compose](#docker-image) is an optional extra for hosting the service in the cloud.
+**For use with the RotorHazard plugin, we recommend the [`.deb` installation](#sendspin-service) on the same Raspberry Pi OS machine as RotorHazard.** Playback clients such as WindowsSpin can run on another PC on the same network. [Docker Compose](#docker-image) is an optional cloud deployment with its own browser player.
+
+The plugin currently sends audio to **one Sendspin server at a time**, selected by **Sendspin service URL**. You can select the local service or the cloud service. Sending to both in parallel is not currently supported.
 
 For the standard Raspberry Pi setup, install both the plugin ZIP and service `.deb` from the same release. The plugin provides RotorHazard integration and the `/player` page. The `.deb` runs Sendspin independently as a systemd service on that same Pi, with its own Python runtime and dependencies.
 
@@ -11,7 +13,7 @@ For the standard Raspberry Pi setup, install both the plugin ZIP and service `.d
 1. [Install and verify `sendspin-service`](#sendspin-service).
 2. In RotorHazard, open **Settings** -> **Race Voice**.
 3. Enable **Plugin audio**.
-4. Set **Sendspin service URL** to `http://127.0.0.1:8766` for a service on the RotorHazard host, or `http://<service-host>:8766` for a [separate machine](#running-on-a-separate-machine).
+4. Keep **Sendspin service URL** at `http://127.0.0.1:8766` for the local `.deb` installation. To use the cloud service, follow [Docker Image](#docker-image) and change this setting to its HTTP API base URL.
 5. Choose a voice model and speech settings.
 6. Open the browser player from the RotorHazard UI on the playback device, for example `<RotorHazard UI base URL>/player`.
 7. Set normal RotorHazard browser Voice Volume and Tone Volume to `0` on clients that should not play duplicate built-in callouts, staging tones, or start sounds.
@@ -66,35 +68,18 @@ If the service is not running or the health check fails, inspect its logs:
 journalctl -u sendspin-service -n 80 --no-pager
 ```
 
-### Running on a separate machine
+### Listening from another PC on the local network
 
-This is an advanced option for a separate Debian-based machine on your local network. The standard `.deb` setup uses the same Raspberry Pi as RotorHazard. For cloud hosting, follow the [Docker Compose instructions](#docker-image).
+The `.deb` service runs on the same machine as RotorHazard. Keep RotorHazard's **Sendspin service URL** at `http://127.0.0.1:8766` and keep `SENDSPIN_INGEST_HOST=127.0.0.1` in the service configuration.
 
-Install the package on the service machine using the steps above. By default, the HTTP API listens only on `127.0.0.1`, so RotorHazard on another machine cannot reach it.
+To listen from WindowsSpin on another PC, connect it to the RotorHazard machine's LAN IP address or hostname on port `8927`. For example, if the Pi is `192.168.1.50`, the connection is:
 
-1. On the service machine, open the configuration:
+```text
+RotorHazard -> http://127.0.0.1:8766 -> local Sendspin service
+WindowsSpin on another PC -> 192.168.1.50:8927 -> local Sendspin service
+```
 
-   ```shell
-   sudo nano /etc/default/sendspin-service
-   ```
-
-   Change `SENDSPIN_INGEST_HOST=127.0.0.1` to `SENDSPIN_INGEST_HOST=0.0.0.0` to listen on its network interfaces, then save the file.
-
-2. Apply the change:
-
-   ```shell
-   sudo systemctl restart sendspin-service
-   ```
-
-3. From the **RotorHazard host**, check the connection, replacing `<service-host>` with the service machine's LAN IP address or hostname:
-
-   ```shell
-   curl --fail http://<service-host>:8766/health
-   ```
-
-4. Set RotorHazard's **Sendspin service URL** to `http://<service-host>:8766`. In each browser player, set **Server URL** to `http://<service-host>:8927`, connect, and run **Play audio check**.
-
-If a firewall is enabled, allow TCP port `8766` from the RotorHazard host and TCP port `8927` from playback devices. The default API has no authentication; keep it on a trusted LAN and restrict access to port `8766` to the RotorHazard host.
+The client connects directly to Sendspin's player endpoint, which already listens on the network by default. Allow TCP port `8927` from playback devices if a firewall is enabled. The HTTP API on port `8766` stays local to the Pi. You can also use the plugin's `/player` page from another device, with **Server URL** set to `http://192.168.1.50:8927` in this example.
 
 ### Configuration and upgrades
 
@@ -133,9 +118,9 @@ The service API accepts inline WAV payloads via `wav_files`. It does not accept 
 
 ## Docker Image
 
-Docker Compose is an **optional extra for cloud hosting**. For use with the RotorHazard plugin, the recommended installation is the [`.deb` package](#sendspin-service) on the same Raspberry Pi OS machine as RotorHazard. The container runs independently of the RotorHazard machine and includes a browser player at `/`. RotorHazard and playback clients must be able to reach that cloud service.
+Docker Compose is an **optional extra for cloud hosting**. For use with the RotorHazard plugin, the recommended installation is the [`.deb` package](#sendspin-service) on the same Raspberry Pi OS machine as RotorHazard. The container runs on the cloud server and includes its own browser player at `/`. To send audio there, change RotorHazard's **Sendspin service URL** from `http://127.0.0.1:8766` to the cloud service's reachable HTTP API base URL. Open the cloud player and connect it to that cloud Sendspin server. The plugin then sends audio only to the cloud server; change the setting back to use the local service again.
 
-**Already running the `.deb` service on this machine?** [Stop and disable it first](#port-conflicts). Docker publishes the same host ports (`8766` and `8927`) by default and cannot start while the service occupies them. Use one deployment per machine for the normal setup.
+**Already running the `.deb` service on this machine?** [Stop and disable it first](#port-conflicts). Docker publishes the same host ports (`8766` and `8927`) by default and cannot start while the service occupies them. A local `.deb` service on the Pi and a Docker service on a separate cloud host do not conflict, even when they use the same port numbers.
 
 For a quick local test of the cloud image:
 
@@ -336,14 +321,16 @@ Cache behavior:
 
 The `.deb` service and Docker variant both use TCP ports `8766` (HTTP API) and `8927` (Sendspin) by default. If you start both on the same machine, the second deployment can fail with `Address already in use` or `port is already allocated`.
 
-Choose the deployment you want to keep:
+This conflict applies only to overlapping ports on the same host. A `.deb` service on the RotorHazard Pi and a Docker service on a separate cloud host can both run. RotorHazard still sends to only the server selected in its settings.
+
+If both deployments occupy the same host, choose which one should use the default ports:
 
 - **Keep the `.deb` service on your Raspberry Pi:** run `docker compose down` from the directory of the Sendspin Compose project, then run `sudo systemctl restart sendspin-service`. For a container started with `docker run`, find it with `docker ps` and remove that Sendspin container with `docker rm -f <container-name>` (replace the placeholder with its actual name).
 - **Keep Docker for your cloud deployment:** run `sudo systemctl disable --now sendspin-service`, then run `docker compose up -d` from the Sendspin Compose directory. Disabling the systemd service also prevents it from starting at the next boot.
 
 Check `systemctl status sendspin-service --no-pager` and `docker ps` to confirm which deployment is running. If a port is still occupied, `sudo ss -ltnp '( sport = :8766 or sport = :8927 )'` shows the listeners. Verify the retained service with **Play audio check**.
 
-Running both deliberately requires separate host ports for each deployment and matching URLs in RotorHazard and every player. Otherwise, audio may be sent to one service while players connect to the other.
+Running both on the same host requires separate host ports for each deployment. Set RotorHazard and the intended playback clients to the same selected server; using separate ports does not enable parallel output from the plugin.
 
 ### Other issues
 
@@ -351,7 +338,7 @@ Running both deliberately requires separate host ports for each deployment and m
 - **Service unreachable**: confirm `curl http://127.0.0.1:8766/health` works from the RotorHazard host.
 - **Outdated service**: compare the plugin release with `version` from `curl http://127.0.0.1:8766/health`. If they differ, reinstall or upgrade the component that does not match the intended Race Voice release.
 - **Player page unreachable**: confirm `<RotorHazard UI base URL>/player` works from the playback device.
-- **Some players hear different or duplicate audio**: confirm only one Sendspin service is active for the event, or verify each service uses unique ports and every player is configured for the intended Server URL. Check both `systemctl status sendspin-service` and `docker ps` on hosts where you have tested container deployments.
+- **Some players hear different or duplicate audio**: verify that each player connects to the server selected by RotorHazard's **Sendspin service URL**. If multiple services run on the same host, give them distinct host ports. Check both `systemctl status sendspin-service` and `docker ps` on hosts where you have tested container deployments.
 - **Duplicate voice callouts or tones**: set RotorHazard Voice Volume and Tone Volume to `0` in regular RotorHazard browser clients.
 - **First phrase is slow**: the selected Piper model may still be downloading or loading.
 - **Browser playback stutters**: test Safari or Chrome incognito with extensions disabled, then validate on the race network.

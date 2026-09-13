@@ -34,7 +34,7 @@ from .const import (
     VOICE_MODEL_OPTION,
     VOICE_MODELS,
 )
-from .output import SendspinServiceClient
+from .output import SendspinServiceClient, service_version_warning
 from .piper import PiperSynthesizer, SynthesisParams, SynthesisResult
 from .services import schedule
 from .services.clock_callouts import ClockCallouts
@@ -123,6 +123,7 @@ class RaceVoicePlugin:
             stop_audio_callback=self.stop_audio,
             clear_cache_callback=self.clear_tts_cache,
             rebuild_precache_callback=self.rebuild_precache,
+            service_check_callback=self.check_sendspin_service,
         )
         self._register_events()
         self._register_filters()
@@ -389,6 +390,44 @@ class RaceVoicePlugin:
 
     def play_audio_check(self, _args: dict[str, Any] | None = None) -> None:
         """Play the bundled audio-check WAV through Sendspin."""
+        self._synth_pool.submit(self._play_audio_check)
+
+    def check_sendspin_service(self, _args: dict[str, Any] | None = None) -> None:
+        """Check the running service without blocking the RotorHazard event thread."""
+        self._synth_pool.submit(self._check_sendspin_service)
+
+    def _check_sendspin_service(self) -> bool:
+        try:
+            health = self._sendspin.health()
+        except (OSError, TypeError, ValueError) as exc:
+            logger.warning("Race Voice: Sendspin service check failed: %s", exc)
+            self._rhapi.ui.message_alert(
+                "Race Voice cannot read Sendspin service health. Check the service "
+                "URL and sendspin-service logs; the service may be stopped or "
+                "have failed to start after an update."
+            )
+            return False
+        if health.get("ok") is not True or health.get("status") != "ok":
+            self._rhapi.ui.message_alert(
+                "Race Voice: Sendspin service reports it is not healthy. "
+                "Check the sendspin-service logs."
+            )
+            return False
+        warning = service_version_warning(health)
+        if warning:
+            logger.warning(warning)
+            self._rhapi.ui.message_alert(warning)
+        else:
+            self._rhapi.ui.message_notify(
+                f"Race Voice: Sendspin service {health.get('version', 'unknown')}, "
+                f"aiosendspin {health['aiosendspin_version']}: "
+                "browser-player minimum version check passed."
+            )
+        return True
+
+    def _play_audio_check(self) -> None:
+        if not self._check_sendspin_service():
+            return
         if not _AUDIO_CHECK_WAV.exists():
             self._rhapi.ui.message_alert("Race Voice audio check WAV is missing")
             return

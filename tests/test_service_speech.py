@@ -41,6 +41,27 @@ class ServiceSpeechTests(unittest.IsolatedAsyncioTestCase):
             ["Klaas,", "Ronde 4", "twenty three point four five"],
         )
 
+    async def test_live_countdowns_reuse_manually_prepared_requests(self) -> None:
+        """Both race-clock and schedule phrases use identical live cache keys."""
+        async for _ in self.engine.prepare(SETTINGS, [], is_current=lambda: True):
+            pass
+        prepared = [
+            call.args[0]
+            for call in self.worker.request.call_args_list
+            if call.args[0]["subdir"] == "precache/clock"
+        ]
+        self.assertGreater(len(prepared), 5)
+        for request in prepared:
+            self.worker.reset_mock()
+            await self.engine.synthesize(
+                replace(self.event, kind=EventKind.COUNTDOWN, text=request["text"]),
+                SETTINGS,
+                deadline=time.monotonic() + 5,
+                priority=0,
+                is_current=lambda: True,
+            )
+            self.assertEqual(self.worker.request.call_args.args[0], request)
+
     async def test_tone_never_calls_worker(self) -> None:
         """Signals stay actionable during a stopped/hung Piper process."""
         event = replace(self.event, kind=EventKind.TONE, asset="stage", text=None)

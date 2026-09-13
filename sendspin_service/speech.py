@@ -50,7 +50,8 @@ class SpeechEngine:
                 {"lap": event.lap, "pilot": event.pilot_name, "phonetic": event.text},
                 model,
             ).segments
-        return (CalloutSegment(event.text or "", ""),)
+        subdir = "precache/clock" if event.kind == EventKind.COUNTDOWN else ""
+        return (CalloutSegment(event.text or "", subdir),)
 
     async def synthesize(
         self,
@@ -92,7 +93,7 @@ class SpeechEngine:
             for p in self._clock.precache_phrases(model)
         ]
         phrases.extend(
-            CalloutSegment(text, "precache/schedule")
+            CalloutSegment(text, "precache/clock")
             for text in _locale(model)["race_schedule"].values()
         )
         phrases.extend(self._laps.precache_segments(pilot_names, model))

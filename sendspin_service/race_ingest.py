@@ -13,6 +13,7 @@ from aiohttp import web
 
 from custom_plugins.race_voice.const import VOICE_MODELS
 
+from .cache_commands import CacheCommands
 from .race_planner import CalloutPlan, PlaybackPlanner, PreparationPlanner
 from .race_protocol import (
     VERSION,
@@ -114,8 +115,10 @@ class RaceIngest:
         self._changing = False
         self._blocked = True
         self._output = PlaybackPlanner(sink, is_current=self._current)
+        speech = SpeechEngine(worker)
+        self._cache = CacheCommands(speech, self._clear)
         self._preparation = PreparationPlanner(
-            SpeechEngine(worker),
+            speech,
             assets=assets,
             is_current=self._current,
             ready=self._ready,
@@ -163,6 +166,9 @@ class RaceIngest:
             self._epoch, self._nonce = epoch, nonce
             self._owner_revision += 1
             self._gate = ContextGate(uuid.uuid4().hex)
+            self._cache.reset(self._gate.session_id)
+            if self._state is not None:
+                self._cache.clear_temporary(self._state["voice"])
             self._state = None
             self._state_json = ""
             self._clock = self._probe = None
@@ -181,6 +187,7 @@ class RaceIngest:
         self._require_session(data)
         context, encoded = _snapshot(data)
         old = self._gate.context
+        old_state = self._state
         if (
             old is not None
             and context.revision == old.revision
@@ -201,9 +208,27 @@ class RaceIngest:
             raise web.HTTPConflict(reason=outcome.value)
         self._state = json.loads(encoded)
         self._state_json = encoded
+        if old != context:
+            self._cache.cancel()
+        if old is not None and (
+            old.heat_id != context.heat_id
+            or old.competition_id != context.competition_id
+        ):
+            self._cache.clear_temporary(old_state["voice"])
         if old is None or old.generation != context.generation or self._blocked:
             await self._clear()
         return {"outcome": outcome.value}
+
+    def command(self, data: dict) -> dict:
+        """Admit manual cache work for the acknowledged race context."""
+        self._require_session(data)
+        if self._state is None or self._blocked:
+            raise web.HTTPConflict(reason="A successful state update is required")
+        return self._cache.submit(data, self._state)
+
+    def command_status(self, command_id: str) -> dict:
+        """Expose bounded progress without waiting for the worker."""
+        return self._cache.status(command_id)
 
     async def _clear(self) -> None:
         self._changing = self._blocked = True
@@ -274,6 +299,8 @@ class RaceIngest:
             event.kind.value, True
         ):
             return {"outcome": "disabled"}
+        if self._cache.clearing and event.kind != EventKind.TONE:
+            raise web.HTTPTooManyRequests(reason="TTS cache is being cleared")
         if not self._preparation.submit(CalloutPlan(event, deadline, target), voice):
             raise web.HTTPTooManyRequests(
                 reason="Audio preparation is full", headers={"Retry-After": "1"}
@@ -284,18 +311,23 @@ class RaceIngest:
         """Cancel preparation and playback before reaping the synthesis child."""
         self._blocked = True
         try:
+            await self._cache.close()
             await self._preparation.close()
             await self._output.close()
         finally:
             await self._worker.close()
 
 
-def add_routes(app: web.Application, ingest: RaceIngest) -> None:
+def add_routes(app: web.Application, ingest: RaceIngest) -> None:  # noqa: C901
     """Register preview routes; the app enforces auth when an API token is set."""
 
-    async def handle(request: web.Request) -> web.Response:
+    async def handle(request: web.Request) -> web.Response:  # noqa: C901
         try:
             if request.method == "GET":
+                if "command_id" in request.match_info:
+                    return web.json_response(
+                        ingest.command_status(request.match_info["command_id"])
+                    )
                 return web.json_response(ingest.owner())
             data = await _read_body(request)
             match request.path:
@@ -305,6 +337,8 @@ def add_routes(app: web.Application, ingest: RaceIngest) -> None:
                     result = await ingest.state(data)
                 case "/v2/clock":
                     result = ingest.clock(data)
+                case "/v2/commands":
+                    result = ingest.command(data)
                 case _:
                     result = ingest.event(data)
             status = (
@@ -342,6 +376,8 @@ def add_routes(app: web.Application, ingest: RaceIngest) -> None:
     app.router.add_put("/v2/state", handle)
     app.router.add_post("/v2/clock", handle)
     app.router.add_post("/v2/events", handle)
+    app.router.add_post("/v2/commands", handle)
+    app.router.add_get("/v2/commands/{command_id}", handle)
 
 
 async def _read_body(request: web.Request) -> dict:

@@ -91,6 +91,10 @@ class EventPublisher:
         """Keep construction free of network I/O and automatic ownership takeover."""
         self._control = JsonChannel(token)
         self._audio = JsonChannel(token)
+        self._commands = JsonChannel(token)
+        self._command_task = None
+        self._command_sequence = 0
+        self.command_status = "No cache command requested"
         self._epoch = uuid.uuid4().hex
         self._url = ""
         self._state: dict | None = None
@@ -208,6 +212,73 @@ class EventPublisher:
             and self._ack_revision == self._state["context"]["revision"]
         )
 
+    def can_command(self) -> bool:
+        """Allow one operator action at a time on a connected source."""
+        return self._ready() and (self._command_task is None or self._command_task.dead)
+
+    def command(self, operation: str) -> bool:
+        """Queue a captured manual action, including immediately after a stop update."""
+        if (
+            self._closed
+            or not self._session
+            or self._state is None
+            or (self._command_task is not None and not self._command_task.dead)
+            or operation not in {"prepare", "clear_cache"}
+        ):
+            return False
+        self._command_sequence += 1
+        data = {
+            "version": "race-events/1",
+            "session_id": self._session,
+            "context": copy.deepcopy(self._state["context"]),
+            "settings_revision": self._state["context"]["revision"],
+            "command_id": f"{self._session}:command:{self._command_sequence}",
+            "operation": operation,
+        }
+        self.command_status = f"{operation}: queued"
+        self._command_task = gevent.spawn(
+            self._run_command, data, self._serial, self._url
+        )
+        return True
+
+    def _run_command(self, data: dict, serial: int, url: str) -> None:
+        try:
+            posted = False
+            while not self._closed:
+                if (
+                    serial != self._serial
+                    or self._state is None
+                    or data["context"] != self._state["context"]
+                ):
+                    self.command_status = "Cache command interrupted by state change"
+                    return
+                if not self._ready():
+                    gevent.sleep(0.05)
+                    continue
+                if not posted:
+                    response = self._commands.request(url, "POST", "/v2/commands", data)
+                    posted = True
+                else:
+                    response = self._commands.request(
+                        url, "GET", f"/v2/commands/{data['command_id']}"
+                    )
+                result = _checked(*response)
+                status = result["status"]
+                progress = (
+                    f" ({result['completed']}/{result['total']})"
+                    if "completed" in result and "total" in result
+                    else ""
+                )
+                self.command_status = f"{data['operation']}: {status}{progress}"
+                if status in {"completed", "cancelled", "failed"}:
+                    return
+                gevent.sleep(0.5)
+        except Exception as err:
+            self.command_status = f"Cache command result unknown: {err}"
+            logger.warning("Race Voice %s", self.command_status)
+        finally:
+            self._commands.close()
+
     def _disconnect(self, status: str) -> None:
         self._serial += 1
         self._session = None
@@ -257,6 +328,7 @@ class EventPublisher:
                 return
             if session != self._last_session:
                 self._sequence = 0
+                self._command_sequence = 0
             self._session = self._last_session = session
             self._clock_due = 0
             self._takeover = False
@@ -344,11 +416,14 @@ class EventPublisher:
             self._audio.close()
 
     def close(self) -> None:
-        """Wait for both senders to close their own connections during shutdown."""
+        """Wait for senders to close their own connections during shutdown."""
         self._closed = True
         self._pending.clear()
-        gevent.killall(self._tasks, block=True, timeout=3)
-        if any(not task.dead for task in self._tasks):
+        tasks = self._tasks + (
+            [self._command_task] if self._command_task is not None else []
+        )
+        gevent.killall(tasks, block=True, timeout=3)
+        if any(not task.dead for task in tasks):
             raise RuntimeError("Event senders did not finish shutdown")
 
 

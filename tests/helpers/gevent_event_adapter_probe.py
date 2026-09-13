@@ -84,6 +84,9 @@ class Service:
         self.health_entered = Event()
         self.health_release = Event()
         self.health_release.set()
+        self.command_entered = Event()
+        self.command_release = Event()
+        self.command_release.set()
         self.fail_event = False
         self.server = WSGIServer(("127.0.0.1", 0), self.handle, log=None)
         self.server.start()
@@ -129,6 +132,10 @@ class Service:
             self.state = data
         if path == "/v2/clock" and "probe_id" not in data:
             return 200, {"probe_id": "clock-probe"}
+        if path == "/v2/commands":
+            self.command_entered.set()
+            self.command_release.wait()
+            return 200, {"command_id": data["command_id"], "status": "completed"}
         if path == "/v2/events":
             self.audio_entered.set()
             self.audio_release.wait()
@@ -147,6 +154,7 @@ class Service:
         """Release every test request before shutting its server down."""
         self.audio_release.set()
         self.health_release.set()
+        self.command_release.set()
         self.server.stop(timeout=0.1)
 
 
@@ -416,6 +424,24 @@ class AdapterTests(unittest.TestCase):
         self.assertFalse(self.service.health_release.is_set())
         self.adapter.close()
 
+    def test_cache_request_never_blocks_stop_and_shutdown_owns_its_socket(self) -> None:
+        """A held cache response leaves the state connection free and closes cleanly."""
+        self.connect()
+        self.service.command_release.clear()
+        self.adapter.prepare_cache()
+        wait_for(self.service.command_entered.is_set)
+        publisher = self.adapter._publisher
+        self.assertFalse(publisher.can_command())
+        self.adapter.stop_audio()
+        wait_for(publisher._ready)
+        self.assertEqual(
+            self.service.state["context"]["generation"], self.adapter._generation
+        )
+        self.adapter.close()
+        self.assertTrue(publisher._command_task.dead)
+        self.assertIsNone(publisher._commands._connection)
+        self.assertFalse(self.service.command_release.is_set())
+
     def test_clock_refresh_retains_source_session(self) -> None:
         """Refresh clocks independently of synthesis and keep the same publisher."""
         self.connect()
@@ -441,6 +467,10 @@ def integration(url: str) -> None:
         wait_for(lambda: channel.request(url, "GET", "/test/playback")[1]["count"] >= 2)
         adapter.stop_audio()
         wait_for(adapter._publisher._ready)
+        adapter.prepare_cache()
+        wait_for(lambda: "prepare: completed" in adapter._publisher.command_status)
+        adapter.clear_cache()
+        wait_for(lambda: "clear_cache: completed" in adapter._publisher.command_status)
         sys.stdout.write(
             json.dumps(
                 {

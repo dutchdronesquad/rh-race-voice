@@ -47,6 +47,8 @@ class Worker:
         self.calls.append(payload)
         self.started.set()
         await self.release.wait()
+        if payload["operation"] == "clear":
+            return {"cleared": 3}
         return {"audio": ASSET.read_bytes(), "cache_hit": True}
 
     async def close(self) -> None:
@@ -276,6 +278,8 @@ class RaceIngestTests(unittest.IsolatedAsyncioTestCase):
             ("post", "/v2/events"),
             ("put", "/v2/state"),
             ("post", "/v2/clock"),
+            ("post", "/v2/commands"),
+            ("get", "/v2/commands/unknown"),
         ):
             with self.subTest(path=path):
                 response = await getattr(self.client, method)(
@@ -360,6 +364,190 @@ class RaceIngestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.post("/v2/events", json=event)).status, 409)
         await self.synchronize()
         self.assertEqual((await self.client.post("/v2/events", json=event)).status, 202)
+
+    def command(self, sequence: int = 1, operation: str = "prepare") -> dict:
+        """Capture the current acknowledged context for an explicit action."""
+        return {
+            "version": "race-events/1",
+            "session_id": self.session_id,
+            "context": dict(self.snapshot["context"]),
+            "settings_revision": self.snapshot["context"]["revision"],
+            "command_id": f"{self.session_id}:command:{sequence}",
+            "operation": operation,
+        }
+
+    async def command_result(self, command: dict) -> dict:
+        """Poll observable job completion, including cancellation or failure."""
+        async with asyncio.timeout(3):
+            while True:
+                result = await (
+                    await self.client.get(f"/v2/commands/{command['command_id']}")
+                ).json()
+                if result.get("status") not in ("queued", "running"):
+                    return result
+                await asyncio.sleep(0.001)
+
+    async def test_manual_prepare_progress_retry_and_beep_independence(self) -> None:
+        """Idle startup synthesizes nothing; explicit preparation never holds beeps."""
+        self.assertEqual(self.worker.calls, [])
+        self.worker.release.clear()
+        command = self.command()
+        self.assertEqual(
+            (await self.client.post("/v2/commands", json=command)).status, 200
+        )
+        await asyncio.wait_for(self.worker.started.wait(), 2)
+        self.assertEqual(
+            (await self.client.post("/v2/commands", json=command)).status, 200
+        )
+        self.assertEqual(
+            (await self.client.post("/v2/commands", json=self.command(2))).status, 429
+        )
+        self.assertEqual(
+            (await self.client.post("/v2/events", json=self.event(kind="tone"))).status,
+            202,
+        )
+        await until(lambda: self.backend.play.called)
+        self.worker.release.set()
+        result = await self.command_result(command)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["completed"], result["total"])
+        self.assertEqual(result["generated"], 0)
+        count = len(self.worker.calls)
+        self.assertEqual(
+            await (await self.client.post("/v2/commands", json=command)).json(), result
+        )
+        self.assertEqual(len(self.worker.calls), count)
+
+    async def test_heat_cancels_prepare_and_only_requests_temporary_cleanup(
+        self,
+    ) -> None:
+        """A heat change invalidates the batch without wiping reusable phrases."""
+        self.worker.release.clear()
+        command = self.command()
+        await self.client.post("/v2/commands", json=command)
+        await asyncio.wait_for(self.worker.started.wait(), 2)
+        self.snapshot["context"].update(revision=2, generation=1, heat_id=2)
+        self.assertEqual(
+            (await self.client.put("/v2/state", json=self.snapshot)).status, 200
+        )
+        self.assertEqual((await self.command_result(command))["status"], "cancelled")
+        await until(lambda: len(self.worker.calls) == 2)
+        self.assertEqual(self.worker.calls[-1]["operation"], "clear")
+        self.assertEqual(self.worker.calls[-1]["subdir"], "tmp")
+        self.worker.release.set()
+        stale = self.command(2)
+        stale["settings_revision"] = 1
+        self.assertEqual(
+            (await self.client.post("/v2/commands", json=stale)).status, 409
+        )
+
+    async def test_clear_flushes_audio_and_allows_tones_while_disk_is_busy(
+        self,
+    ) -> None:
+        """Clear pauses speech while tones remain available."""
+        self.worker.release.clear()
+        command = self.command(operation="clear_cache")
+        await self.client.post("/v2/commands", json=command)
+        await asyncio.wait_for(self.worker.started.wait(), 2)
+        self.backend.stop.assert_called_once_with(strict=True)
+        self.assertEqual(
+            (await self.client.post("/v2/events", json=self.event())).status, 429
+        )
+        self.assertEqual(
+            (
+                await self.client.post("/v2/events", json=self.event(2, kind="tone"))
+            ).status,
+            202,
+        )
+        await until(lambda: self.backend.play.called)
+        self.worker.release.set()
+        result = await self.command_result(command)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["cleared"], 3)
+        self.assertNotIn("subdir", self.worker.calls[0])
+
+    async def test_state_change_keeps_speech_blocked_until_clear_finishes(self) -> None:
+        """A new snapshot must not reopen speech while deletion is still in flight."""
+        self.worker.release.clear()
+        command = self.command(operation="clear_cache")
+        await self.client.post("/v2/commands", json=command)
+        await asyncio.wait_for(self.worker.started.wait(), 2)
+        self.snapshot["context"].update(revision=2, generation=1)
+        self.assertEqual(
+            (await self.client.put("/v2/state", json=self.snapshot)).status, 200
+        )
+        self.assertEqual(
+            (await self.client.post("/v2/events", json=self.event())).status, 429
+        )
+        self.assertEqual(
+            (
+                await self.client.post("/v2/events", json=self.event(2, kind="tone"))
+            ).status,
+            202,
+        )
+        await until(lambda: self.backend.play.called)
+        self.worker.release.set()
+        async with asyncio.timeout(2):
+            sequence = 3
+            while (
+                await self.client.post("/v2/events", json=self.event(sequence))
+            ).status == 429:
+                sequence += 1
+                await asyncio.sleep(0.001)
+        await until(lambda: self.backend.play.call_count == 2)
+
+    async def test_failed_cache_flush_never_deletes_or_reports_completion(self) -> None:
+        """Do not delete files when the output cannot confirm that it stopped."""
+        self.backend.stop.side_effect = TimeoutError("backend unavailable")
+        command = self.command(operation="clear_cache")
+        with self.assertLogs("sendspin_service.cache_commands", level="ERROR"):
+            await self.client.post("/v2/commands", json=command)
+            result = await self.command_result(command)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(self.worker.calls, [])
+        self.assertEqual(
+            (await self.client.post("/v2/events", json=self.event())).status, 409
+        )
+        self.backend.stop.side_effect = None
+        self.assertEqual(
+            (await self.client.put("/v2/state", json=self.snapshot)).status, 200
+        )
+
+    async def test_takeover_cancels_prepare_and_fences_its_status(self) -> None:
+        """An old publisher cannot keep generating a batch after ownership changes."""
+        self.worker.release.clear()
+        command = self.command()
+        await self.client.post("/v2/commands", json=command)
+        await asyncio.wait_for(self.worker.started.wait(), 2)
+        takeover = {**self.owner, "epoch": "new", "nonce": "new", "takeover": True}
+        self.assertEqual(
+            (await self.client.post("/v2/session", json=takeover)).status, 200
+        )
+        self.assertEqual(
+            (await self.client.get(f"/v2/commands/{command['command_id']}")).status, 409
+        )
+        self.assertEqual(
+            (await self.client.post("/v2/commands", json=command)).status, 409
+        )
+        self.worker.release.set()
+
+    async def test_evicted_commands_never_execute_again(self) -> None:
+        """Bound history while retaining a session high-water mark for old retries."""
+        first = self.command(operation="clear_cache")
+        for sequence in range(1, 35):
+            command = self.command(sequence, "clear_cache")
+            await self.client.post("/v2/commands", json=command)
+            self.assertEqual(
+                (await self.command_result(command))["status"], "completed"
+            )
+        self.assertEqual(
+            (await self.client.post("/v2/commands", json=first)).status, 410
+        )
+        self.assertEqual(len(self.worker.calls), 34)
+        changed = {**command, "operation": "prepare"}
+        self.assertEqual(
+            (await self.client.post("/v2/commands", json=changed)).status, 409
+        )
 
     async def test_cleanup_reaps_worker(self) -> None:
         """Application shutdown owns the isolated worker lifecycle."""

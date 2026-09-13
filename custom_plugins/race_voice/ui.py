@@ -184,19 +184,18 @@ def register_ui(  # noqa: PLR0913
         label="Stop audio",
         function=stop_audio_callback,
     )
-    if not event_mode:
-        rhapi.ui.register_quickbutton(
-            panel=PANEL_ID,
-            name="race_voice_clear_cache",
-            label="Clear TTS cache",
-            function=clear_cache_callback,
-        )
-        rhapi.ui.register_quickbutton(
-            panel=PANEL_ID,
-            name="race_voice_rebuild_precache",
-            label="Prepare pre-cache",
-            function=rebuild_precache_callback,
-        )
+    rhapi.ui.register_quickbutton(
+        panel=PANEL_ID,
+        name="race_voice_clear_cache",
+        label="Clear TTS cache",
+        function=clear_cache_callback,
+    )
+    rhapi.ui.register_quickbutton(
+        panel=PANEL_ID,
+        name="race_voice_rebuild_precache",
+        label="Prepare pre-cache",
+        function=rebuild_precache_callback,
+    )
 
 
 def _register_player_blueprint(rhapi: Any) -> None:

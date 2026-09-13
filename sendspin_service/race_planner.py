@@ -134,6 +134,7 @@ class PreparationPlanner:
         """Call after installing new source state, before acknowledging a stop/reset."""
         self._pending = [p for p in self._pending if self._usable(p.plan)]
         if self._active and not self._usable(self._active.plan) and self._inference:
+            self._active.cancelled = True
             self._inference.cancel()
 
     async def close(self) -> None:

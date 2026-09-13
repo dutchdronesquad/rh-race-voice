@@ -21,7 +21,7 @@ Important modules:
 
 ## Runtime Behavior
 
-RotorHazard phonetic filters and server-side race events are used as callout sources. Heavy work must stay off the RotorHazard event/filter thread; schedule synthesis through the existing executor instead of doing Piper work inline.
+RotorHazard phonetic filters and server-side race events are used as callout sources. Heavy work must stay off the RotorHazard event/filter thread. The existing executor schedules callout orchestration, but RotorHazard monkey-patches threading with gevent, so that executor alone does not provide native-thread isolation. Keep Piper synthesis and ONNX session construction behind `PiperSynthesizer._run_native()`; keep RH API calls, queue mutations, and status callbacks outside that native boundary.
 
 Lap callouts are intentionally segmented:
 

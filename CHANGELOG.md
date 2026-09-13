@@ -6,6 +6,8 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 ## [Unreleased]
 
+Piper speech generation and model loading now run outside RotorHazard's event-loop thread, addressing pauses in live node/RSSI chart updates while TTS is busy. Synthesis remains bounded; this change does not remove the time needed to generate and buffer speech.
+
 ## [1.2.0] - 2026-09-13
 
 ### Cloud playback

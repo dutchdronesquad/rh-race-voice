@@ -1,0 +1,46 @@
+# Race-aware service planning
+
+Component implementation for #300. The HTTP adapter/source-ownership integration
+and routing are separate epic steps; current `/v1/play` remains on the legacy path
+until the new producer and state/clock contract are connected.
+
+`PreparationPlanner` receives already-admitted, immutable events with their times
+mapped into the service clock. It keeps four pending laps plus one active speech
+job, supersedes pending laps for the same pilot, and bounds other announcements
+separately. Higher-priority speech can displace lower-priority pending work.
+Ready bundled tones bypass the synthesis worker entirely. Preempted inference
+results cannot reappear even if a dependency catches task cancellation.
+
+`SpeechEngine` produces a complete tuple of immutable WAV bytes once. A routing
+callback can pass the same tuple to local/cloud and listener-specific outputs.
+Each `PlaybackPlanner` has its own bounded queue, stop barrier and sink, so a slow
+destination never owns a lock needed by another destination. Filtering must happen
+before the corresponding selection planner receives a lap.
+
+Spoken countdowns and race beeps outrank other speech; general announcements outrank
+laps. Manual audio checks remain below race signals. Signals remove pending laps
+and cancel lower-priority active playback. The next callout waits until the sink
+has cleared its buffered audio. The sink must observe the cancellation flag before
+committing more PCM. Stop/reset ownership code must invalidate all preparation and
+output planners when changing generation, and wait for output clear before claiming
+that playback has stopped. Already audible sound cannot be recalled.
+
+Output admission is bounded by count and retained audio bytes. Ordinary work leaves
+some byte capacity for signals. A higher-priority job can evict lower-priority
+pending work; an oversized/unusable job is rejected before interrupting playback.
+Queued laps favour newer speech for the same pilot. These limits are per output;
+the selection manager must separately bound the number of outputs.
+
+`SendspinPlaybackSink` directly invokes the existing backend rather than sending
+the event through its legacy semantic queue again. WAV parsing and backend waits
+run off the planning loop. Targets, volume, cancellation and deadlines are retained.
+For scheduled stage/final-second tones, the final backend expiry is also capped at
+target + 250 ms; buzzers allow 1 second. This check runs against the backend's actual
+client lead calculation. The adapter must supply RH's advance target and a valid
+clock mapping; it cannot grant a fresh TTL after synthesis or relay transfer.
+These initial late-start bounds require hardware validation before activation.
+
+Fourteen deterministic tests cover lap admission/replacement, ready tones during
+blocked inference, stop/state fencing, priority, byte/count limits, independent
+outputs, and the direct backend adapter's latest-start constraint. This is not an
+end-to-end cloud, client synchronization or WindowsSpin audio-quality measurement.

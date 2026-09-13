@@ -6,6 +6,8 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-13
+
 ### Cloud playback
 
 Stream the same callouts and race sounds locally and to an authenticated cloud service simultaneously. Keep the local service URL and fill in **Cloud Sendspin service URL** and **Cloud Sendspin API token**. Separate queues keep cloud delays from holding up local audio; **Stop audio** acts on both outputs.
@@ -13,6 +15,12 @@ Stream the same callouts and race sounds locally and to an authenticated cloud s
 ### Faster cloud audio
 
 The audio check and race tones can play from files included with the cloud service, avoiding a full upload on each click. Repeated callouts reuse previously uploaded segments. Update both plugin and service for this optimization; older services retain the upload-based behavior. The complete test track is preserved, and local race audio keeps playing immediately.
+
+### Sendspin reliability and diagnostics
+
+- Large audio uploads, including the full audio-check track, are streamed to the service to avoid request-size failures.
+- Each configured service is checked automatically in the background when RotorHazard starts. Successful checks are logged and problems produce warnings; **Play audio check** plays the test audio directly.
+- Sendspin server names now include the hostname, making local and cloud services easier to distinguish in players.
 
 ## [1.1.0] - 2026-09-13
 

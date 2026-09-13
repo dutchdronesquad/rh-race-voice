@@ -44,18 +44,50 @@ class SignalQueueTests(unittest.TestCase):
         interrupt = Mock()
         queue = AudioQueue(player, interrupt)
         try:
-            queue.enqueue("lap", [WavItem("lap")])
+            queue.enqueue("lap", [WavItem("lap")], Priority.LAP)
             self.assertTrue(started.wait(1))
-            queue.enqueue("stale lap", [WavItem("stale lap")])
+            queue.enqueue("stale lap", [WavItem("stale lap")], Priority.LAP)
             queue.enqueue("winner", [WavItem("winner")], Priority.HIGH)
-            interrupt.assert_not_called()
+            interrupt.assert_called_once()
             queue.enqueue("tone 1", [WavItem("tone 1")], Priority.SIGNAL)
             self.assertTrue(tokens[0].is_set())
             queue.enqueue("tone 2", [WavItem("tone 2")], Priority.SIGNAL)
-            interrupt.assert_called_once()
+            self.assertEqual(interrupt.call_count, 2)
             release.set()
             self.assertTrue(finished.wait(2))
             self.assertEqual(calls, ["lap", "tone 1", "tone 2", "winner"])
+        finally:
+            release.set()
+
+    def test_ordinary_announcement_also_preempts_lap_speech(self) -> None:
+        """Every announcement outranks laps, without becoming a race signal."""
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        calls = []
+        tokens = []
+
+        def player(items, *_args, cancelled):  # noqa: ANN001, ANN002, ANN202
+            name = items[0].name
+            calls.append(name)
+            tokens.append(cancelled)
+            if name == "lap":
+                started.set()
+                release.wait(2)
+            else:
+                finished.set()
+
+        interrupt = Mock()
+        queue = AudioQueue(player, interrupt)
+        try:
+            queue.enqueue("lap", [WavItem("lap")], Priority.LAP)
+            self.assertTrue(started.wait(1))
+            queue.enqueue("pilot done", [WavItem("pilot done")], Priority.NORMAL)
+            self.assertTrue(tokens[0].is_set())
+            interrupt.assert_called_once()
+            release.set()
+            self.assertTrue(finished.wait(2))
+            self.assertEqual(calls, ["lap", "pilot done"])
         finally:
             release.set()
 

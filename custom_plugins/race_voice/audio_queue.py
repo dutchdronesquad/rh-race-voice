@@ -25,8 +25,9 @@ class Priority(IntEnum):
 
     SIGNAL = -1  # time-critical race tones
     HIGH = 0  # winner, interrupt messages
-    NORMAL = 1  # lap callouts, pilot done
+    NORMAL = 1  # general announcements, pilot done
     LOW = 2  # crossing beeps
+    LAP = 3  # lap-time speech always yields to other announcements
 
 
 @dataclass(order=True)

@@ -128,11 +128,11 @@ class SendspinService:
             )
         if not wav_items:
             raise ValueError("wav_files must contain at least one WAV")
-        priority = (
-            Priority.SIGNAL
-            if payload.get("kind") == "race_signal"
-            else _priority(payload.get("priority"))
-        )
+        priority = _priority(payload.get("priority"))
+        if payload.get("kind") == "race_signal":
+            priority = Priority.SIGNAL
+        elif payload.get("kind") == "lap":
+            priority = Priority.LAP
         expiry_sec = _expiry_sec(payload)
         play_at = _play_at(payload)
         volume = _volume(payload)

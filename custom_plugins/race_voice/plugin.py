@@ -242,7 +242,7 @@ class RaceVoicePlugin:
             self._enqueue_audio(
                 text=callout.label,
                 wav_paths=wav_paths,
-                priority=Priority.NORMAL,
+                priority=Priority.LAP,
                 expiry_sec=max(0.0, expires_at - time.monotonic()),
             )
 

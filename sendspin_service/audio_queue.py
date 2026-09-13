@@ -24,8 +24,9 @@ class Priority(IntEnum):
 
     SIGNAL = -1  # time-critical race tones
     HIGH = 0  # winner, interrupt messages
-    NORMAL = 1  # lap callouts, pilot done
+    NORMAL = 1  # general announcements, pilot done
     LOW = 2  # crossing beeps
+    LAP = 3  # lap-time speech always yields to other announcements
 
 
 @dataclass(order=True)
@@ -97,17 +98,20 @@ class AudioQueue:
             if time.monotonic() >= job.expires_at:
                 return
             if priority == Priority.SIGNAL:
-                self._jobs = [j for j in self._jobs if j.priority <= Priority.HIGH]
+                self._jobs = [j for j in self._jobs if j.priority != Priority.LAP]
                 heapq.heapify(self._jobs)
-                if (
-                    self._active is not None
-                    and self._active.priority != Priority.SIGNAL
-                ):
+            preempts = (
+                self._last_priority == Priority.LAP and priority < Priority.LAP
+            ) or (
+                priority == Priority.SIGNAL
+                and self._last_priority not in (None, Priority.SIGNAL)
+            )
+            if preempts:
+                if self._active is not None:
                     self._active.cancelled.set()
-                if self._last_priority not in (None, Priority.SIGNAL):
-                    if self._interrupt is not None:
-                        self._interrupt()
-                    self._last_priority = Priority.SIGNAL
+                if self._interrupt is not None:
+                    self._interrupt()
+                self._last_priority = priority
             heapq.heappush(self._jobs, job)
             self._condition.notify()
 

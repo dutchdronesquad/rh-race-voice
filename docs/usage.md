@@ -30,13 +30,13 @@ curl -fL https://github.com/dutchdronesquad/rh-race-voice/releases/latest/downlo
   bash install-sendspin-service.sh
 ```
 
-Enter your sudo password if prompted. The installer detects `arm64` or `amd64`, downloads the latest release package, verifies its checksum, installs it, and ensures the service runs and starts at boot. It includes its own Python runtime and dependencies. Wait for **installed and running** before continuing.
+Choose the release matching your plugin from the menu of recent stable releases (newest first). The menu shows releases with a package and checksum available for your machine. The installer shows any installed version and asks you to confirm the installation or update. Enter your sudo password if prompted. It detects `arm64` or `amd64`, verifies the package checksum, installs it, and restarts the service with startup at boot enabled. The package includes its own Python runtime and dependencies. Wait for **installed and running** before continuing; if the selected version is already installed, the script leaves it unchanged.
 
-Use `race_voice.zip` from the same latest release. In RotorHazard, enable **Plugin audio** and leave **Sendspin service URL** at `http://127.0.0.1:8766`. Open the `/player` page on your playback device, press **Connect**, then use **Play audio check** in RotorHazard.
+Use `race_voice.zip` from the same release you selected. In RotorHazard, enable **Plugin audio** and leave **Sendspin service URL** at `http://127.0.0.1:8766`. Open the `/player` page on your playback device, press **Connect**, then use **Play audio check** in RotorHazard.
 
 If `curl` is missing, run `sudo apt update && sudo apt install -y curl`, then repeat the command. A 32-bit OS (`armhf`) is not supported by the release packages.
 
-For an older plugin release, pass its exact release tag to the downloaded installer: `bash install-sendspin-service.sh v<version>` (replace `v<version>` with the tag shown on its GitHub release).
+To skip the menu, use `bash install-sendspin-service.sh --latest` or pass an exact release tag, for example `bash install-sendspin-service.sh v1.2.3` (replace `v1.2.3` with your plugin's release tag). Both still ask for confirmation before making changes. The release menu requires Python 3.9 or newer; `--latest` and explicit tags do not require Python.
 
 <details>
 <summary>Manual package installation</summary>
@@ -109,7 +109,25 @@ SENDSPIN_ADVERTISE=true
 SENDSPIN_MAX_BODY_MB=50
 ```
 
-Restart the service with `sudo systemctl restart sendspin-service` after editing the configuration. To upgrade to the latest release, run the installer again and update the plugin to the same release. For a specific release, pass its tag to the installer as shown above. The installer preserves `/etc/default/sendspin-service` and restarts the service; verify `/health` and playback again afterwards.
+Restart the service with `sudo systemctl restart sendspin-service` after editing the configuration.
+
+To update an existing installation, run the downloaded installer again:
+
+```shell
+bash install-sendspin-service.sh
+```
+
+It shows the installed version and lets you select the target release. Alternatively, update to the latest stable release directly:
+
+```shell
+bash install-sendspin-service.sh --latest
+```
+
+The installer displays the current and target versions and asks for confirmation before updating and restarting the service. It preserves your settings in `/etc/default/sendspin-service`. Selecting the installed version makes no changes. Selecting an older version explicitly shows **Downgrade** and also requires confirmation.
+
+For unattended use, pass both a release choice and `--yes`, for example `bash install-sendspin-service.sh --latest --yes`. This confirms the change, including a downgrade when an older tag is specified; sudo must already be available without a password prompt. Use `--help` to see the options.
+
+Update the RotorHazard plugin separately to the same release, then verify `/health` and **Play audio check**. To get improvements to the installer itself, repeat the download command in the installation section.
 
 The service API accepts inline WAV payloads via `wav_files`. It does not accept filesystem paths. This keeps the packaged service independent of RotorHazard/plugin directory permissions while running with `DynamicUser=yes`.
 

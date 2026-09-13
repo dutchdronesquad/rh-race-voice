@@ -80,7 +80,7 @@ The **recommended installation for the RotorHazard plugin** is the `.deb` packag
      bash install-sendspin-service.sh
    ```
 
-   Enter your sudo password if prompted. The installer selects the right package and starts the service automatically. Wait for **installed and running**. See the [installation guide](docs/usage.md#sendspin-service) for a separate machine, a specific release, or manual installation.
+   Choose the release matching your plugin, confirm the installation or update, and enter your sudo password if prompted. The installer selects the right package and starts the service automatically. Run it again to update an existing installation. Wait for **installed and running** (or a message that the selected version is already installed). See the [installation guide](docs/usage.md#sendspin-service) for a separate machine, a specific release, or manual installation.
 
 5. Open the RotorHazard settings page and enable **Race Voice**.
 6. Confirm **Sendspin service URL** points to the service, normally `http://127.0.0.1:8766`.

@@ -344,10 +344,12 @@ class EventPublisher:
             self._audio.close()
 
     def close(self) -> None:
-        """Stop only these senders and discard disconnected audio."""
+        """Wait for both senders to close their own connections during shutdown."""
         self._closed = True
         self._pending.clear()
-        gevent.killall(self._tasks, block=False)
+        gevent.killall(self._tasks, block=True, timeout=3)
+        if any(not task.dead for task in self._tasks):
+            raise RuntimeError("Event senders did not finish shutdown")
 
 
 def _priority(event: dict) -> int:

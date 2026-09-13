@@ -384,6 +384,38 @@ class AdapterTests(unittest.TestCase):
             )
         )
 
+    def test_close_waits_for_idle_senders_and_closes_connections(self) -> None:
+        """Shutdown returns with no live senders or retained idle HTTP connection."""
+        self.connect()
+        publisher = self.adapter._publisher
+        self.adapter.close()
+        self.assertTrue(all(task.dead for task in publisher._tasks))
+        self.assertIsNone(publisher._control._connection)
+        self.assertIsNone(publisher._audio._connection)
+        self.adapter.close()
+        self.assertFalse(self.adapter._emit("voice", {"text": "After shutdown"}))
+
+    def test_close_interrupts_both_active_requests_before_returning(self) -> None:
+        """Close HTTP connections in their owning senders, avoiding reentrant reads."""
+        self.connect()
+        publisher = self.adapter._publisher
+        self.service.audio_release.clear()
+        self.adapter._voice({"text": "Blocked audio request"})
+        wait_for(self.service.audio_entered.is_set)
+        self.service.health_entered.clear()
+        self.service.health_release.clear()
+        publisher._disconnect("Reconnect during audio request")
+        wait_for(self.service.health_entered.is_set)
+        self.assertIsNotNone(publisher._audio._connection)
+        self.assertIsNotNone(publisher._control._connection)
+        self.adapter.close()
+        self.assertTrue(all(task.dead for task in publisher._tasks))
+        self.assertIsNone(publisher._control._connection)
+        self.assertIsNone(publisher._audio._connection)
+        self.assertFalse(self.service.audio_release.is_set())
+        self.assertFalse(self.service.health_release.is_set())
+        self.adapter.close()
+
     def test_clock_refresh_retains_source_session(self) -> None:
         """Refresh clocks independently of synthesis and keep the same publisher."""
         self.connect()

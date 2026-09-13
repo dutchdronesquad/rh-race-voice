@@ -1,6 +1,6 @@
 # Race events v1: standalone service contract
 
-Status: implementation contract for #297, part of epic #296. The existing `/v1/play` API remains operational. An explicit [local HTTP preview](service-audio-planner.md#local-http-preview) now wires admission, synthesis and playback. It does not advertise the complete capability: enable `race-events/1` only when the RH adapter, manual commands and remaining integration checks are complete.
+Status: implementation contract for #297, part of epic #296. The existing `/v1/play` API remains operational. An explicit [local HTTP preview](service-audio-planner.md#local-http-preview) now wires admission, synthesis and playback. It does not advertise the complete capability: enable `race-events/1` only when adapter follow-through, manual commands and remaining integration checks are complete.
 
 ## Decision and boundaries
 

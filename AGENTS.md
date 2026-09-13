@@ -71,7 +71,7 @@ Cache keys must include normalized phrase text and synthesis parameters so chang
 
 ## Dependency Policy
 
-The plugin currently imports Piper and ONNX Runtime at module import time. Missing runtime dependencies are expected to fail through the normal RotorHazard/plugin dependency path rather than through a custom lazy-import layer.
+The legacy plugin imports Piper and ONNX Runtime at module import time. The explicit `RACE_VOICE_EXPERIMENTAL_EVENTS=1` adapter must be selected before importing that plugin and must not load Piper or ONNX inside RH. Missing runtime dependencies are expected to fail through the normal RotorHazard/plugin dependency path rather than through a custom lazy-import layer.
 
 Keep dependencies aligned between `pyproject.toml` and `custom_plugins/race_voice/manifest.json`.
 

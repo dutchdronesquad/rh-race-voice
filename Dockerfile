@@ -37,6 +37,7 @@ ENV SENDSPIN_PORT=8927
 ENV SENDSPIN_ADVERTISE=false
 ENV SENDSPIN_MAX_BODY_MB=50
 ENV SENDSPIN_PLAYER_DIR=/opt/sendspin-service/player
+ENV SENDSPIN_STATE_DIR=/var/lib/sendspin-service
 
 WORKDIR /opt/sendspin-service
 
@@ -60,6 +61,7 @@ COPY sendspin_service ./sendspin_service
 COPY --from=player-build /build/custom_plugins/race_voice/player ./player
 
 RUN adduser -D -H -u 10001 -s /sbin/nologin sendspin
+RUN mkdir -p /var/lib/sendspin-service && chown sendspin:sendspin /var/lib/sendspin-service
 
 USER sendspin
 

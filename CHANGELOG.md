@@ -6,6 +6,10 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 ## [Unreleased]
 
+### Sendspin 9.x playback
+
+Fixes service startup and browser connections with `aiosendspin` 9.x. The service keeps its server identity across restarts and admits browser players using the encrypted handshake. Existing unencrypted players remain supported.
+
 ### Local development installation
 
 Developers can use `bash tools/install-sendspin-service.sh --dev` from a checkout to build and install their local service changes. Repeating the command rebuilds and reinstalls the development package; `--latest` returns to a stable release.

@@ -6,25 +6,19 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 ## [1.1.0] - Unreleased
 
-### Requires RHAPI 1.5
+### Upgrade requirements
 
-Race Voice now requires RHAPI 1.5 or newer. At release preparation, this API is available in RotorHazard 4.5.0-beta.1; RotorHazard 4.4.0 provides RHAPI 1.4 and is not supported. The plugin manifest declares the new minimum so RotorHazard can reject an incompatible installation.
+Requires **RHAPI 1.5 or newer**, currently available in RotorHazard 4.5.0-beta.1. RotorHazard 4.4.0 is unsupported. Update the Sendspin service to **1.1.0** for the new scheduled race sounds; service 1.0.0 lacks the required timing support.
 
-For the new scheduled race sounds, upgrade the Sendspin service to 1.1.0 as well. Service 1.0.0 does not understand the relative playback timing used by the new plugin. This is a functional service requirement; future compatible plugin-only updates do not require matching release numbers.
+### Race sounds and callouts
 
-### Staging sounds and race-clock callouts
+Adds staging beeps, a race-start buzzer, spoken reminders at 60, 30, and 10 seconds remaining, final-five-second tones, and an end-of-timer buzzer. **Rebuild pre-cache** includes the new phrases. Set RotorHazard browser Voice Volume and Tone Volume to `0` to avoid duplicate audio.
 
-Race Voice now plays the staging beeps and race-start buzzer through Sendspin, using RotorHazard's event timing. Timed races gain localized spoken reminders at 60, 30, and 10 seconds remaining, tones for the final five seconds, and a buzzer at zero.
+### Installation and maintenance
 
-**Rebuild pre-cache** now includes the race-clock phrases. Set RotorHazard browser **Voice Volume** and **Tone Volume** to `0` to prevent duplicate announcements and tones.
-
-### Easier service installation and updates
-
-The service installer offers an interactive stable-release menu, detects the host architecture and installed version, verifies package checksums, and preserves existing service configuration. It identifies updates and downgrades before confirmation; installing the same released version makes no changes.
-
-Plugin and service release numbers no longer have to match. RotorHazard no longer warns about a version difference alone; service version information remains available in `/health` for troubleshooting.
-
-Developers can use `bash tools/install-sendspin-service.sh --dev` from a checkout to build and install local service changes. Repeating the command rebuilds and reinstalls the development package; `--latest` selects the latest stable release.
+- The service installer adds release selection, checksum verification, and configuration-preserving updates. Local developers can build and install their checkout with `--dev`.
+- Compatible plugin and service releases no longer need matching version numbers, removing unnecessary RH warnings.
+- Updates the browser player to Sendspin JavaScript v5 and refreshes dependencies, including Piper TTS 1.8.0.
 
 ### Sendspin 9.x playback
 

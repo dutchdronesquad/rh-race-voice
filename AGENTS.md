@@ -21,6 +21,8 @@ Important modules:
 
 ## Runtime Behavior
 
+Keep architecture changes incremental and concrete. For the standalone-service epic, finish and measure one local event-to-audio path before adding cloud routing or personal pilot selections. Reuse existing libraries and phrase logic; avoid generic frameworks or speculative automation. Keep preparation and per-output playback separate where needed for isolation, and do not run events through both the legacy and replacement schedulers.
+
 RotorHazard phonetic filters and server-side race events are used as callout sources. Heavy work must stay off the RotorHazard event/filter thread. The existing executor schedules callout orchestration, but RotorHazard monkey-patches threading with gevent, so that executor alone does not provide native-thread isolation. Keep Piper synthesis and ONNX session construction behind `PiperSynthesizer._run_native()`; keep RH API calls, queue mutations, and status callbacks outside that native boundary.
 
 Lap callouts are intentionally segmented:
@@ -33,8 +35,7 @@ Do not clear `precache/` on `HEAT_SET`. A heat change should clear queued audio 
 
 Lap callouts should expire quickly enough to avoid stale race audio. The current lap expiry is intentionally longer than the queue default to handle several pilots crossing close together, but it should remain race-day conservative.
 
-Staging tones depend on upstream `Evt.RACE_STAGE_TONE`. Keep them as direct event integrations for branches that target the RotorHazard version containing that event; do not add a fallback timer that reimplements staging logic in the plugin.
-Race-clock callouts depend on upstream `Evt.RACE_CLOCK_CALLOUT`. Keep them as direct event integrations for branches that target the RotorHazard version containing that event; do not add a fallback timer that reimplements race-clock countdown logic in the plugin.
+Staging tones depend on upstream `Evt.RACE_STAGE_TONE`. Keep them as direct event integrations for branches that target the RotorHazard version containing that event; do not add a fallback timer that reimplements staging logic in the plugin. Race-clock callouts depend on upstream `Evt.RACE_CLOCK_CALLOUT`. Keep them as direct event integrations for branches that target the RotorHazard version containing that event; do not add a fallback timer that reimplements race-clock countdown logic in the plugin.
 
 ## Sendspin Notes
 
@@ -94,22 +95,17 @@ The browser player source lives in `sendspin_player/`:
 
 ## Documentation Style
 
+Write Markdown prose as natural paragraphs without a fixed line-length limit. The Python formatter's 88-character target does not apply to documentation. Preserve intentional line breaks in code blocks, tables and lists.
+
 The README should stay selective: keep it focused on what Race Voice is, what it needs, and how to get started. Move day-to-day operation, settings, cache behavior, and troubleshooting details into files under `docs/`.
 
 Keep user-facing docs aligned with actual race behavior, especially cache cleanup, browser playback, Sendspin port `8927`, and the need to set RotorHazard browser Voice Volume and Tone Volume to `0` when Race Voice handles callouts and race sounds.
 
 ## PR Style
 
-Write PR descriptions as a short explanation of the change, not as a raw change
-log. Start with one or two paragraphs that explain the problem, the chosen
-direction, and the user-visible result. Use bullet lists only for the parts that
-are easier to scan as lists, such as notable implementation details, follow-up
-work, or validation steps.
+Write PR descriptions as a short explanation of the change, not as a raw change log. Start with one or two paragraphs that explain the problem, the chosen direction, and the user-visible result. Use bullet lists only for the parts that are easier to scan as lists, such as notable implementation details, follow-up work, or validation steps.
 
-Avoid PR bodies made entirely of bullet lists. Do not enumerate every touched
-file or internal refactor unless it changes behavior, deployment, packaging, or
-the operator workflow. The reader should understand why the branch exists before
-they see the checklist.
+Avoid PR bodies made entirely of bullet lists. Do not enumerate every touched file or internal refactor unless it changes behavior, deployment, packaging, or the operator workflow. The reader should understand why the branch exists before they see the checklist.
 
 ## Changelog Style
 

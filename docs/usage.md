@@ -1,8 +1,15 @@
 # Usage Guide
 
-Race Voice generates RotorHazard callout WAV files on the timing server and sends them to `sendspin-service` over HTTP. The RotorHazard plugin serves its browser player at `/player`; the standalone service/container serves its player at `/`.
+Race Voice generates RotorHazard callout WAV files on the timing server and sends them to `sendspin-service` over HTTP. The RotorHazard plugin serves its browser player at `/player`; the Docker image also includes a player at `/`.
 
-The plugin ZIP and service `.deb` are separate release assets. Install both for a normal RotorHazard setup: the plugin provides RotorHazard integration and the `/player` page, while `sendspin-service` provides playback transport.
+Choose the deployment that matches where you want the service to run:
+
+| Deployment | Intended use |
+|---|---|
+| [`.deb` package](#sendspin-service) | Standard race-day setup: a standalone systemd service on **the same Raspberry Pi OS machine as RotorHazard**, with local playback clients. |
+| [Docker Compose](#docker-image) | Cloud hosting: the Sendspin service runs on a cloud server, with the browser player included in the container. |
+
+For the standard Raspberry Pi setup, install both the plugin ZIP and service `.deb` from the same release. The plugin provides RotorHazard integration and the `/player` page. The `.deb` runs Sendspin independently as a systemd service on that same Pi, with its own Python runtime and dependencies.
 
 ## Setup
 
@@ -19,7 +26,7 @@ The plugin ZIP and service `.deb` are separate release assets. Install both for 
 
 ### Install on Debian or Raspberry Pi OS
 
-The easiest setup is to install the service on the **RotorHazard host**. On 64-bit Debian or Raspberry Pi OS with systemd, open a terminal (or connect over SSH) and paste:
+The `.deb` package is designed to run Sendspin as a standalone service on **the same Raspberry Pi running RotorHazard**, using 64-bit Raspberry Pi OS. It also supports 64-bit Debian systems with systemd (`arm64` and `amd64`). Open a terminal on the RotorHazard machine (or connect over SSH) and paste:
 
 ```shell
 curl -fL https://github.com/dutchdronesquad/rh-race-voice/releases/latest/download/install-sendspin-service.sh -o install-sendspin-service.sh &&
@@ -63,6 +70,8 @@ journalctl -u sendspin-service -n 80 --no-pager
 ```
 
 ### Running on a separate machine
+
+This is an advanced option for a separate Debian-based machine on your local network. The standard `.deb` setup uses the same Raspberry Pi as RotorHazard. For cloud hosting, follow the [Docker Compose instructions](#docker-image).
 
 Install the package on the service machine using the steps above. By default, the HTTP API listens only on `127.0.0.1`, so RotorHazard on another machine cannot reach it.
 
@@ -109,11 +118,11 @@ The service API accepts inline WAV payloads via `wav_files`. It does not accept 
 
 ## Docker Image
 
-The Docker image is the container deployment path for `sendspin-service`. For a normal Raspberry Pi timing-server install, use the `.deb` package instead.
+Docker Compose is the intended deployment path for **running `sendspin-service` in the cloud**. The container runs independently of the RotorHazard machine and includes a browser player at `/`. RotorHazard and playback clients must be able to reach that cloud service. The standard local Raspberry Pi OS setup uses the [`.deb` package](#sendspin-service) on the same Pi as RotorHazard.
 
 Do not run the `.deb` service and a Docker/container service on the same host for the same timing setup unless you deliberately assign separate ingest and Sendspin ports. If both are active, Race Voice may send audio to one service while browser players connect to the other, or different players may connect to different services.
 
-Basic local container run:
+For a quick local test of the cloud image:
 
 ```shell
 docker run --rm \
@@ -122,7 +131,7 @@ docker run --rm \
   ghcr.io/dutchdronesquad/sendspin-service:latest
 ```
 
-Docker Compose:
+For the cloud deployment, run Docker Compose on your cloud server from a checkout of this repository:
 
 ```shell
 cp .env.example .env

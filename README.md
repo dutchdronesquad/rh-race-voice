@@ -51,7 +51,7 @@ Server-side voice callouts for the [RotorHazard] timing platform, powered by [Pi
 - 🎙️ **Local TTS**: Generates voice callouts with [Piper TTS] on the RotorHazard server.
 - 📡 **Sendspin service playback**: Sends generated WAV files to a service that streams PCM audio to connected Sendspin clients over WebSocket, including [WindowsSpin].
 - 🌐 **Browser player**: A built-in RotorHazard plugin player at `/player` that connects to the Sendspin service.
-- 🐳 **Container**: A Docker image is available for standalone service deployments, including the browser player at `/`.
+- 🐳 **Cloud deployment**: Docker Compose runs the Sendspin service on a cloud server, including the browser player at `/`.
 - 🔊 **Race sounds**: Plays staging tones and the race-start buzzer through the same Sendspin output path.
 - 🎛️ **Configurable voice**: Adjustable speech speed, noise scale, and phoneme width from the RotorHazard settings panel.
 - ⚡ **Smart caching**: Reusable pilot-name and lap-number segments are cached separately; use **Rebuild pre-cache** after first setup or voice model/settings changes to prepare them ahead of racing.
@@ -60,11 +60,13 @@ Server-side voice callouts for the [RotorHazard] timing platform, powered by [Pi
 
 - [RotorHazard] with RHAPI support for `Evt.RACE_STAGE_TONE` and `Evt.RACE_CLOCK_CALLOUT`.
 - Python 3.12 or newer.
-- `sendspin-service` installed on the RotorHazard host or another reachable machine. Use the automatic installer below on 64-bit Debian or Raspberry Pi OS.
+- `sendspin-service` running as a standalone systemd service on the **same Raspberry Pi OS machine as RotorHazard**. Use the automatic `.deb` installer below. For cloud hosting, use [Docker Compose](docs/usage.md#docker-image).
 - Network access from playback clients to `sendspin-service`.
 - A browser on the playback device. RotorHazard serves the Sendspin player at `<RotorHazard UI base URL>/player`.
 
 ## Quick Start
+
+This is the standard setup for **RotorHazard and Sendspin on the same Raspberry Pi running 64-bit Raspberry Pi OS**. The `.deb` package runs Sendspin as its own systemd service, with its own Python runtime. Docker Compose is the deployment option for running the service in the cloud; see the [cloud setup](docs/usage.md#docker-image).
 
 1. Download `race_voice.zip` from the latest GitHub release.
 2. In RotorHazard, open the plugin manager and upload the ZIP file.

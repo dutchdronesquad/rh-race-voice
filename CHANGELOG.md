@@ -4,6 +4,30 @@ All notable shipped changes to Race Voice should be documented in this file.
 
 This changelog is intentionally concise. GitHub Releases can carry the fuller change list and release assets.
 
+## [1.1.0] - Unreleased
+
+### Upgrade requirements
+
+Requires **RHAPI 1.5 or newer**, currently available in RotorHazard 4.5.0-beta.1. RotorHazard 4.4.0 is unsupported. Update the Sendspin service to **1.1.0** for the new scheduled race sounds; service 1.0.0 lacks the required timing support.
+
+### Race sounds and callouts
+
+Adds staging beeps, a race-start buzzer, spoken reminders at 60, 30, and 10 seconds remaining, final-five-second tones, and an end-of-timer buzzer. **Rebuild pre-cache** includes the new phrases. Set RotorHazard browser Voice Volume and Tone Volume to `0` to avoid duplicate audio.
+
+### Installation and maintenance
+
+- The service installer adds release selection, checksum verification, and configuration-preserving updates. Local developers can build and install their checkout with `--dev`.
+- Compatible plugin and service releases no longer need matching version numbers, removing unnecessary RH warnings.
+- Updates the browser player to Sendspin JavaScript v5 and refreshes dependencies, including Piper TTS 1.8.0.
+
+### Sendspin 9.x playback
+
+Fixes service startup and browser connections with `aiosendspin` 9.x. The service keeps its server identity across restarts and admits browser players using the encrypted handshake. Existing unencrypted players remain supported.
+
+### Sendspin service diagnostics
+
+**Check Sendspin service** reports service health and checks the backend version needed by the browser player. **Play audio check** also shows these diagnostics, including when an older service cannot report its dependency version.
+
 ## [1.0.0] - 2026-05-30
 
 ### Plugin renamed to Race Voice

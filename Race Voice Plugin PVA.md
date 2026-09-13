@@ -37,7 +37,7 @@ An RHAPI-only RotorHazard plugin that:
 - The plugin cannot edit the built-in Audio Control tab or disable browser TTS automatically on other clients.
 - The plugin cannot inject JavaScript into existing RotorHazard pages.
 
-Consequence: **duplicate prevention is operational**, not automatic. The operator must manually set Voice Volume to 0 on all regular RotorHazard browser clients when the plugin is active.
+Consequence: **duplicate prevention is operational**, not automatic. The operator must manually set Voice Volume and Tone Volume to 0 on all regular RotorHazard browser clients when the plugin is active.
 
 ---
 
@@ -51,27 +51,27 @@ Things that would make the plugin significantly easier or more capable, but don'
 
 **Ideal fix:** Add a post-plugin-load event such as `Evt.PLUGINS_READY` or `Evt.SETTINGS_READY`, fired after plugin loading and registered setting defaults are initialized. This gives plugins a stable point to read options and start background work.
 
-**Status: Post-MVP / deferred.** Race Voice does not automatically build startup pre-cache until RH exposes a reliable lifecycle event. Operators can use **Rebuild pre-cache** after startup.
+**Status: Post-MVP / deferred.** Race Voice does not automatically build startup pre-cache until RH exposes a reliable lifecycle event. Operators can use **Rebuild pre-cache** after first setup or voice model/settings changes.
 
 ---
 
 ### Race clock countdown events
 
-**Problem:** No server-side events for race time warnings ("30 seconds remaining", "10 seconds remaining", etc.). The countdown is handled entirely in browser JS via a local timer.
+**Problem:** No server-side events for race clock callouts ("30 seconds remaining", "10 seconds remaining", etc.). The countdown is handled entirely in browser JS via a local timer.
 
-**Ideal fix:** Add `Evt.RACE_CLOCK_WARNING` fired by the RH race thread at configurable thresholds (e.g. 60s, 30s, 10s remaining), with payload `{'seconds_remaining': int}`. This would let any plugin — not just audio plugins — react to race time milestones without reimplementing a parallel timer.
+**Ideal fix:** Add `Evt.RACE_CLOCK_CALLOUT` fired by the RH race thread at configurable thresholds (e.g. 60s, 30s, 10s remaining), with payload `{'seconds_remaining': int, 'scheduled_at_monotonic': float}`. This would let any plugin — not just audio plugins — react to race time milestones without reimplementing a parallel timer.
 
-**Status: Post-MVP / deferred.** Not implemented in the plugin until RH provides a proper server-side event. Race clock callouts are skipped for now.
+**Status: Implemented.** `Evt.RACE_CLOCK_CALLOUT` added to RotorHazard (`eventmanager.py`, `RHRace.race_expire_thread`). Plugin synthesizes callouts at 60s ("One minute"), 30s ("30 seconds"), and 10s ("10 seconds").
 
 ---
 
 ### Staging tone events
 
-**Problem:** The staging beeps ("3... 2... 1...") before race start are generated in browser JS. There is no `Evt.RACE_ARM_TONE` or similar server event. Plugin cannot reproduce the countdown sequence without reimplementing the staging logic.
+**Original problem:** The staging beeps ("3... 2... 1...") before race start were generated in browser JS. Without `Evt.RACE_STAGE_TONE` or a similar server event, the plugin could not reproduce the countdown sequence without reimplementing the staging logic.
 
-**Ideal fix:** Fire `Evt.RACE_ARM_TONE` from `RHRace.stage()` at each staging beep interval, with payload `{'tone_index': int, 'tones_remaining': int}`. This decouples the audio signal from the browser and lets server-side plugins (LED, audio, video) stay in sync with the actual staging sequence.
+**Ideal fix:** Fire `Evt.RACE_STAGE_TONE` from `RHRace.stage()` at each staging beep interval, with payload `{'tone_index': int, 'tones_remaining': int, 'scheduled_at_monotonic': float}`. This decouples the audio signal from the browser and lets server-side plugins (LED, audio, video) stay in sync with the actual staging sequence.
 
-**Status: Post-MVP / deferred.** Not implemented in the plugin until RH fires server-side arm tone events. Staging beeps are skipped for now.
+**Status: Implemented on the upstream staging-tone branch.** `Evt.RACE_STAGE_TONE` added to RotorHazard (`eventmanager.py`, `RHRace.stage()`). The stage-tone event payload includes `scheduled_at_monotonic`, which the plugin uses to schedule `stage.wav` accurately through Sendspin. The race-start `buzzer.wav` is handled from `Evt.RACE_START` and uses `rhapi.race.start_time_internal` as its scheduled playback time.
 
 ---
 
@@ -326,7 +326,7 @@ Ownership note: the RotorHazard plugin owns the local browser player because it 
     "dev": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
     "check": "tsc --noEmit",
-    "lint": "eslint .",
+    "lint": "oxlint .",
     "preview": "vite preview --host 0.0.0.0"
   }
 }
@@ -365,6 +365,7 @@ RotorHazard server
         │     Evt.HEAT_SET, CROSSING_ENTER/EXIT
         ├── Flt.EMIT_PHONETIC_DATA  (lap data snapshots)
         ├── Flt.EMIT_PHONETIC_TEXT  (server-originated text callouts)
+        ├── services/clock_callouts.py (race-clock callout phrases)
         ├── services/lap_callouts.py (lap callout segment planning)
         ├── services/precache.py    (manual pre-cache rebuilds)
         ├── services/schedule.py    (scheduled-race countdown timers)
@@ -413,7 +414,7 @@ Cache path: `{model_name}/{sha1(normalized_text)}_{speed}_{noise}_{noise_w}.wav`
 Current heat-load behavior:
 - Clears ephemeral lap-time WAV files for the selected model.
 - Pre-cache generation is manual via **Rebuild pre-cache** until RH provides a reliable plugin-ready lifecycle event.
-- Rebuild pre-cache generates schedule phrases, current-heat pilot-name segments, and lap-number segments under `tts/<model>/precache/`.
+- Rebuild pre-cache generates race-clock callout phrases, schedule phrases, current-heat pilot-name segments, and lap-number segments under `tts/<model>/precache/`.
 
 ---
 
@@ -424,7 +425,7 @@ The plugin cannot take over the built-in Audio Control tab. The operating model 
 1. Install and enable the plugin.
 2. Configure Piper in the plugin panel.
 3. Run a Sendspin player on the device connected to the speakers and connect it to the RotorHazard host on port `8927`.
-4. On every regular RotorHazard browser client: set Voice Volume to 0 and disable browser beeps if the plugin handles beeps.
+4. On every regular RotorHazard browser client: set Voice Volume and Tone Volume to 0 if the plugin handles callouts and race sounds.
 
 **Built-in Audio Control → used only to silence browser clients**
 **Plugin Audio Profile → planned place to decide what the speakers announce**
@@ -436,8 +437,8 @@ MVP plugin audio profile mirrors the familiar RH categories that can be implemen
 - Voice volume, beep volume, speech speed, voice model
 
 Post-MVP profile additions:
-- Race clock callouts
-- Staging tone beeps
+- Race clock callouts ✓
+- Staging tone beeps ✓
 - Race tied / overtime callouts
 - Race leader callouts
 
@@ -456,7 +457,7 @@ Implemented:
 - Play audio check quick button
 - Stop audio quick button
 - Clear TTS cache quick button
-- Duplicate prevention warning for browser Voice Volume
+- Duplicate prevention warning for browser Voice Volume and Tone Volume
 - Model download/load status surfaced to UI as notifications
 
 MVP planned / not implemented yet:
@@ -563,7 +564,7 @@ Deferred RHAPI-dependent features, external/cloud Sendspin output, QR codes, Wyo
 - [x] Log how many new WAVs were generated and how long it took
 
 #### Duplicate prevention UI
-- [x] Plugin panel shows two separate markdown warnings (Voice Volume + browser beeps)
+- [x] Plugin panel warns operators to set browser Voice Volume and Tone Volume to 0
 
 #### Error handling
 - [x] Piper fails → log error with phrase text, skip callout, continue
@@ -630,9 +631,9 @@ and expiry. Sendspin services are output targets.
 
 #### Deferred RH / RHAPI-dependent callouts
 - [ ] `Evt.RACE_PILOT_DONE` → "[callsign] finished"
-- [ ] Race clock callouts via upstream `Evt.RACE_CLOCK_WARNING`
-- [ ] Arm sequence countdown beeps via upstream `Evt.RACE_ARM_TONE`
-- [ ] Last-5-seconds countdown beeps (one `stage.wav` per second for the final 5s) and `buzzer.wav` at race end — mirrors browser behaviour; needs per-second `Evt.RACE_CLOCK_WARNING` thresholds (5, 4, 3, 2, 1) or a dedicated end-of-race countdown mechanism
+- [x] Race clock callouts via upstream `Evt.RACE_CLOCK_CALLOUT`
+- [x] Staging tone beeps via upstream `Evt.RACE_STAGE_TONE`
+- [ ] Last-5-seconds countdown beeps (one `stage.wav` per second for the final 5s) and `buzzer.wav` at race end — mirrors browser behaviour; needs per-second `Evt.RACE_CLOCK_CALLOUT` thresholds (5, 4, 3, 2, 1) or a dedicated end-of-race countdown mechanism
 - [ ] Scheduled race start callouts ("Next race begins in 30 seconds" etc.)
 - [ ] Race tied / overtime via upstream `Evt.RACE_TIED` / `Evt.RACE_OVERTIME`
 - [ ] Race leader via `Flt.EMIT_PHONETIC_LEADER` (payload: `pilot`, `callsign`; already hookable today — deferred to keep MVP scope small)
@@ -672,7 +673,7 @@ server fallback. The first service API smoke test has passed for `/health`,
 - [x] Plugin setting: Local Sendspin API token (optional)
 - [x] Plugin setting: Sendspin target dropdown (Local / Cloud / Local + Cloud)
 - [ ] Optional plugin health/status display without adding a separate debug-style quick button
-- [ ] Add a service API compatibility field and plugin-side handling only when the service API gets a breaking change
+- [ ] Add a service API compatibility field and plugin-side handling only when the service API gets a breaking change Follow the [compatibility policy](docs/architecture.md#plugin-and-service-compatibility), including support for existing services without metadata and actionable upgrade guidance.
 - [x] Local service works as a self-contained `.deb` package on amd64
 - [x] Play audio check works through the installed local service on amd64
 - [x] Local service does not depend on RotorHazard venv, `uv`, `pip`, or user-managed Python
@@ -750,7 +751,7 @@ server fallback. The first service API smoke test has passed for `/health`,
 - [ ] Sendspin player: install on NUC / laptop / Pi
 - [ ] Local Sendspin service: install/upgrade/remove packaged `.deb` on Pi
 - [ ] Cloud Sendspin server: deploy with Docker behind HTTPS
-- [ ] RotorHazard browser clients: how to set Voice Volume to 0
+- [ ] RotorHazard browser clients: how to set Voice Volume and Tone Volume to 0
 - [ ] End-to-end test checklist for a new installation
 
 **Success criteria:**

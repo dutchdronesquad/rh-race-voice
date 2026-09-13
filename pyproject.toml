@@ -5,12 +5,12 @@ description = "RotorHazard plugin for fully local server-side voice callout WAV 
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "piper-tts>=1.4.2",
+    "piper-tts>=1.8.0",
 ]
 
 [project.optional-dependencies]
 sendspin-service = [
-    "aiosendspin>=6.0.0",
+    "aiosendspin>=9.1.0,<10",
     "av>=17.0.1",
     "numpy>=2.4.5",
     "pillow>=12.2.0",
@@ -19,8 +19,8 @@ sendspin-service = [
 [dependency-groups]
 dev = [
   "pre-commit-hooks==6.0.0",
-  "prek==0.4.3",
-  "ruff==0.15.15",
+  "prek==0.5.2",
+  "ruff==0.16.7",
 ]
 
 [tool.ruff]
@@ -44,4 +44,6 @@ lint.ignore = [
 
   # Custom ignores
   "G004",    # Allow f-string in logging
+  "CPY001",  # Project does not require per-file copyright notices
+  "PLR0917", # Existing callback/API signatures can require more than five positional arguments
 ]

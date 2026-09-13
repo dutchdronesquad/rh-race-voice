@@ -34,8 +34,10 @@ from .const import (
     VOICE_MODEL_OPTION,
     VOICE_MODELS,
 )
-from .output import SendspinServiceClient
+from .output import SendspinServiceClient, service_version_warning
 from .piper import PiperSynthesizer, SynthesisParams, SynthesisResult
+from .services import schedule
+from .services.clock_callouts import ClockCallouts
 from .services.lap_callouts import LapCalloutSegments
 from .services.precache import PrecacheManager
 from .services.schedule import ScheduleCalloutManager
@@ -45,12 +47,16 @@ logger = logging.getLogger(__name__)
 
 _ASSET_DIR = Path(__file__).parent / "assets"
 _AUDIO_CHECK_WAV = _ASSET_DIR / "moavii-foreign.wav"
+_STAGE_BEEP_WAV = _ASSET_DIR / "stage.wav"
+_BUZZER_WAV = _ASSET_DIR / "buzzer.wav"
 
 # Status messages that are surfaced to the UI as notifications.
 _UI_NOTIFY_PREFIXES = ("Downloading model",)
 _DEBUG_STATUS_PREFIXES = ("Loading model", "Model loaded")
 
 _LAP_CALLOUT_EXPIRY_SEC = 10.0
+_STAGE_TONE_STALE_AFTER_SEC = 1.0
+_START_BUZZER_STALE_AFTER_SEC = 1.0
 
 try:
     with (Path(__file__).parent / "locales.json").open(encoding="utf-8") as _f:
@@ -96,12 +102,14 @@ class RaceVoicePlugin:
             enqueue_callout=self._enqueue_schedule_callout,
             phrase_for=self._schedule_phrase_for_settings,
         )
+        self._clock_callouts = ClockCallouts(locale_for_model=self._locale_for_model)
         self._lap_callouts = LapCalloutSegments(locale_for_model=self._locale_for_model)
         self._precache = PrecacheManager(
             tts=self._tts,
             lap_callouts=self._lap_callouts,
             synth_pool=self._synth_pool,
             prepare_model=self._prepare_model,
+            clock_callouts=self._clock_callouts,
             schedule_phrase=self._schedule_phrase,
             pilot_names_for_heat=self._pilot_names_for_heat,
             heat_name_for_id=self._heat_name_for_id,
@@ -115,6 +123,7 @@ class RaceVoicePlugin:
             stop_audio_callback=self.stop_audio,
             clear_cache_callback=self.clear_tts_cache,
             rebuild_precache_callback=self.rebuild_precache,
+            service_check_callback=self.check_sendspin_service,
         )
         self._register_events()
         self._register_filters()
@@ -133,6 +142,20 @@ class RaceVoicePlugin:
             self._on_event_cache_reset,
             name="race_voice_database_reset",
         )
+        self._rhapi.events.on(
+            Evt.RACE_STAGE_TONE,
+            self._on_stage_tone,
+            name="race_voice_stage_tone",
+        )
+        self._rhapi.events.on(
+            Evt.RACE_START, self._on_race_start, name="race_voice_race_start"
+        )
+        if clock_callout_evt := getattr(Evt, "RACE_CLOCK_CALLOUT", None):
+            self._rhapi.events.on(
+                clock_callout_evt,
+                self._on_clock_callout,
+                name="race_voice_clock_callout",
+            )
         self._rhapi.events.on(
             Evt.RACE_SCHEDULE,
             self._on_race_schedule,
@@ -238,6 +261,79 @@ class RaceVoicePlugin:
         heat_id = self._rhapi.race.heat
         return heat_id or None
 
+    def _on_race_start(self, _args: dict[str, Any]) -> None:
+        """Play the start buzzer when the race begins."""
+        if not self._enabled():
+            return
+        play_at = getattr(self._rhapi.race, "start_time_internal", None)
+        self._audio_queue.enqueue(
+            text="race start",
+            wav_paths=[_BUZZER_WAV],
+            priority=Priority.HIGH,
+            expiry_sec=_expiry_sec_after_scheduled_play(
+                play_at, _START_BUZZER_STALE_AFTER_SEC
+            ),
+            play_at=play_at,
+        )
+
+    def _on_stage_tone(self, args: dict[str, Any]) -> None:
+        """Play the staging beep for this stage tone."""
+        if not self._enabled():
+            return
+        play_at = args.get("scheduled_at_monotonic")
+        self._audio_queue.enqueue(
+            text="stage tone",
+            wav_paths=[_STAGE_BEEP_WAV],
+            priority=Priority.HIGH,
+            expiry_sec=_expiry_sec_after_scheduled_play(
+                play_at, _STAGE_TONE_STALE_AFTER_SEC
+            ),
+            play_at=play_at,
+        )
+
+    def _on_clock_callout(self, args: dict[str, Any]) -> None:
+        """Synthesize and enqueue a race clock callout."""
+        if not self._enabled():
+            return
+        plan = self._clock_callouts.plan(args.get("seconds_remaining"))
+        if plan is None:
+            return
+        play_at = args.get("scheduled_at_monotonic")
+        if plan.kind == "tone":
+            self._audio_queue.enqueue(
+                text="race clock tone",
+                wav_paths=[_STAGE_BEEP_WAV],
+                priority=Priority.HIGH,
+                expiry_sec=_expiry_sec_after_scheduled_play(
+                    play_at, _STAGE_TONE_STALE_AFTER_SEC
+                ),
+                play_at=play_at,
+            )
+            return
+        if plan.kind == "buzzer":
+            self._audio_queue.enqueue(
+                text="race clock buzzer",
+                wav_paths=[_BUZZER_WAV],
+                priority=Priority.HIGH,
+                expiry_sec=_expiry_sec_after_scheduled_play(
+                    play_at, _START_BUZZER_STALE_AFTER_SEC
+                ),
+                play_at=play_at,
+            )
+            return
+        settings = self._settings()
+        text = self._clock_callouts.phrase(plan.seconds, settings.model_name)
+        expires_at = max(time.monotonic(), play_at or time.monotonic()) + 8.0
+        self._synth_pool.submit(
+            self._enqueue,
+            text,
+            Priority.HIGH,
+            expires_at,
+            self._clock_callouts.subdir,
+            settings,
+            play_at,
+        )
+
     def _on_event_cache_reset(self, _args: dict[str, Any]) -> None:
         """Wipe event-specific WAVs when RotorHazard starts a new data set."""
         self._precache.cancel()
@@ -268,7 +364,7 @@ class RaceVoicePlugin:
             phrase,
             Priority.HIGH,
             time.monotonic() + 8.0,
-            "precache/schedule",
+            schedule.PRECACHE_SUBDIR,
             settings,
         )
 
@@ -294,6 +390,44 @@ class RaceVoicePlugin:
 
     def play_audio_check(self, _args: dict[str, Any] | None = None) -> None:
         """Play the bundled audio-check WAV through Sendspin."""
+        self._synth_pool.submit(self._play_audio_check)
+
+    def check_sendspin_service(self, _args: dict[str, Any] | None = None) -> None:
+        """Check the running service without blocking the RotorHazard event thread."""
+        self._synth_pool.submit(self._check_sendspin_service)
+
+    def _check_sendspin_service(self) -> bool:
+        try:
+            health = self._sendspin.health()
+        except (OSError, TypeError, ValueError) as exc:
+            logger.warning("Race Voice: Sendspin service check failed: %s", exc)
+            self._rhapi.ui.message_alert(
+                "Race Voice cannot read Sendspin service health. Check the service "
+                "URL and sendspin-service logs; the service may be stopped or "
+                "have failed to start after an update."
+            )
+            return False
+        if health.get("ok") is not True or health.get("status") != "ok":
+            self._rhapi.ui.message_alert(
+                "Race Voice: Sendspin service reports it is not healthy. "
+                "Check the sendspin-service logs."
+            )
+            return False
+        warning = service_version_warning(health)
+        if warning:
+            logger.warning(warning)
+            self._rhapi.ui.message_alert(warning)
+        else:
+            self._rhapi.ui.message_notify(
+                f"Race Voice: Sendspin service {health.get('version', 'unknown')}, "
+                f"aiosendspin {health['aiosendspin_version']}: "
+                "browser-player minimum version check passed."
+            )
+        return True
+
+    def _play_audio_check(self) -> None:
+        if not self._check_sendspin_service():
+            return
         if not _AUDIO_CHECK_WAV.exists():
             self._rhapi.ui.message_alert("Race Voice audio check WAV is missing")
             return
@@ -357,13 +491,14 @@ class RaceVoicePlugin:
         self._record_generation(result)
         return result.wav_path
 
-    def _enqueue(
+    def _enqueue(  # noqa: PLR0913
         self,
         text: str,
         priority: Priority,
         expires_at: float,
         subdir: str = "",
         settings: VoiceSettings | None = None,
+        play_at: float | None = None,
     ) -> None:
         """Synthesize text and push it onto the audio queue."""
         if time.monotonic() > expires_at:
@@ -375,6 +510,7 @@ class RaceVoicePlugin:
                 wav_paths=[wav_path],
                 priority=priority,
                 expiry_sec=max(0.0, expires_at - time.monotonic()),
+                play_at=play_at,
             )
 
     def _record_generation(self, result: SynthesisResult) -> None:
@@ -398,6 +534,7 @@ class RaceVoicePlugin:
             self._prepared_settings = settings
 
     def _pilot_names_for_heat(self, heat_id: int) -> list[str]:
+        """Return phonetic pilot names for all pilots in the heat."""
         slots = self._rhapi.db.slots_by_heat(heat_id)
         pilot_names: list[str] = []
         for slot in slots:
@@ -506,3 +643,13 @@ class RaceVoicePlugin:
     def _option(self, name: str, *, default: Any) -> Any:
         value = self._rhapi.db.option(name, default=default)
         return default if value is False else value
+
+
+def _expiry_sec_after_scheduled_play(
+    play_at: float | None, stale_after_sec: float
+) -> float:
+    """Return queue expiry seconds for audio that may be scheduled in the future."""
+    now = time.monotonic()
+    scheduled_at = play_at if play_at is not None else now
+    expires_at = max(now, scheduled_at) + stale_after_sec
+    return max(0.0, expires_at - now)

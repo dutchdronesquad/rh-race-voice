@@ -6,14 +6,18 @@ import asyncio
 import contextlib
 import io
 import logging
+import os
 import threading
 import time
 import wave
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
-from aiosendspin.server import AudioFormat
+from aiosendspin.noise.keys import Identity
+from aiosendspin.noise.trust_store import FileServerPairingStore, PskCategory
+from aiosendspin.server import AudioFormat, ClientConnectedEvent
 from aiosendspin.server import SendspinServer as AioSendspinServer
 from aiosendspin.server.push_stream import MAIN_CHANNEL, StreamStoppedError
 
@@ -21,6 +25,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from aiosendspin.server.group import SendspinGroup
+    from aiosendspin.server.server import SendspinEvent
 
     from .audio_queue import WavItem
 
@@ -102,11 +107,18 @@ class SendSpinServer:
         port: int = 8927,
         *,
         advertise: bool = True,
+        state_dir: Path | None = None,
     ) -> None:
         """Configure host and port; call ``start()`` to launch the server."""
         self._host = host
         self._port = port
         self._advertise = advertise
+        self._state_dir = state_dir or Path(
+            os.environ.get("SENDSPIN_STATE_DIR")
+            or os.environ.get("STATE_DIRECTORY")
+            or Path.home() / ".local/share/sendspin-service"
+        )
+        self._client_tasks: set[asyncio.Task[None]] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._server: AioSendspinServer | None = None
         self._ready = threading.Event()
@@ -261,11 +273,18 @@ class SendSpinServer:
             loop.run_until_complete(loop.shutdown_asyncgens())
 
     async def _start_server(self) -> None:
+        identity = await asyncio.to_thread(_load_identity, self._state_dir)
+        pairing_store = await FileServerPairingStore.open(
+            self._state_dir / "pairings.json"
+        )
         server = AioSendspinServer(
             loop=asyncio.get_running_loop(),
-            server_id="sendspin-service",
+            identity=identity,
             server_name="Sendspin Service",
+            pairing_store=pairing_store,
+            allow_unencrypted=True,
         )
+        server.add_event_listener(self._on_client_event)
         try:
             await server.start_server(
                 port=self._port,
@@ -274,6 +293,7 @@ class SendSpinServer:
                 discover_clients=False,
             )
         except OSError:
+            await server.close()
             logger.exception(
                 "Sendspin service: cannot start Sendspin server on %s:%s",
                 self._host,
@@ -288,7 +308,33 @@ class SendSpinServer:
             self._port,
         )
 
+    def _on_client_event(self, server: AioSendspinServer, event: SendspinEvent) -> None:
+        if isinstance(event, ClientConnectedEvent):
+            task = asyncio.create_task(self._admit_player(server, event.client_id))
+            self._client_tasks.add(task)
+            task.add_done_callback(self._client_tasks.discard)
+
+    @staticmethod
+    async def _admit_player(server: AioSendspinServer, client_id: str) -> None:
+        # Preserve Race Voice's open playback endpoint. SDK 5 connects using
+        # encrypted unpaired access, which 9.x requires the server to approve.
+        # The task runs after the synchronous client-attachment event returns.
+        client = server.get_client(client_id)
+        security = client.connection_security if client is not None else None
+        if security is not None and security.psk_category is PskCategory.SENTINEL:
+            try:
+                await server.trust_unpaired(client_id)
+            except Exception:
+                logger.exception(
+                    "Sendspin service: could not admit player %s", client_id
+                )
+
     async def _close_server(self) -> None:
+        tasks = list(self._client_tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._client_tasks.clear()
         if self._server is not None:
             await self._stop_stream()
             await self._server.close()
@@ -537,6 +583,20 @@ class SendSpinServer:
                     client.client_id,
                 )
         return sum(1 for client in group.clients if client.is_connected)
+
+
+def _load_identity(state_dir: Path) -> Identity:
+    """Persist the server identity across service restarts and package updates."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    path = state_dir / "identity.key"
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return Identity.from_private_bytes(path.read_bytes())
+    identity = Identity.generate()
+    with os.fdopen(fd, "wb") as file:
+        file.write(identity.private_bytes)
+    return identity
 
 
 def _handle_loop_exception(

@@ -19,3 +19,8 @@ services:
     ports:
       - "${SENDSPIN_INGEST_PORT:-8766}:${SENDSPIN_INGEST_PORT:-8766}"
       - "${SENDSPIN_PORT:-8927}:${SENDSPIN_PORT:-8927}"
+    volumes:
+      - sendspin-state:/var/lib/sendspin-service
+
+volumes:
+  sendspin-state:

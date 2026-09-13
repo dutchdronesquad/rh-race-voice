@@ -13,7 +13,10 @@ RotorHazard event/filter
   -> Sendspin browser/player clients
 ```
 
+The main RotorHazard sources are `Flt.EMIT_PHONETIC_DATA`, `Flt.EMIT_PHONETIC_TEXT`, `Evt.RACE_CLOCK_CALLOUT`, `Evt.RACE_STAGE_TONE`, `Evt.RACE_START`, `Evt.HEAT_SET`, and scheduled race events.
+
 The RotorHazard plugin owns event handling, TTS generation, caching, enqueueing, and the browser player route at `/player`. `sendspin-service` owns `aiosendspin`, player connections, stream state, and the Sendspin player endpoint on port `8927`.
+Staging tones from `Evt.RACE_STAGE_TONE` and the race-start buzzer from `Evt.RACE_START` are queued as static WAV files through the same Sendspin service path.
 
 ## Plugin Package
 
@@ -44,7 +47,17 @@ Service endpoints:
 - `POST /v1/play`
 - `POST /v1/stop`
 
-`POST /v1/play` accepts `wav_files` entries with base64 WAV data plus optional `text`, `priority`, `expiry_sec`, `play_at`, and `volume`.
+`POST /v1/play` accepts `wav_files` entries with base64 WAV data plus optional `text`, `priority`, `expiry_sec`, `play_at_delay_sec`, and `volume`.
+
+## Plugin and Service Compatibility
+
+Compatibility is defined by the HTTP API contract, currently `/v1/play` and `/v1/stop`, including the payload fields and playback behavior the plugin relies on. Package release numbers do not need to match. The service `version` in `/health` is diagnostic metadata, not an API version; the plugin does not fetch it at startup or during **Play audio check**.
+
+Keep changes to the existing API backward compatible where possible. A new optional field is only safe for an older service when the plugin can operate correctly without its effect. Do not infer compatibility solely from the `/v1` path if required behavior changes.
+
+When a future change requires a different API contract or a new capability, introduce explicit compatibility metadata and plugin handling as part of that change. Existing services without that metadata must retain support for the existing v1 behavior; a missing field alone must not force an upgrade. Any new required capability needs a documented legacy fallback or an actionable warning explaining the affected feature and the required service update. Release notes must describe the requirement and upgrade path.
+
+Plugin and service artifacts may continue to share a release tag. Publishing them together does not require operators to update both components.
 
 ## Playback Behavior
 
@@ -53,7 +66,8 @@ Service endpoints:
 Important behavior:
 
 - Consecutive play calls append to the active stream instead of restarting it.
-- Jobs can provide `play_at` for scheduled static sounds.
+- Jobs can provide a relative playback delay for scheduled static sounds. The plugin derives that delay from `scheduled_at_monotonic` on `Evt.RACE_STAGE_TONE` and from `rhapi.race.start_time_internal` for the race-start buzzer before sending the job to `sendspin-service`.
+- Scheduled race sounds target RotorHazard's server-side tone time. Built-in RotorHazard browser tones may not line up exactly because they are driven by browser timer and audio scheduling.
 - Late-joining browser clients are added to the active stream group.
 - The stream is stopped after the queued audio has finished.
 
@@ -63,7 +77,7 @@ Both the plugin and the service use a single worker queue to keep event callback
 
 | Priority | Used for |
 |----------|----------|
-| HIGH     | Winner announcements, manual test phrase, audio check, scheduled-race countdowns |
+| HIGH     | Winner announcements, manual test phrase, audio check, race-clock callouts, scheduled-race countdowns, staging tones, race-start buzzer |
 | NORMAL   | Lap callouts |
 | LOW      | Crossing beeps (earmarked, not yet used by the current plugin) |
 
@@ -87,6 +101,7 @@ race_voice_cache/
       precache/
         pilots/
         laps/
+        clock/
         schedule/
       tmp/
       test/
@@ -107,6 +122,8 @@ This avoids pre-generating every pilot/lap combination while still keeping commo
 
 ## Pre-Cache Rebuilds
 
-Manual pre-cache rebuilds are handled by `services/precache.py`. The manager owns stale-generation tracking, directory cleanup, schedule phrase generation, lap segment generation, pilot-name generation, and completion notifications.
+Race-clock callout phrase planning lives in `services/clock_callouts.py`, using the same localized phrase logic for live event playback and manual pre-cache rebuilds.
 
-Operators should run **Rebuild pre-cache** after startup or voice setting changes when they want predictable phrases prepared before racing.
+Manual pre-cache rebuilds are handled by `services/precache.py`. The manager owns stale-generation tracking, directory cleanup, race-clock phrase generation, schedule phrase generation, lap segment generation, pilot-name generation, and completion notifications.
+
+Operators should run **Rebuild pre-cache** after first setup or voice model/settings changes when they want predictable phrases prepared before racing.

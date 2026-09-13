@@ -51,35 +51,45 @@ Server-side voice callouts for the [RotorHazard] timing platform, powered by [Pi
 - 🎙️ **Local TTS**: Generates voice callouts with [Piper TTS] on the RotorHazard server.
 - 📡 **Sendspin service playback**: Sends generated WAV files to a service that streams PCM audio to connected Sendspin clients over WebSocket, including [WindowsSpin].
 - 🌐 **Browser player**: A built-in RotorHazard plugin player at `/player` that connects to the Sendspin service.
-- 🐳 **Container**: A Docker image is available for standalone service deployments, including the browser player at `/`.
+- 🐳 **Optional cloud deployment**: Docker Compose is available as an extra for cloud hosting, including the browser player at `/`.
+- 🔊 **Race sounds**: Plays staging tones and the race-start buzzer through the same Sendspin output path.
 - 🎛️ **Configurable voice**: Adjustable speech speed, noise scale, and phoneme width from the RotorHazard settings panel.
-- ⚡ **Smart caching**: Reusable pilot-name and lap-number segments are cached separately; use **Rebuild pre-cache** after startup or voice model/settings changes to prepare them ahead of racing.
+- ⚡ **Smart caching**: Reusable pilot-name and lap-number segments are cached separately; use **Rebuild pre-cache** after first setup or voice model/settings changes to prepare them ahead of racing.
 
 ## Requirements
 
-- [RotorHazard] with RHAPI plugin support.
+- [RotorHazard] with RHAPI support for `Evt.RACE_STAGE_TONE` and `Evt.RACE_CLOCK_CALLOUT`.
 - Python 3.12 or newer.
-- `sendspin-service` installed on the RotorHazard host or another reachable machine.
+- `sendspin-service` (installation below).
 - Network access from playback clients to `sendspin-service`.
-- A browser on the playback device. RotorHazard serves the Sendspin player at `<RotorHazard UI base URL>/player`.
+- A playback client: a browser or [WindowsSpin].
 
 ## Quick Start
 
-1. Download `race_voice.zip` from the latest GitHub release.
-2. In RotorHazard, open the plugin manager and upload the ZIP file.
-3. Restart RotorHazard if requested.
-4. Download the matching `sendspin-service_*.deb` from the same GitHub release and install it on the RotorHazard host.
-5. Open the RotorHazard settings page and enable **Race Voice**.
-6. Confirm **Sendspin service URL** points to the service, normally `http://127.0.0.1:8766`.
-7. Open `<RotorHazard UI base URL>/player` from the playback device.
-8. Use **Rebuild pre-cache** to prepare schedule, pilot-name, and lap-number WAV files.
-9. Use **Generate test phrase** or **Play audio check** to verify playback.
+**Recommended:** install the `.deb` service on the same Raspberry Pi as RotorHazard, running 64-bit Raspberry Pi OS.
 
-The first generated phrase for a voice model downloads the Piper model into the RotorHazard data cache. That can take a moment depending on the server and network connection.
+1. Download `race_voice.zip` from the [latest release](https://github.com/dutchdronesquad/rh-race-voice/releases/latest), upload it in RotorHazard's plugin manager, and restart RotorHazard if requested.
+2. On the RotorHazard machine, run:
+
+   ```shell
+   curl -fL https://github.com/dutchdronesquad/rh-race-voice/releases/latest/download/install-sendspin-service.sh -o install-sendspin-service.sh &&
+     bash install-sendspin-service.sh
+   ```
+
+   Choose a stable service release and confirm. Plugin and service release numbers do not need to match; see [update guidance](docs/usage.md#update-or-choose-a-version). The installer starts the service automatically. Stop any Sendspin Docker container on this machine first to avoid a [port conflict](docs/usage.md#port-conflicts).
+
+3. In **Settings → Race Voice**, enable **Plugin audio** and keep **Sendspin service URL** at `http://127.0.0.1:8766`.
+4. On your playback device, open `<RotorHazard UI base URL>/player` and press **Connect**. Alternatively, connect WindowsSpin to the Pi's LAN address on port `8927`.
+5. Use **Play audio check** to test sound, then **Rebuild pre-cache** to prepare callouts.
+
+Set RotorHazard browser **Voice Volume** and **Tone Volume** to `0` to prevent duplicate audio. The first use of a voice downloads its model.
+
+[Docker Compose](docs/usage.md#docker-image) is an optional cloud setup with its own player. Select local or cloud using **Sendspin service URL**; the plugin sends to one server at a time.
 
 ## Documentation
 
 - [Usage Guide](docs/usage.md): setup, settings, browser player, cache layout, operational notes, and troubleshooting.
+- [Sendspin service installation](docs/usage.md#sendspin-service): package selection, installation commands, and playback from other devices on the LAN.
 - [Changelog](CHANGELOG.md): release history.
 - [Contributing](CONTRIBUTING.md): development setup and contribution guidelines.
 

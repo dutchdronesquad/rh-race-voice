@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -20,6 +21,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def service_version_warning(health: dict[str, Any]) -> str | None:
+    """Check the backend requirement of the bundled Sendspin JS 5 player."""
+    backend = health.get("aiosendspin_version")
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:\+[\w.]+)?", str(backend))
+    if match is None:
+        return (
+            "Race Voice cannot verify browser-player compatibility: the Sendspin "
+            "service does not report a recognized aiosendspin version. "
+            "Update the separate sendspin-service installation; updating the "
+            "RotorHazard venv does not update that service."
+        )
+    if int(match[1]) < 9:
+        return (
+            f"Race Voice browser player requires aiosendspin 9.0.0 or newer, "
+            f"but the running Sendspin service reports {backend}. "
+            "Update the separate sendspin-service installation; updating the "
+            "RotorHazard venv does not update that service."
+        )
+    return None
+
+
 class SendspinServiceClient:
     """HTTP client for the standalone Sendspin service."""
 
@@ -32,6 +54,17 @@ class SendspinServiceClient:
         """Configure lazy option lookups for each request."""
         self._service_url = service_url
         self._timeout_s = timeout_s
+
+    def health(self) -> dict[str, Any]:
+        """Read the running service's metadata, propagating request failures."""
+        request = urllib.request.Request(  # noqa: S310
+            f"{self._base_url()}/health", headers={"Accept": "application/json"}
+        )
+        with urllib.request.urlopen(request, timeout=self._timeout_s()) as response:  # noqa: S310
+            payload = json.load(response)
+        if not isinstance(payload, dict):
+            raise TypeError("Sendspin service health response must be a JSON object")
+        return payload
 
     def play(  # noqa: PLR0913
         self,
@@ -56,10 +89,11 @@ class SendspinServiceClient:
             "priority": priority.name.lower(),
             "volume": volume,
         }
+        now = time.monotonic()
         if expires_at is not None:
-            payload["expiry_sec"] = max(0.0, expires_at - time.monotonic())
+            payload["expiry_sec"] = max(0.0, expires_at - now)
         if play_at is not None:
-            payload["play_at"] = play_at
+            payload["play_at_delay_sec"] = max(0.0, play_at - now)
         self._post_json("/v1/play", payload)
 
     def stop(self) -> None:

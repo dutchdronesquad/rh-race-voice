@@ -8,11 +8,12 @@ Important modules:
 
 - `plugin.py`: RotorHazard event/filter integration, synthesis scheduling, event cache cleanup, and UI button callbacks.
 - `piper.py`: Piper model download/loading, ONNX Runtime session setup, synthesis, text normalization, WAV validation, and cache-key generation.
-- `audio_queue.py`: single-worker priority queue with expiry handling for stale audio.
+- `audio_queue.py`: single-worker priority queue with expiry handling and optional scheduled playback timestamps for stale/time-sensitive audio.
 - `sendspin.py`: synchronous adapter around `aiosendspin`, owns the background asyncio loop and active Sendspin stream.
 - `ui.py`: RotorHazard settings panel, quick buttons, and `/player` blueprint.
 - `const.py`: option names, defaults, voice model list, and Sendspin port.
 - `services/`: small stateful helpers extracted from `plugin.py`.
+  - `services/clock_callouts.py`: race-clock callout phrase planning and reusable pre-cache phrase lists.
   - `services/lap_callouts.py`: lap callout segment planning and reusable segment lists for pre-cache.
   - `services/precache.py`: manual pre-cache rebuild orchestration, stale-job cancellation, cleanup, and completion notifications.
   - `services/schedule.py`: scheduled-race countdown timers.
@@ -20,7 +21,7 @@ Important modules:
 
 ## Runtime Behavior
 
-RotorHazard phonetic filters are used as the callout source. Heavy work must stay off the RotorHazard event/filter thread; schedule synthesis through the existing executor instead of doing Piper work inline.
+RotorHazard phonetic filters and server-side race events are used as callout sources. Heavy work must stay off the RotorHazard event/filter thread; schedule synthesis through the existing executor instead of doing Piper work inline.
 
 Lap callouts are intentionally segmented:
 
@@ -28,15 +29,20 @@ Lap callouts are intentionally segmented:
 - reusable lap-number segment: `"Lap [n]"`, stored in `precache/laps/`.
 - dynamic lap-time phrase: stored in the per-model `tmp/` cache.
 
-Do not clear `precache/` on `HEAT_SET`. A heat change should clear queued audio and `tmp/` only. Operators can use **Rebuild pre-cache** to generate reusable schedule phrases, pilot-name segments, and lap-number segments. RotorHazard data reset and the **Clear TTS cache** button may clear all model WAV cache content, including `precache/`.
+Do not clear `precache/` on `HEAT_SET`. A heat change should clear queued audio and `tmp/` only. Operators can use **Rebuild pre-cache** to generate race-clock callouts, scheduled-race countdowns, and reusable schedule phrases, pilot-name segments, and lap-number segments. RotorHazard data reset and the **Clear TTS cache** button may clear all model WAV cache content, including `precache/`.
 
 Lap callouts should expire quickly enough to avoid stale race audio. The current lap expiry is intentionally longer than the queue default to handle several pilots crossing close together, but it should remain race-day conservative.
+
+Staging tones depend on upstream `Evt.RACE_STAGE_TONE`. Keep them as direct event integrations for branches that target the RotorHazard version containing that event; do not add a fallback timer that reimplements staging logic in the plugin.
+Race-clock callouts depend on upstream `Evt.RACE_CLOCK_CALLOUT`. Keep them as direct event integrations for branches that target the RotorHazard version containing that event; do not add a fallback timer that reimplements race-clock countdown logic in the plugin.
 
 ## Sendspin Notes
 
 `SendSpinServer.play()` appends normal queued audio to the active stream instead of stopping and restarting playback. Preserve this behavior unless the user explicitly asks for interrupt-style playback.
 
 The Sendspin backend checks expiry again before scheduling audio. Keep this Sendspin-side check when changing queue behavior, because queue delay and stream scheduling delay are separate concerns.
+
+Preserve `play_at` handling for staging tones and other time-sensitive static WAVs. Normal voice callouts should continue to use appended playback unless a change explicitly needs scheduled playback.
 
 Late-joining Sendspin clients should be synced into the active group while playback is still scheduled to continue. Do not remove the periodic late-join sync during idle-tail waiting without replacing it with equivalent behavior.
 
@@ -52,6 +58,8 @@ race_voice_cache/
                            reusable pilot-name segments
   tts/<model>/precache/laps/
                            reusable lap-number segments
+  tts/<model>/precache/clock/
+                           race-clock callout phrases
   tts/<model>/precache/schedule/
                            scheduled-race countdown phrases
   tts/<model>/tmp/        ephemeral lap-time phrases
@@ -88,7 +96,7 @@ The browser player source lives in `sendspin_player/`:
 
 The README should stay selective: keep it focused on what Race Voice is, what it needs, and how to get started. Move day-to-day operation, settings, cache behavior, and troubleshooting details into files under `docs/`.
 
-Keep user-facing docs aligned with actual race behavior, especially cache cleanup, browser playback, Sendspin port `8927`, and the need to set RotorHazard browser Voice Volume to `0` when Race Voice handles callouts.
+Keep user-facing docs aligned with actual race behavior, especially cache cleanup, browser playback, Sendspin port `8927`, and the need to set RotorHazard browser Voice Volume and Tone Volume to `0` when Race Voice handles callouts and race sounds.
 
 ## PR Style
 

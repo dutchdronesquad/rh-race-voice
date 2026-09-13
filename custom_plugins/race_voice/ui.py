@@ -38,6 +38,7 @@ def register_ui(  # noqa: PLR0913
     stop_audio_callback: Any,
     clear_cache_callback: Any,
     rebuild_precache_callback: Any,
+    service_check_callback: Any,
 ) -> None:
     """Register the Race Voice settings panel, options, and quick buttons."""
     _register_player_blueprint(rhapi)
@@ -128,9 +129,9 @@ def register_ui(  # noqa: PLR0913
         "race_voice_notes",
         '<a href="/player" target="_blank" rel="noopener noreferrer">'
         "Open browser player in a new tab</a>\n\n"
-        "⚠ Set Voice Volume to 0 on all browser clients.\n\n"
-        "After startup or voice setting changes, use Rebuild pre-cache to "
-        "prepare schedule and current-heat WAV files.",
+        "⚠ Set Voice Volume and Tone Volume to 0 on all browser clients.\n\n"
+        "After first setup or voice model/settings changes, use Rebuild pre-cache to "
+        "prepare race-clock, schedule, and current-heat WAV files.",
     )
 
     # Test phrase
@@ -150,6 +151,12 @@ def register_ui(  # noqa: PLR0913
         name="race_voice_test_phrase",
         label="Generate test phrase",
         function=test_callback,
+    )
+    rhapi.ui.register_quickbutton(
+        panel=PANEL_ID,
+        name="race_voice_service_check",
+        label="Check Sendspin service",
+        function=service_check_callback,
     )
     rhapi.ui.register_quickbutton(
         panel=PANEL_ID,

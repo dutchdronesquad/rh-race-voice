@@ -1,9 +1,9 @@
-# syntax=docker/dockerfile:1.24
+# syntax=docker/dockerfile:1.27
 
 ARG PYTHON_VERSION=3.13
 ARG SERVICE_VERSION=0.0.0+dev
 
-FROM ghcr.io/astral-sh/uv:0.11.17 AS uv
+FROM ghcr.io/astral-sh/uv:0.12.13 AS uv
 
 FROM node:24-bookworm-slim AS player-build
 
@@ -37,6 +37,7 @@ ENV SENDSPIN_PORT=8927
 ENV SENDSPIN_ADVERTISE=false
 ENV SENDSPIN_MAX_BODY_MB=50
 ENV SENDSPIN_PLAYER_DIR=/opt/sendspin-service/player
+ENV SENDSPIN_STATE_DIR=/var/lib/sendspin-service
 
 WORKDIR /opt/sendspin-service
 
@@ -60,6 +61,7 @@ COPY sendspin_service ./sendspin_service
 COPY --from=player-build /build/custom_plugins/race_voice/player ./player
 
 RUN adduser -D -H -u 10001 -s /sbin/nologin sendspin
+RUN mkdir -p /var/lib/sendspin-service && chown sendspin:sendspin /var/lib/sendspin-service
 
 USER sendspin
 

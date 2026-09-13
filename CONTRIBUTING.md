@@ -41,6 +41,10 @@ To update those packages in the RotorHazard venv:
 uv pip install --upgrade piper-tts aiosendspin av numpy pillow
 ```
 
+## Local service installation
+
+On a supported systemd machine with `python3`, `uv`, and `nfpm` available, run `bash tools/install-sendspin-service.sh --dev` from this checkout to build and install your local service changes. Repeating the command rebuilds and reinstalls the development package. See [Package Build](docs/usage.md#package-build) for requirements and returning to a stable release.
+
 ## Pre-commit checks
 
 This repository uses the [prek] framework. All changes are linted and tested on each commit.
@@ -70,7 +74,7 @@ The Sendspin browser player source lives in `sendspin_player/` and is built with
 ```bash
 cd sendspin_player
 npm run dev      # local dev server
-npm run lint     # lint
+npm run lint     # lint with Oxlint
 npm run build    # standalone production build at /
 npm run build:plugin # RotorHazard plugin production build at /player/
 ```

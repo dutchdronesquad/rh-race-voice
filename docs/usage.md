@@ -1,64 +1,88 @@
 # Usage Guide
 
-Race Voice generates RotorHazard callout WAV files on the timing server and sends them to `sendspin-service` over HTTP. The RotorHazard plugin serves its browser player at `/player`; the standalone service/container serves its player at `/`.
+Race Voice sends RotorHazard audio to one Sendspin server at a time:
 
-The plugin ZIP and service `.deb` are separate release assets. Install both for a normal RotorHazard setup: the plugin provides RotorHazard integration and the `/player` page, while `sendspin-service` provides playback transport.
+- **Recommended:** the `.deb` service on the same Raspberry Pi OS machine as RotorHazard. Listen through the plugin's `/player` page or WindowsSpin on another LAN device.
+- **Optional:** [Docker Compose in the cloud](#docker-image), with its own browser player. Change **Sendspin service URL** in RotorHazard to select it.
+
+Parallel output to both servers is not supported. The plugin and selected service can be updated independently while the service supports the API required by the plugin.
 
 ## Setup
 
-1. Install and start `sendspin-service`.
-2. In RotorHazard, open **Settings** -> **Race Voice**.
-3. Enable **Plugin audio**.
-4. Confirm **Sendspin service URL** is `http://127.0.0.1:8766`.
-5. Choose a voice model and speech settings.
-6. Open the browser player from the RotorHazard UI on the playback device, for example `<RotorHazard UI base URL>/player`.
-7. Set normal RotorHazard browser Voice Volume to `0` on clients that should not play duplicate built-in callouts.
-8. Use **Generate test phrase** or **Play audio check**.
+Follow the [Quick Start](../README.md#quick-start) for the complete plugin setup. Service installation, updates, and cloud setup are covered below.
 
 ## Sendspin Service
 
-Download the `.deb` for your architecture from the [GitHub Releases page](https://github.com/dutchdronesquad/rh-race-voice/releases). Use `arm64` for 64-bit Raspberry Pi OS (the default since Raspberry Pi OS Bookworm) and `amd64` for x86 machines.
+### Install
+
+On the **RotorHazard machine**, running 64-bit Raspberry Pi OS or Debian with systemd (`arm64` or `amd64`), run:
 
 ```shell
-wget https://github.com/dutchdronesquad/rh-race-voice/releases/download/v<version>/sendspin-service_<version>_arm64.deb
-sudo apt install ./sendspin-service_<version>_arm64.deb
+curl -fL https://github.com/dutchdronesquad/rh-race-voice/releases/latest/download/install-sendspin-service.sh -o install-sendspin-service.sh &&
+  bash install-sendspin-service.sh
 ```
 
-Common checks:
+Choose a stable service release and confirm. The installer selects the package, verifies its checksum, and starts the service at installation and boot. Python and service dependencies are bundled.
+
+If Sendspin already runs in Docker on this machine, [stop that container first](#port-conflicts).
+
+<details>
+<summary>Prerequisites and manual installation</summary>
+
+- If `curl` is missing, run `sudo apt update && sudo apt install -y curl`.
+- The release menu needs Python 3.9+. Use `--latest` or an exact release tag to skip the menu without Python.
+- 32-bit systems (`armhf`) are not supported by the release packages.
+- For manual installation, run `dpkg --print-architecture`, download the matching `.deb` from the selected service [release](https://github.com/dutchdronesquad/rh-race-voice/releases), and run `sudo apt install ./<filename>` with the downloaded filename.
+
+</details>
+
+### Connect and test
+
+1. In RotorHazard, enable **Settings → Race Voice → Plugin audio**. Keep **Sendspin service URL** at `http://127.0.0.1:8766`.
+2. Connect a player:
+   - **Browser:** open `<RotorHazard UI base URL>/player`, set **Server URL** to `http://<Pi LAN address>:8927`, and press **Connect**.
+   - **WindowsSpin:** connect to the Pi's LAN address on port `8927`.
+3. Click **Play audio check** in RotorHazard.
+
+The service stays on the Pi; players can run on other LAN devices. Keep port `8766` local and allow clients to reach port `8927`. Use the Pi's LAN address in remote players, not `127.0.0.1`.
+
+### Update or choose a version
+
+Run the downloaded script again:
 
 ```shell
-systemctl status sendspin-service
-curl http://127.0.0.1:8766/health
+bash install-sendspin-service.sh
+```
+
+It shows the installed version and asks you to select and confirm the target release. Updates preserve `/etc/default/sendspin-service` and restart the service. The same version makes no changes; an older version is labelled **Downgrade**.
+
+| Command | Action |
+|---|---|
+| `bash install-sendspin-service.sh --latest` | Install or update to the latest stable release |
+| `bash install-sendspin-service.sh v1.2.3` | Select an exact release tag; replace `v1.2.3` with yours |
+| `bash install-sendspin-service.sh --help` | Show all options |
+
+Add `--yes` to confirm without prompting, including downgrades. Unattended runs also require sudo without a password prompt. Download the script again to get installer updates.
+
+A plugin update does not by itself require a service update. Keep the existing service when it supports the API required by the plugin; update it for relevant fixes or new service features. If a future plugin feature requires a newer service, its release notes must explain the requirement and upgrade path.
+
+After updating either component, connect a player and run **Play audio check**.
+
+### Configuration and checks
+
+Settings are in `/etc/default/sendspin-service`. Defaults: local HTTP API on `127.0.0.1:8766`, Sendspin player endpoint on `0.0.0.0:8927`. After editing, run `sudo systemctl restart sendspin-service`.
+
+```shell
+systemctl status sendspin-service --no-pager
+curl --fail http://127.0.0.1:8766/health
 journalctl -u sendspin-service -n 80 --no-pager
 ```
 
-Default config is stored in `/etc/default/sendspin-service`:
-
-```shell
-SENDSPIN_INGEST_HOST=127.0.0.1
-SENDSPIN_INGEST_PORT=8766
-SENDSPIN_HOST=0.0.0.0
-SENDSPIN_PORT=8927
-SENDSPIN_ADVERTISE=true
-SENDSPIN_MAX_BODY_MB=50
-```
-
-The service API accepts inline WAV payloads via `wav_files`. It does not accept filesystem paths. This keeps the packaged service independent of RotorHazard/plugin directory permissions while running with `DynamicUser=yes`.
+Expect `active (running)` and a JSON health response containing the service version.
 
 ## Docker Image
 
-The Docker image is the container deployment path for `sendspin-service`. For a normal Raspberry Pi timing-server install, use the `.deb` package instead.
-
-Basic local container run:
-
-```shell
-docker run --rm \
-  -p 8766:8766 \
-  -p 8927:8927 \
-  ghcr.io/dutchdronesquad/sendspin-service:latest
-```
-
-Docker Compose:
+Use Docker Compose for optional cloud hosting. Run these commands on the cloud server from a checkout of this repository:
 
 ```shell
 cp .env.example .env
@@ -66,37 +90,33 @@ sed -i "s/change-this-token/$(openssl rand -hex 32)/" .env
 docker compose up -d
 ```
 
-The included Compose file builds the local Dockerfile by default. To run the published image instead, replace the `build:` block with `image: ghcr.io/dutchdronesquad/sendspin-service:latest`.
-Container runtime settings are read from `.env`; the checked-in `.env.example` contains the default host, port, advertise, body-size, player-dir, and API-token settings.
+The Compose file builds from source. To use the published image, replace its `build:` block with `image: ghcr.io/dutchdronesquad/sendspin-service:latest`. Runtime settings are in `.env`.
 
-The container serves the browser player at `http://<container-host>:8766/`. The HTTP ingest API is on the same port under `/v1`, and the health check is available at `/health`. Browser clients connect to the Sendspin WebSocket endpoint on port `8927` at `/sendspin`.
+To use the cloud service:
 
-Container defaults:
+1. Set RotorHazard's **Sendspin service URL** to the cloud HTTP API base URL (port `8766` by default).
+2. Open the cloud player at `http://<cloud-host>:8766/` and connect it to that server's Sendspin endpoint on port `8927`.
+3. Run **Play audio check** in RotorHazard.
 
-```shell
-SENDSPIN_INGEST_HOST=0.0.0.0
-SENDSPIN_INGEST_PORT=8766
-SENDSPIN_HOST=0.0.0.0
-SENDSPIN_PORT=8927
-SENDSPIN_ADVERTISE=false
-SENDSPIN_MAX_BODY_MB=50
-SENDSPIN_PLAYER_DIR=/opt/sendspin-service/player
-```
+The plugin sends only to the selected server. Set its URL back to `http://127.0.0.1:8766` to use the local service again.
 
-For a public container deployment, set `SENDSPIN_API_TOKEN` before exposing port `8766`. Producers must send `Authorization: Bearer <token>` for `/v1/play` and `/v1/stop`. Keep it unset only for local-only testing on a trusted machine.
+For a public deployment, set `SENDSPIN_API_TOKEN`; producers must send `Authorization: Bearer <token>` for `/v1/play` and `/v1/stop`. Keep the token unset only for local testing on a trusted machine.
 
-The image does not include the RotorHazard plugin. The bundled player is for direct container use; the normal RotorHazard plugin ZIP still serves its own `/player` route.
-
-Manual playback test:
-
-```shell
-WAV=$(base64 -w0 custom_plugins/race_voice/assets/moavii-foreign.wav)
-curl -s -X POST http://127.0.0.1:8766/v1/play \
-  -H "Content-Type: application/json" \
-  -d "{\"wav_files\":[{\"name\":\"test.wav\",\"data\":\"$WAV\"}],\"priority\":\"high\",\"volume\":1.0}"
-```
+The container includes its own player; install the RotorHazard plugin separately. Local and cloud servers on separate machines can use the same ports. If testing Docker on the Pi, avoid [port conflicts](#port-conflicts) with the `.deb` service.
 
 ## Package Build
+
+For local development, build and install the service from your checkout with:
+
+```shell
+bash tools/install-sendspin-service.sh --dev
+```
+
+This requires a supported systemd host, `python3` (3.11+), `uv`, and `nfpm`. Run the script from the checkout, not a standalone downloaded copy. It asks for confirmation, builds the local source for the host architecture, copies the resulting package to `/tmp`, and installs it while preserving configuration. The build tool downloads its runtime and dependencies as needed; only installation requires sudo.
+
+Local builds use `0.0.0+dev`. Running `--dev` again rebuilds and reinstalls even when that version is already installed, so local code changes take effect. A failed build stops installation. Switching from a stable version is labelled **Downgrade**. Return to the latest stable service with `bash tools/install-sendspin-service.sh --latest`, then run **Play audio check**.
+
+For building a package without installing it, use the commands below.
 
 Maintainer build requirements: `uv`, `nfpm`, and a local Python 3.11+ interpreter for the build script.
 
@@ -138,7 +158,10 @@ Race Voice hooks into two RotorHazard filter events and generates the following 
 |---|---|---|
 | Pilot completes a lap | `"{callsign}, Lap {n}, {m:ss.f}"` | Normal |
 | Race winner announced | `"Winner is {callsign}!"` (or localized equivalent) | High |
+| Race clock callout | `"1 minute"` / `"30 seconds"` / `"10 seconds"`; final `5` to `1` uses `stage.wav`, `0` uses `buzzer.wav` | High |
 | Scheduled race countdown | `"Race begin in 60 seconds"` / `"30"` / `"10"` / `"5"` | High |
+| Race staging tone | Bundled `stage.wav` | High |
+| Race start | Bundled `buzzer.wav` | High |
 
 Lap 0 (first crossing without a completed lap) does not produce a callout. Winner callouts are generated from the RotorHazard phonetic text filter, which fires when RotorHazard determines the race winner.
 
@@ -159,6 +182,12 @@ Multiple devices can connect simultaneously and will receive the same audio in s
 3. Press **Connect**. The status badge shows **Ready** when the player is connected.
 
 The player stores the server URL in the browser's local storage and reconnects automatically if the connection drops.
+
+Use **Check Sendspin service** in the Race Voice panel to check the configured service's health and the installed `aiosendspin` version. **Play audio check** runs the same check before queuing audio. The bundled browser player requires `aiosendspin` 9.0.0 or newer; the plugin and service release numbers do not need to match. Passing the minimum-version check does not verify browser connectivity or audio output.
+
+An older service may not report its `aiosendspin` version. In that case the plugin warns that browser compatibility cannot be verified. Version warnings still allow the audio check to run for existing players; an unreachable or unhealthy service prevents it from being queued. Update the separate `sendspin-service` installation to address a backend version mismatch: updating RotorHazard's venv does not update the service's bundled Python environment. If an update prevents the service from starting, check `journalctl -u sendspin-service` for dependency or startup errors.
+
+The service supports `aiosendspin` 9.x and stores its server identity and pairing data in systemd's state directory (`/var/lib/sendspin-service` for the `.deb`). Standalone runs default to `~/.local/share/sendspin-service`; `SENDSPIN_STATE_DIR` overrides the location. Docker Compose keeps this directory in the `sendspin-state` volume. Preserve these files across updates so the server retains its identity. Playback remains open to clients that can reach port `8927`: encrypted browser players are admitted automatically, and legacy unencrypted players remain supported.
 
 ### Sync modes
 
@@ -199,7 +228,7 @@ Use **Sync** for most race-day setups. Switch to **Quality** if playback resets 
 - **Play audio check**: Plays a bundled demo WAV without synthesizing TTS. Confirms `sendspin-service` is reachable and clients receive audio even if no voice model is loaded yet.
 - **Stop audio**: Immediately stops all queued and active audio on the Sendspin service. Useful when a callout needs to be cut mid-playback.
 - **Clear TTS cache**: Removes all generated WAV files. Use after a voice model change to avoid stale audio from the previous model.
-- **Rebuild pre-cache**: Pre-generates WAV files for the current heat's pilot names, lap segments, and schedule phrases. Run this after startup or after changing voice settings so common phrases are ready before racing starts.
+- **Rebuild pre-cache**: Pre-generates WAV files for race-clock callouts, the current heat's pilot names, lap segments, and schedule phrases. Run this after startup or after changing voice settings so common phrases are ready before racing starts.
 
 ## Cache Layout
 
@@ -209,18 +238,60 @@ Generated files live under the RotorHazard data directory:
 race_voice_cache/
   models/                 downloaded Piper ONNX models
   tts/<model>/            cached phrases
-  tts/<model>/precache/   reusable pilot, lap, and schedule phrases
+  tts/<model>/precache/pilots/
+                           pre-generated pilot-name segments
+  tts/<model>/precache/laps/
+                           pre-generated "Lap [n]" segments
+  tts/<model>/precache/clock/
+                           race-clock callout phrases
+  tts/<model>/precache/schedule/
+                           scheduled-race countdown phrases
   tts/<model>/tmp/        ephemeral lap-time phrases
   tts/<model>/test/       generated test phrases
 ```
 
-Use **Rebuild pre-cache** after startup or voice setting changes to prepare current-heat pilot names, lap segments, and schedule phrases.
+Cache behavior:
+
+- `tmp/` is cleared whenever a heat is selected.
+- `precache/` keeps existing reusable phrases. Use **Rebuild pre-cache** to generate race-clock callout phrases, schedule phrases, current-heat pilot-name segments, and lap-number segments on demand.
+- `tmp/` and `precache/` are cleared on RotorHazard data reset.
+- **Clear TTS cache** removes all WAV files for the selected model.
+
+## Operational Notes
+
+- Race Voice does not disable RotorHazard's built-in browser speech or tone playback. Set Voice Volume and Tone Volume to `0` on regular RotorHazard browser clients to avoid duplicate callouts, staging tones, and start sounds.
+- The first use of a voice model requires internet access to download model files. Racing can run offline after the selected model has been cached.
+- Callouts are generated server-side; browser-specific RotorHazard voice settings do not affect Race Voice output.
+- Staging tones and the race-start buzzer are static WAV files played through Sendspin. They require a RotorHazard build that provides `Evt.RACE_STAGE_TONE`.
+- Race-clock callouts require a RotorHazard build that provides `Evt.RACE_CLOCK_CALLOUT`. During the final five seconds of a running countdown heat, Race Voice uses static stage tones and a buzzer instead of spoken TTS.
+- Scheduled race sounds are sent to `sendspin-service` with a relative playback delay, so the service can run on the RotorHazard host or another reachable machine without sharing a monotonic clock.
+- Race Voice schedules race sounds against RotorHazard's server-side tone time. If RotorHazard browser Tone Volume is still enabled during comparison, its browser-generated tones may sound slightly later because they depend on browser timer and audio scheduling.
+- If no Sendspin browser player is connected, generated audio is dropped and logged.
 
 ## Troubleshooting
 
+### Port conflicts
+
+The `.deb` service and Docker variant both use TCP ports `8766` (HTTP API) and `8927` (Sendspin) by default. If you start both on the same machine, the second deployment can fail with `Address already in use` or `port is already allocated`.
+
+This conflict applies only to overlapping ports on the same host. A `.deb` service on the RotorHazard Pi and a Docker service on a separate cloud host can both run. RotorHazard still sends to only the server selected in its settings.
+
+If both deployments occupy the same host, choose which one should use the default ports:
+
+- **Keep the `.deb` service on your Raspberry Pi:** run `docker compose down` from the directory of the Sendspin Compose project, then run `sudo systemctl restart sendspin-service`. For a container started with `docker run`, find it with `docker ps` and remove that Sendspin container with `docker rm -f <container-name>` (replace the placeholder with its actual name).
+- **Keep Docker for your cloud deployment:** run `sudo systemctl disable --now sendspin-service`, then run `docker compose up -d` from the Sendspin Compose directory. Disabling the systemd service also prevents it from starting at the next boot.
+
+Check `systemctl status sendspin-service --no-pager` and `docker ps` to confirm which deployment is running. If a port is still occupied, `sudo ss -ltnp '( sport = :8766 or sport = :8927 )'` shows the listeners. Verify the retained service with **Play audio check**.
+
+Running both on the same host requires separate host ports for each deployment. Set RotorHazard and the intended playback clients to the same selected server; using separate ports does not enable parallel output from the plugin.
+
+### Other issues
+
 - **No audio in `/player`**: confirm `sendspin-service` is running, the player Server URL points at the same service RotorHazard sends to, and the player is connected.
 - **Service unreachable**: confirm `curl http://127.0.0.1:8766/health` works from the RotorHazard host.
+- **Playback fails after an update**: check service health, RotorHazard logs, and service logs for the actual failure. Record the plugin release and the service `version` from `curl http://127.0.0.1:8766/health` for diagnosis; different release numbers alone do not indicate incompatibility. Check release notes for any service requirement before upgrading, then retry **Play audio check**.
 - **Player page unreachable**: confirm `<RotorHazard UI base URL>/player` works from the playback device.
-- **Duplicate voice callouts**: set RotorHazard Voice Volume to `0` in regular RotorHazard browser clients.
+- **Some players hear different or duplicate audio**: verify that each player connects to the server selected by RotorHazard's **Sendspin service URL**. If multiple services run on the same host, give them distinct host ports. Check both `systemctl status sendspin-service` and `docker ps` on hosts where you have tested container deployments.
+- **Duplicate voice callouts or tones**: set RotorHazard Voice Volume and Tone Volume to `0` in regular RotorHazard browser clients.
 - **First phrase is slow**: the selected Piper model may still be downloading or loading.
 - **Browser playback stutters**: test Safari or Chrome incognito with extensions disabled, then validate on the race network.

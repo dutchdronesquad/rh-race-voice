@@ -2,6 +2,8 @@
 
 This directory contains Debian-specific package assets for `sendspin-service`.
 
+The `.deb` package is the recommended installation for use with the RotorHazard plugin: Sendspin runs as a standalone systemd service on the same Raspberry Pi OS machine as RotorHazard. It bundles its own Python runtime and dependencies. Cloud hosting is available as an optional extra through the [Docker Compose deployment](../../docs/usage.md#docker-image).
+
 Package metadata and file mapping live in `packaging/nfpm.yaml`. The build script stages a bundled CPython runtime, service dependencies, service code, and launcher under `build/sendspin-service/`, then calls `nfpm`.
 
 The Debian package is headless. It installs the service runtime, local HTTP ingest API, and Sendspin endpoint; it does not install the RotorHazard plugin or browser player assets.

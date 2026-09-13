@@ -205,16 +205,23 @@ class SendSpinServer:
         except Exception:
             logger.exception("Sendspin service: Sendspin stream error")
 
-    def stop(self) -> None:
+    def stop(self, *, strict: bool = False) -> None:
         """Stop current playback and clear scheduled client audio."""
         if self._loop is None or self._server is None:
             return
-        future = asyncio.run_coroutine_threadsafe(self._stop_stream(), self._loop)
+        future = asyncio.run_coroutine_threadsafe(
+            self._stop_stream(strict=strict), self._loop
+        )
         try:
             future.result(timeout=5.0)
         except TimeoutError:
+            if strict:
+                future.cancel()
+                raise
             logger.warning("Sendspin service: Sendspin stop timed out")
         except Exception:
+            if strict:
+                raise
             logger.exception("Sendspin service: Sendspin stop error")
 
     def close(self) -> None:
@@ -355,8 +362,8 @@ class SendSpinServer:
         self._stream = None
         self._next_play_start_us = None
 
-    async def _stop_stream(self) -> None:
-        await self._interrupt_stream(clear_client_audio=True)
+    async def _stop_stream(self, *, strict: bool = False) -> None:
+        await self._interrupt_stream(clear_client_audio=True, strict=strict)
 
     async def _stop_stream_locked(self, *, stop_all_client_groups: bool) -> None:
         self._cancel_idle_stop()
@@ -375,7 +382,9 @@ class SendSpinServer:
         elif group is not None:
             await group.stop()
 
-    async def _interrupt_stream(self, *, clear_client_audio: bool) -> None:
+    async def _interrupt_stream(
+        self, *, clear_client_audio: bool, strict: bool = False
+    ) -> None:
         """Immediately interrupt active playback, even while audio is being queued."""
         self._cancel_idle_stop()
 
@@ -398,10 +407,14 @@ class SendSpinServer:
         if group is not None:
             groups.add(group)
         if groups:
-            await asyncio.gather(
+            results = await asyncio.gather(
                 *(group.stop() for group in groups),
                 return_exceptions=True,
             )
+            if strict:
+                for result in results:
+                    if isinstance(result, BaseException):
+                        raise result
 
     async def _append_to_stream(  # noqa: PLR0913
         self,

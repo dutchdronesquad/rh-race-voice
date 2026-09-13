@@ -268,7 +268,7 @@ class SendspinPlaybackSink:
 
     async def stop(self) -> None:
         """Wait for the actual stream clear before the next plan can play."""
-        await asyncio.to_thread(self._backend.stop)
+        await asyncio.to_thread(self._backend.stop, strict=True)
 
 
 @dataclass
@@ -366,6 +366,12 @@ class PlaybackPlanner:
         self._pending.clear()
         self._last_priority = None
         self._interrupt()
+
+    async def flush(self) -> None:
+        """Acknowledge a source stop only after the sink has cleared its buffer."""
+        self.invalidate()
+        if self._stop_task is not None:
+            await asyncio.shield(self._stop_task)
 
     async def close(self) -> None:
         """Flush and finish this output without touching other planners."""

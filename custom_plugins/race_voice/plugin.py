@@ -242,7 +242,7 @@ class RaceVoicePlugin:
             self._enqueue_audio(
                 text=callout.label,
                 wav_paths=wav_paths,
-                priority=Priority.NORMAL,
+                priority=Priority.LAP,
                 expiry_sec=max(0.0, expires_at - time.monotonic()),
             )
 
@@ -290,7 +290,7 @@ class RaceVoicePlugin:
         self._enqueue_audio(
             text="race start",
             wav_paths=[_BUZZER_WAV],
-            priority=Priority.HIGH,
+            priority=Priority.SIGNAL,
             expiry_sec=_expiry_sec_after_scheduled_play(
                 play_at, _START_BUZZER_STALE_AFTER_SEC
             ),
@@ -305,7 +305,7 @@ class RaceVoicePlugin:
         self._enqueue_audio(
             text="stage tone",
             wav_paths=[_STAGE_BEEP_WAV],
-            priority=Priority.HIGH,
+            priority=Priority.SIGNAL,
             expiry_sec=_expiry_sec_after_scheduled_play(
                 play_at, _STAGE_TONE_STALE_AFTER_SEC
             ),
@@ -324,7 +324,7 @@ class RaceVoicePlugin:
             self._enqueue_audio(
                 text="race clock tone",
                 wav_paths=[_STAGE_BEEP_WAV],
-                priority=Priority.HIGH,
+                priority=Priority.SIGNAL,
                 expiry_sec=_expiry_sec_after_scheduled_play(
                     play_at, _STAGE_TONE_STALE_AFTER_SEC
                 ),
@@ -335,7 +335,7 @@ class RaceVoicePlugin:
             self._enqueue_audio(
                 text="race clock buzzer",
                 wav_paths=[_BUZZER_WAV],
-                priority=Priority.HIGH,
+                priority=Priority.SIGNAL,
                 expiry_sec=_expiry_sec_after_scheduled_play(
                     play_at, _START_BUZZER_STALE_AFTER_SEC
                 ),
@@ -348,7 +348,7 @@ class RaceVoicePlugin:
         self._synth_pool.submit(
             self._enqueue,
             text,
-            Priority.HIGH,
+            Priority.SIGNAL,
             expires_at,
             self._clock_callouts.subdir,
             settings,
@@ -383,7 +383,7 @@ class RaceVoicePlugin:
         self._synth_pool.submit(
             self._enqueue,
             phrase,
-            Priority.HIGH,
+            Priority.SIGNAL,
             time.monotonic() + 8.0,
             schedule.PRECACHE_SUBDIR,
             settings,

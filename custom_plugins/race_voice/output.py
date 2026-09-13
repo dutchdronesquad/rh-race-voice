@@ -134,7 +134,8 @@ class SendspinServiceClient:
             return
         payload: dict[str, Any] = {
             "text": text,
-            "priority": priority.name.lower(),
+            "priority": _wire_priority(priority.name),
+            "kind": {"SIGNAL": "race_signal", "LAP": "lap"}.get(priority.name, "voice"),
             "volume": volume,
         }
         now = time.monotonic()
@@ -199,7 +200,10 @@ class SendspinServiceClient:
             ]
             payload: dict[str, Any] = {
                 "text": text,
-                "priority": priority.name.lower(),
+                "priority": _wire_priority(priority.name),
+                "kind": {"SIGNAL": "race_signal", "LAP": "lap"}.get(
+                    priority.name, "voice"
+                ),
                 "volume": volume,
                 "wav_refs": references,
             }
@@ -395,6 +399,11 @@ class SendspinServiceClient:
             message = "invalid Sendspin service URL: use http(s)://host[:port]"
             raise ValueError(message)
         return url
+
+
+def _wire_priority(name: str) -> str:
+    """Retain useful priority ordering on older services without job kinds."""
+    return {"SIGNAL": "high", "LAP": "low"}.get(name, name.lower())
 
 
 def _response_object(value: Any) -> dict[str, Any]:

@@ -71,7 +71,9 @@ class SendspinService:
             port=config.sendspin_port,
             advertise=config.advertise,
         )
-        self._queue = AudioQueue(player=self._sendspin.play)
+        self._queue = AudioQueue(
+            player=self._sendspin.play, interrupt=self._sendspin.stop
+        )
 
     def start(self) -> None:
         """Start the Sendspin server."""
@@ -127,6 +129,10 @@ class SendspinService:
         if not wav_items:
             raise ValueError("wav_files must contain at least one WAV")
         priority = _priority(payload.get("priority"))
+        if payload.get("kind") == "race_signal":
+            priority = Priority.SIGNAL
+        elif payload.get("kind") == "lap":
+            priority = Priority.LAP
         expiry_sec = _expiry_sec(payload)
         play_at = _play_at(payload)
         volume = _volume(payload)

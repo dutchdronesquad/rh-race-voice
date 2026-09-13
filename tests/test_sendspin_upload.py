@@ -55,6 +55,35 @@ class SendspinUploadTests(unittest.IsolatedAsyncioTestCase):
             reuse_audio=True,
         )
 
+    async def test_signal_and_lap_metadata_survive_inline_and_cached_uploads(
+        self,
+    ) -> None:
+        """New services identify laps; older services retain useful ordering."""
+        for priority, kind, wire in (
+            (Priority.SIGNAL, "race_signal", "high"),
+            (Priority.LAP, "lap", "low"),
+        ):
+            for adapter in (self.adapter, self.cloud_adapter()):
+                with patch.object(
+                    output.urllib.request,
+                    "urlopen",
+                    wraps=output.urllib.request.urlopen,
+                ) as request:
+                    await asyncio.to_thread(
+                        adapter.play, "audio", [_DEMO_WAV], priority
+                    )
+                job = self.queue.enqueue.call_args.kwargs
+                self.assertEqual(job["priority"], priority)
+                play_requests = [
+                    c.args[0]
+                    for c in request.call_args_list
+                    if c.args[0].full_url.endswith("/v1/play")
+                ]
+                if isinstance(play_requests[-1].data, bytes):
+                    payload = json.loads(play_requests[-1].data)
+                    self.assertEqual(payload["priority"], wire)
+                    self.assertEqual(payload["kind"], kind)
+
     async def test_bundled_demo_needs_no_audio_upload(self) -> None:
         """Play the full song on the first click using only a tiny JSON request."""
         adapter = self.cloud_adapter()

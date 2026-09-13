@@ -80,7 +80,7 @@ for release in json.load(sys.stdin):
 ' "$architecture")
     [[ -n "$release_list" ]] || fail 'No stable releases with a matching package were found. Use an exact release tag if needed.'
     mapfile -t release_choices <<< "$release_list"
-    printf 'Choose the same release as your Race Voice plugin (newest listed first).\n'
+    printf 'Choose a stable Sendspin service release (newest listed first).\n'
     PS3='Select a release number: '
     select choice in "${release_choices[@]}" 'Cancel'; do
         [[ "$choice" != Cancel ]] || { printf 'Installation cancelled.\n'; exit 0; }
@@ -114,7 +114,7 @@ if [[ -n "$installed_version" ]]; then
     fi
 fi
 printf '%s Sendspin service: %s -> %s\n' "$action" "${installed_version:-not installed}" "$version"
-printf 'Use Race Voice plugin release %s. Existing service configuration will be kept.\n' "$release_tag"
+printf 'Existing service configuration will be kept.\n'
 if [[ "$assume_yes" != true ]]; then
     [[ -t 0 ]] || fail 'Use --yes to confirm an unattended installation.'
     read -r -p "$action and restart Sendspin service? [y/N]: " answer || answer=
@@ -151,6 +151,6 @@ systemctl is-active --quiet sendspin-service \
     || fail 'Service did not start. Check: journalctl -u sendspin-service -n 80 --no-pager'
 
 printf '\nSendspin service %s is installed and running.\n' "$version"
-printf 'Use Race Voice plugin release %s.\n' "$release_tag"
+printf 'Plugin and service release numbers do not need to match.\n'
 printf 'On the same RotorHazard host, keep Sendspin service URL: http://127.0.0.1:8766\n'
 printf 'Open the RotorHazard /player page, connect, then click Play audio check.\n'

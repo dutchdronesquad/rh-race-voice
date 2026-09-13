@@ -96,7 +96,8 @@ elif name == 'curl':
     run('explicit downgrade', ['v1.2.2', '--yes'], {'INSTALLED_VERSION': '1.2.3'}, action='Downgrade')
     run('same version is unchanged', ['v1.2.3', '--yes'], {'INSTALLED_VERSION': '1.2.3'})
     stdout, stderr, calls = run('menu selects available stable version', [], answer='2\ny\n', action='Install')
-    assert 'v1.2.2' in stdout and 'v2.0.0-beta' not in stderr and 'v1.2.4' not in stderr
+    assert any('/download/v1.2.2/sendspin-service_1.2.2_arm64.deb' in arg for call in calls if call[0] == 'curl' for arg in call)
+    assert 'v2.0.0-beta' not in stderr and 'v1.2.4' not in stderr
     run('menu cancel', [], answer='3\n')
     run('decline existing installation update', ['--latest'], {'INSTALLED_VERSION': '1.2.2'}, answer='n\n')
     run('unattended needs version', ['--yes'], expected=1)

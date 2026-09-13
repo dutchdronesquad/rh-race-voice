@@ -4,6 +4,12 @@ All notable shipped changes to Race Voice should be documented in this file.
 
 This changelog is intentionally concise. GitHub Releases can carry the fuller change list and release assets.
 
+## [Unreleased]
+
+### Independent plugin and service updates
+
+Updating the RotorHazard plugin no longer produces a warning just because the Sendspin service has a different release number. You can keep your existing service while it supports the API required by the plugin. Service version information remains available in `/health` for troubleshooting.
+
 ## [1.0.0] - 2026-05-30
 
 ### Plugin renamed to Race Voice

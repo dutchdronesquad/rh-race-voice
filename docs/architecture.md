@@ -49,6 +49,16 @@ Service endpoints:
 
 `POST /v1/play` accepts `wav_files` entries with base64 WAV data plus optional `text`, `priority`, `expiry_sec`, `play_at_delay_sec`, and `volume`.
 
+## Plugin and Service Compatibility
+
+Compatibility is defined by the HTTP API contract, currently `/v1/play` and `/v1/stop`, including the payload fields and playback behavior the plugin relies on. Package release numbers do not need to match. The service `version` in `/health` is diagnostic metadata, not an API version; the plugin does not fetch it at startup or during **Play audio check**.
+
+Keep changes to the existing API backward compatible where possible. A new optional field is only safe for an older service when the plugin can operate correctly without its effect. Do not infer compatibility solely from the `/v1` path if required behavior changes.
+
+When a future change requires a different API contract or a new capability, introduce explicit compatibility metadata and plugin handling as part of that change. Existing services without that metadata must retain support for the existing v1 behavior; a missing field alone must not force an upgrade. Any new required capability needs a documented legacy fallback or an actionable warning explaining the affected feature and the required service update. Release notes must describe the requirement and upgrade path.
+
+Plugin and service artifacts may continue to share a release tag. Publishing them together does not require operators to update both components.
+
 ## Playback Behavior
 
 `SendSpinServer` runs an asyncio event loop in a dedicated thread and exposes blocking `play()` / `stop()` methods to the service queue worker.

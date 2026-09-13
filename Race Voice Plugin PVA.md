@@ -673,7 +673,7 @@ server fallback. The first service API smoke test has passed for `/health`,
 - [x] Plugin setting: Local Sendspin API token (optional)
 - [x] Plugin setting: Sendspin target dropdown (Local / Cloud / Local + Cloud)
 - [ ] Optional plugin health/status display without adding a separate debug-style quick button
-- [ ] Add a service API compatibility field and plugin-side handling only when the service API gets a breaking change
+- [ ] Add a service API compatibility field and plugin-side handling only when the service API gets a breaking change Follow the [compatibility policy](docs/architecture.md#plugin-and-service-compatibility), including support for existing services without metadata and actionable upgrade guidance.
 - [x] Local service works as a self-contained `.deb` package on amd64
 - [x] Play audio check works through the installed local service on amd64
 - [x] Local service does not depend on RotorHazard venv, `uv`, `pip`, or user-managed Python

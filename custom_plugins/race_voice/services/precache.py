@@ -13,7 +13,6 @@ from . import schedule
 if TYPE_CHECKING:
     from collections.abc import Callable
     from concurrent.futures import Future, ThreadPoolExecutor
-    from pathlib import Path
 
     from .clock_callouts import ClockCallouts
     from .lap_callouts import LapCalloutSegments
@@ -55,10 +54,9 @@ class PrecacheManager:
         self._next_generation()
 
     def rebuild(self, settings: Any, heat_id: int | None) -> None:
-        """Clear and regenerate pre-cached phrases for current settings and heat."""
+        """Fill missing or invalid cached phrases for current settings and heat."""
         generation = self._next_generation()
-        self._clear_precache(settings.model_name)
-        self._notify("Race Voice: rebuilding pre-cache...")
+        self._notify("Race Voice: preparing pre-cache...")
 
         future = self._synth_pool.submit(
             self._rebuild,
@@ -79,20 +77,9 @@ class PrecacheManager:
         with self._lock:
             return generation == self._generation
 
-    def _clear_precache(self, model_name: str) -> None:
-        precache_dir = self._tts.precache_dir_for_model(model_name)
-        for dir_name in self._lap_callouts.precache_dir_names:
-            self._clear_wavs(precache_dir / dir_name, f"pre-cache {dir_name}")
-        self._clear_wavs(
-            precache_dir / self._clock_callouts.precache_dir_name,
-            "pre-cache clock",
-        )
-        self._clear_wavs(
-            precache_dir / schedule.PRECACHE_DIR_NAME,
-            "pre-cache schedule",
-        )
-
     def _rebuild(self, settings: Any, generation: int, heat_id: int | None) -> int:
+        if not self._is_current(generation):
+            return 0
         count = 0
         self._prepare_model(settings)
         count += self._precache_clock_callouts(settings, generation)
@@ -190,23 +177,11 @@ class PrecacheManager:
             if heat_id:
                 heat_name = self._heat_name_for_id(heat_id)
                 self._notify(
-                    f"Race Voice: pre-cache rebuild complete for {heat_name}"
+                    f"Race Voice: pre-cache preparation complete for {heat_name}"
                     f" ({count} new WAV files)"
                 )
             else:
                 self._notify(
-                    f"Race Voice: pre-cache rebuild complete ({count} new WAV files)"
+                    "Race Voice: pre-cache preparation complete "
+                    f"({count} new WAV files)"
                 )
-
-    @staticmethod
-    def _clear_wavs(directory: Path, label: str) -> None:
-        """Delete WAV files under a cache subdirectory."""
-        if not directory.exists():
-            return
-        count = sum(
-            1
-            for wav_file in directory.rglob("*.wav")
-            if wav_file.unlink(missing_ok=True) is None
-        )
-        if count:
-            logger.info("Race Voice cleared %d %s WAV files", count, label)

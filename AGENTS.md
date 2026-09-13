@@ -29,7 +29,7 @@ Lap callouts are intentionally segmented:
 - reusable lap-number segment: `"Lap [n]"`, stored in `precache/laps/`.
 - dynamic lap-time phrase: stored in the per-model `tmp/` cache.
 
-Do not clear `precache/` on `HEAT_SET`. A heat change should clear queued audio and `tmp/` only. Operators can use **Rebuild pre-cache** to generate race-clock callouts, scheduled-race countdowns, and reusable schedule phrases, pilot-name segments, and lap-number segments. RotorHazard data reset and the **Clear TTS cache** button may clear all model WAV cache content, including `precache/`.
+Do not clear `precache/` on `HEAT_SET`. A heat change should clear queued audio and `tmp/` only. Operators can use **Prepare pre-cache** to generate race-clock callouts, scheduled-race countdowns, and reusable schedule phrases, pilot-name segments, and lap-number segments. RotorHazard data reset and the **Clear TTS cache** button may clear all model WAV cache content, including `precache/`.
 
 Lap callouts should expire quickly enough to avoid stale race audio. The current lap expiry is intentionally longer than the queue default to handle several pilots crossing close together, but it should remain race-day conservative.
 

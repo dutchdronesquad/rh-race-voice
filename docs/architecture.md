@@ -128,4 +128,4 @@ Race-clock callout phrase planning lives in `services/clock_callouts.py`, using 
 
 Manual pre-cache rebuilds are handled by `services/precache.py`. The manager owns stale-generation tracking, directory cleanup, race-clock phrase generation, schedule phrase generation, lap segment generation, pilot-name generation, and completion notifications.
 
-Operators should run **Rebuild pre-cache** after first setup or voice model/settings changes when they want predictable phrases prepared before racing.
+Operators should run **Prepare pre-cache** after first setup or voice model/settings changes when they want predictable phrases prepared before racing.

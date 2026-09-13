@@ -75,6 +75,13 @@ class PluginStartupTests(unittest.TestCase):
         )
         self.plugin._sendspin.health.assert_not_called()
 
+    def test_enabled_startup_does_not_prepare_cache(self) -> None:
+        """Cache preparation remains an explicit operator action."""
+        self.options[plugin_module.ENABLE_OPTION] = True
+        self.plugin._precache = Mock()
+        self.plugin._on_startup()
+        self.plugin._precache.rebuild.assert_not_called()
+
     def test_audio_check_queues_without_health_gate(self) -> None:
         """A service check failure must not disable a later manual playback test."""
         self.plugin._sendspin.health.side_effect = OSError("service starting")

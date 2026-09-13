@@ -466,6 +466,36 @@ class RaceIngestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["cleared"], 3)
         self.assertNotIn("subdir", self.worker.calls[0])
 
+    async def test_state_change_keeps_speech_blocked_until_clear_finishes(self) -> None:
+        """A new snapshot must not reopen speech while deletion is still in flight."""
+        self.worker.release.clear()
+        command = self.command(operation="clear_cache")
+        await self.client.post("/v2/commands", json=command)
+        await asyncio.wait_for(self.worker.started.wait(), 2)
+        self.snapshot["context"].update(revision=2, generation=1)
+        self.assertEqual(
+            (await self.client.put("/v2/state", json=self.snapshot)).status, 200
+        )
+        self.assertEqual(
+            (await self.client.post("/v2/events", json=self.event())).status, 429
+        )
+        self.assertEqual(
+            (
+                await self.client.post("/v2/events", json=self.event(2, kind="tone"))
+            ).status,
+            202,
+        )
+        await until(lambda: self.backend.play.called)
+        self.worker.release.set()
+        async with asyncio.timeout(2):
+            sequence = 3
+            while (
+                await self.client.post("/v2/events", json=self.event(sequence))
+            ).status == 429:
+                sequence += 1
+                await asyncio.sleep(0.001)
+        await until(lambda: self.backend.play.call_count == 2)
+
     async def test_failed_cache_flush_never_deletes_or_reports_completion(self) -> None:
         """Do not delete files when the output cannot confirm that it stopped."""
         self.backend.stop.side_effect = TimeoutError("backend unavailable")

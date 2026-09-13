@@ -35,7 +35,12 @@ class CacheCommands:
         self._task: asyncio.Task | None = None
         self._cleanup: asyncio.Task | None = None
         self._temporary: dict[str, dict] = {}
-        self.clearing = False
+        self._clearing = False
+
+    @property
+    def clearing(self) -> bool:
+        """Retain the admission barrier until the clear task has actually finished."""
+        return self._clearing and self._task is not None and not self._task.done()
 
     def reset(self, session: str) -> None:
         """Cancel obsolete preparation and fence command IDs from the previous owner."""
@@ -46,12 +51,16 @@ class CacheCommands:
 
     def cancel(self) -> None:
         """Stop producing additional phrases after a snapshot change."""
-        self.clearing = False
         if self._task is not None and not self._task.done():
+            queued = False
             for _, result in self._history.values():
                 if result["status"] in ("queued", "running"):
+                    queued = result["status"] == "queued"
                     result["status"] = "cancelled"
-            self._task.cancel()
+            # Once started, deletion must retain its worker subscriber until done.
+            # Cancelling that subscriber would leave disk work running unobserved.
+            if not self.clearing or queued:
+                self._task.cancel()
 
     def status(self, command_id: str) -> dict:
         """Never reinterpret an evicted or previous-session ID as a new operation."""
@@ -99,7 +108,7 @@ class CacheCommands:
             raise web.HTTPConflict(reason="Cache command requires the current snapshot")
         if self._task is not None and not self._task.done():
             raise web.HTTPTooManyRequests(reason="A cache command is still running")
-        self.clearing = data["operation"] == "clear_cache"
+        self._clearing = data["operation"] == "clear_cache"
         self._sequence = int(suffix)
         result = {"command_id": command_id, "status": "queued"}
         self._history[command_id] = (copy.deepcopy(data), result)
@@ -122,7 +131,6 @@ class CacheCommands:
                 ):
                     result.update(progress)
             else:
-                self.clearing = True
                 await self._flush()
                 cleared = await self._speech.worker.request(
                     {**snapshot["voice"], "operation": "clear"},
@@ -140,8 +148,6 @@ class CacheCommands:
             result.update(
                 status="failed", error="Cache operation failed; see service log"
             )
-        finally:
-            self.clearing = False
 
     def clear_temporary(self, settings: dict) -> None:
         """Coalesce heat changes by model, retaining all prepared phrases."""
@@ -156,7 +162,7 @@ class CacheCommands:
                 await self._speech.worker.request(
                     {**settings, "operation": "clear", "subdir": "tmp"},
                     deadline=time.monotonic() + 120,
-                    priority=-1,
+                    priority=20,
                 )
             except Exception:
                 logger.exception("Race Voice temporary cache cleanup failed")

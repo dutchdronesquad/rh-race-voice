@@ -15,11 +15,12 @@ from typing import Any
 from eventmanager import Evt
 from filtermanager import Flt
 
-from .audio_queue import AudioQueue, Priority
+from .audio_queue import DEFAULT_EXPIRY_SEC, AudioQueue, Priority
 from .const import (
     DEFAULT_MODEL,
     DEFAULT_NOISE_SCALE,
     DEFAULT_NOISE_W_SCALE,
+    DEFAULT_SENDSPIN_CLOUD_TIMEOUT,
     DEFAULT_SENDSPIN_SERVICE_TIMEOUT,
     DEFAULT_SENDSPIN_SERVICE_URL,
     DEFAULT_SPEED,
@@ -27,7 +28,8 @@ from .const import (
     ENABLE_OPTION,
     NOISE_SCALE_OPTION,
     NOISE_W_SCALE_OPTION,
-    SENDSPIN_SERVICE_TIMEOUT_OPTION,
+    SENDSPIN_CLOUD_TOKEN_OPTION,
+    SENDSPIN_CLOUD_URL_OPTION,
     SENDSPIN_SERVICE_URL_OPTION,
     SPEECH_SPEED_OPTION,
     TEST_PHRASE_OPTION,
@@ -93,6 +95,17 @@ class RaceVoicePlugin:
             timeout_s=self._sendspin_service_timeout,
         )
         self._audio_queue = AudioQueue(player=self._sendspin.play)
+        self._cloud_sendspin = SendspinServiceClient(
+            service_url=self._sendspin_cloud_url,
+            timeout_s=self._sendspin_cloud_timeout,
+            api_token=self._sendspin_cloud_token,
+            enabled=self._cloud_enabled,
+            reuse_audio=True,
+        )
+        self._cloud_audio_queue = AudioQueue(player=self._cloud_sendspin.play)
+        self._output_control_pool = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="race_voice_output_control"
+        )
         self._prepared_settings: VoiceSettings | None = None
         self._synth_pool = ThreadPoolExecutor(
             max_workers=os.cpu_count() or 4,
@@ -135,6 +148,10 @@ class RaceVoicePlugin:
     def _on_startup(self, _args: dict[str, Any] | None = None) -> None:
         """Check Sendspin in the background once RotorHazard has initialized."""
         self._synth_pool.submit(self._check_sendspin_service)
+        if self._cloud_enabled():
+            self._synth_pool.submit(
+                self._check_sendspin_service, self._cloud_sendspin, "Cloud Sendspin"
+            )
 
     def _register_events(self) -> None:
         self._rhapi.events.on(Evt.STARTUP, self._on_startup, name="race_voice_startup")
@@ -222,7 +239,7 @@ class RaceVoicePlugin:
         ]
 
         if wav_paths:
-            self._audio_queue.enqueue(
+            self._enqueue_audio(
                 text=callout.label,
                 wav_paths=wav_paths,
                 priority=Priority.NORMAL,
@@ -253,7 +270,7 @@ class RaceVoicePlugin:
 
     def _on_heat_set(self, _args: dict[str, Any]) -> None:
         """Wipe ephemeral lap-time WAVs and queued audio when a new heat is selected."""
-        dropped = self._audio_queue.clear()
+        dropped = self._clear_audio_queues()
         if dropped:
             logger.info("Race Voice cleared %d queued audio jobs on heat set", dropped)
 
@@ -270,7 +287,7 @@ class RaceVoicePlugin:
         if not self._enabled():
             return
         play_at = getattr(self._rhapi.race, "start_time_internal", None)
-        self._audio_queue.enqueue(
+        self._enqueue_audio(
             text="race start",
             wav_paths=[_BUZZER_WAV],
             priority=Priority.HIGH,
@@ -285,7 +302,7 @@ class RaceVoicePlugin:
         if not self._enabled():
             return
         play_at = args.get("scheduled_at_monotonic")
-        self._audio_queue.enqueue(
+        self._enqueue_audio(
             text="stage tone",
             wav_paths=[_STAGE_BEEP_WAV],
             priority=Priority.HIGH,
@@ -304,7 +321,7 @@ class RaceVoicePlugin:
             return
         play_at = args.get("scheduled_at_monotonic")
         if plan.kind == "tone":
-            self._audio_queue.enqueue(
+            self._enqueue_audio(
                 text="race clock tone",
                 wav_paths=[_STAGE_BEEP_WAV],
                 priority=Priority.HIGH,
@@ -315,7 +332,7 @@ class RaceVoicePlugin:
             )
             return
         if plan.kind == "buzzer":
-            self._audio_queue.enqueue(
+            self._enqueue_audio(
                 text="race clock buzzer",
                 wav_paths=[_BUZZER_WAV],
                 priority=Priority.HIGH,
@@ -387,41 +404,42 @@ class RaceVoicePlugin:
         if wav_path is None:
             self._rhapi.ui.message_alert("Race Voice test failed - check logs")
             return
-        self._audio_queue.enqueue(
-            text=text, wav_paths=[wav_path], priority=Priority.HIGH
-        )
+        self._enqueue_audio(text=text, wav_paths=[wav_path], priority=Priority.HIGH)
         self._rhapi.ui.message_notify(f"Race Voice test phrase queued: {wav_path.name}")
 
     def play_audio_check(self, _args: dict[str, Any] | None = None) -> None:
         """Play the bundled audio-check WAV through Sendspin."""
-        self._synth_pool.submit(self._play_audio_check)
+        self._play_audio_check()
 
-    def _check_sendspin_service(self) -> bool:
+    def _check_sendspin_service(
+        self, client: SendspinServiceClient | None = None, label: str = "Sendspin"
+    ) -> bool:
         try:
-            health = self._sendspin.health()
+            health = (client or self._sendspin).health()
         except (OSError, TypeError, ValueError) as exc:
-            logger.warning("Race Voice: Sendspin service check failed: %s", exc)
+            logger.warning("Race Voice: %s service check failed: %s", label, exc)
             self._rhapi.ui.message_alert(
-                "Race Voice cannot read Sendspin service health. Check the service "
+                f"Race Voice cannot read {label} service health. Check the service "
                 "URL and sendspin-service logs; the service may be stopped or "
                 "have failed to start after an update."
             )
             return False
         if health.get("ok") is not True or health.get("status") != "ok":
-            logger.warning("Race Voice: Sendspin service reports it is not healthy")
+            logger.warning("Race Voice: %s service reports it is not healthy", label)
             self._rhapi.ui.message_alert(
-                "Race Voice: Sendspin service reports it is not healthy. "
+                f"Race Voice: {label} service reports it is not healthy. "
                 "Check the sendspin-service logs."
             )
             return False
         warning = service_version_warning(health)
         if warning:
-            logger.warning(warning)
-            self._rhapi.ui.message_alert(warning)
+            logger.warning("%s: %s", label, warning)
+            self._rhapi.ui.message_alert(f"{label}: {warning}")
         else:
             logger.info(
-                "Race Voice: Sendspin service %s, aiosendspin %s: "
+                "Race Voice: %s service %s, aiosendspin %s: "
                 "browser-player minimum version check passed.",
+                label,
                 health.get("version", "unknown"),
                 health["aiosendspin_version"],
             )
@@ -431,7 +449,7 @@ class RaceVoicePlugin:
         if not _AUDIO_CHECK_WAV.exists():
             self._rhapi.ui.message_alert("Race Voice audio check WAV is missing")
             return
-        self._audio_queue.enqueue(
+        self._enqueue_audio(
             text="Sendspin audio check",
             wav_paths=[_AUDIO_CHECK_WAV],
             priority=Priority.HIGH,
@@ -443,9 +461,13 @@ class RaceVoicePlugin:
 
     def stop_audio(self, _args: dict[str, Any] | None = None) -> None:
         """Stop current Sendspin playback and clear queued audio."""
-        dropped = self._audio_queue.clear()
-        self._sendspin.stop()
-        self._rhapi.ui.message_notify(f"Race Voice audio stopped ({dropped} queued)")
+        dropped = self._clear_audio_queues()
+        self._output_control_pool.submit(self._sendspin.stop)
+        if self._cloud_enabled():
+            self._output_control_pool.submit(self._cloud_sendspin.stop)
+        self._rhapi.ui.message_notify(
+            f"Race Voice audio stop requested ({dropped} queued jobs cleared)"
+        )
 
     def clear_tts_cache(self, _args: dict[str, Any] | None = None) -> None:
         """Delete all cached WAV files for the currently selected model."""
@@ -505,7 +527,7 @@ class RaceVoicePlugin:
             logger.info("Race Voice dropped expired enqueue job: '%s'", text)
             return
         if wav_path := self._synthesize(text, subdir, settings):
-            self._audio_queue.enqueue(
+            self._enqueue_audio(
                 text=text,
                 wav_paths=[wav_path],
                 priority=priority,
@@ -621,6 +643,43 @@ class RaceVoicePlugin:
         except (TypeError, ValueError):
             return f"{float(default):.3f}"
 
+    def _enqueue_audio(  # noqa: PLR0913
+        self,
+        text: str,
+        wav_paths: list[Path],
+        priority: Priority = Priority.NORMAL,
+        expiry_sec: float = DEFAULT_EXPIRY_SEC,
+        play_at: float | None = None,
+        volume: float = 1.0,
+    ) -> None:
+        """Fan out generated audio to independent local and cloud workers."""
+        queues = [self._audio_queue]
+        if self._cloud_enabled():
+            queues.append(self._cloud_audio_queue)
+        expires_at = time.monotonic() + expiry_sec
+        for audio_queue in queues:
+            audio_queue.enqueue(
+                text=text,
+                wav_paths=wav_paths,
+                priority=priority,
+                expiry_sec=max(0.0, expires_at - time.monotonic()),
+                play_at=play_at,
+                volume=volume,
+            )
+
+    def _clear_audio_queues(self) -> int:
+        return self._audio_queue.clear() + self._cloud_audio_queue.clear()
+
+    def _sendspin_cloud_url(self) -> str:
+        return str(self._option(SENDSPIN_CLOUD_URL_OPTION, default="") or "").strip()
+
+    def _sendspin_cloud_token(self) -> str:
+        return str(self._option(SENDSPIN_CLOUD_TOKEN_OPTION, default="") or "").strip()
+
+    def _cloud_enabled(self) -> bool:
+        cloud_url = self._sendspin_cloud_url().rstrip("/")
+        return bool(cloud_url) and cloud_url != self._sendspin_service_url().rstrip("/")
+
     def _sendspin_service_url(self) -> str:
         value = str(
             self._option(
@@ -631,14 +690,10 @@ class RaceVoicePlugin:
         return value or DEFAULT_SENDSPIN_SERVICE_URL
 
     def _sendspin_service_timeout(self) -> float:
-        value = self._option(
-            SENDSPIN_SERVICE_TIMEOUT_OPTION,
-            default=DEFAULT_SENDSPIN_SERVICE_TIMEOUT,
-        )
-        try:
-            return max(0.2, float(value))
-        except (TypeError, ValueError):
-            return float(DEFAULT_SENDSPIN_SERVICE_TIMEOUT)
+        return float(DEFAULT_SENDSPIN_SERVICE_TIMEOUT)
+
+    def _sendspin_cloud_timeout(self) -> float:
+        return float(DEFAULT_SENDSPIN_CLOUD_TIMEOUT)
 
     def _option(self, name: str, *, default: Any) -> Any:
         value = self._rhapi.db.option(name, default=default)

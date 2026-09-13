@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import unittest
 from pathlib import Path
@@ -15,6 +16,7 @@ from unittest.mock import Mock, patch
 from aiohttp import FormData
 from aiohttp.test_utils import TestClient, TestServer
 
+from sendspin_service.audio_cache import AudioCache
 from sendspin_service.audio_queue import Priority
 from sendspin_service.server import SendspinService, ServiceConfig, _create_app
 from tests.test_sendspin_health import output
@@ -44,6 +46,162 @@ class SendspinUploadTests(unittest.IsolatedAsyncioTestCase):
             service_url=lambda: str(self.http.make_url("/")), timeout_s=lambda: 5.0
         )
         self.directory = Path(self.enterContext(TemporaryDirectory()))
+
+    def cloud_adapter(self) -> output.SendspinServiceClient:
+        """Enable remote reuse without changing legacy local-upload coverage."""
+        return output.SendspinServiceClient(
+            service_url=lambda: str(self.http.make_url("/")),
+            timeout_s=lambda: 5.0,
+            reuse_audio=True,
+        )
+
+    async def test_bundled_demo_needs_no_audio_upload(self) -> None:
+        """Play the full song on the first click using only a tiny JSON request."""
+        adapter = self.cloud_adapter()
+        await asyncio.to_thread(adapter.health)
+        with patch.object(
+            output.urllib.request, "urlopen", wraps=output.urllib.request.urlopen
+        ) as request:
+            await asyncio.to_thread(
+                adapter.play, "audio check", [_DEMO_WAV], Priority.HIGH
+            )
+        request.assert_called_once()
+        body = request.call_args.args[0].data
+        self.assertIsInstance(body, bytes)
+        self.assertLess(len(body), 512)
+        self.assertEqual(json.loads(body)["wav_files"], [])
+        item = self.queue.enqueue.call_args.kwargs["wav_items"][0]
+        received = await asyncio.to_thread(Path(item.path).read_bytes)
+        self.assertEqual(received, _DEMO_WAV.read_bytes())
+
+    async def test_repeated_segments_only_upload_new_audio(self) -> None:
+        """Reuse pilot audio and send only a changed lap-time segment."""
+        adapter = self.cloud_adapter()
+        paths = [self.directory / "pilot.wav", self.directory / "time.wav"]
+        paths[0].write_bytes(b"pilot audio")
+        paths[1].write_bytes(b"first time")
+        await asyncio.to_thread(adapter.play, "first", paths, Priority.NORMAL)
+        paths[1].write_bytes(b"new time phrase")
+        with patch.object(
+            output.urllib.request, "urlopen", wraps=output.urllib.request.urlopen
+        ) as request:
+            await asyncio.to_thread(adapter.play, "second", paths, Priority.NORMAL)
+        request.assert_called_once()
+        payload = json.loads(request.call_args.args[0].data)
+        self.assertEqual([item["name"] for item in payload["wav_files"]], ["time.wav"])
+        items = self.queue.enqueue.call_args.kwargs["wav_items"]
+        self.assertEqual(
+            [item.data for item in items], [b"pilot audio", b"new time phrase"]
+        )
+
+    async def test_eviction_reuploads_without_duplicate_playback(self) -> None:
+        """An explicit cache miss permits one retry; rejected jobs queue nothing."""
+        adapter = self.cloud_adapter()
+        path = self.directory / "callout.wav"
+        path.write_bytes(b"callout")
+        await asyncio.to_thread(adapter.play, "first", [path], Priority.NORMAL)
+        self.service._audio_cache = AudioCache(self.directory / "absent")
+        self.queue.enqueue.reset_mock()
+        with patch.object(
+            output.urllib.request, "urlopen", wraps=output.urllib.request.urlopen
+        ) as request:
+            await asyncio.to_thread(adapter.play, "second", [path], Priority.NORMAL)
+        self.assertEqual(request.call_count, 2)
+        self.queue.enqueue.assert_called_once()
+        self.assertEqual(
+            self.queue.enqueue.call_args.kwargs["wav_items"][0].data, b"callout"
+        )
+
+    async def test_reference_cache_uses_multipart_for_new_large_clips(self) -> None:
+        """Large unknown clips upload raw once and then play by reference."""
+        adapter = self.cloud_adapter()
+        path = self.directory / "large.wav"
+        path.write_bytes(b"a" * (1024 * 1024))
+        with patch.object(
+            adapter, "_wav_files", side_effect=AssertionError("base64 used")
+        ):
+            await asyncio.to_thread(adapter.play, "first", [path], Priority.NORMAL)
+        with patch.object(
+            output.urllib.request, "urlopen", wraps=output.urllib.request.urlopen
+        ) as request:
+            await asyncio.to_thread(adapter.play, "second", [path], Priority.NORMAL)
+        request.assert_called_once()
+        self.assertLess(len(request.call_args.args[0].data), 512)
+        self.assertEqual(self.queue.enqueue.call_count, 2)
+
+    async def test_references_fall_back_for_older_service(self) -> None:
+        """An older service must receive ordinary audio, never reference-only jobs."""
+        self.service.health = Mock(return_value={"ok": True})
+        adapter = self.cloud_adapter()
+        path = self.directory / "older.wav"
+        path.write_bytes(b"audio")
+        await asyncio.to_thread(adapter.play, "legacy", [path], Priority.NORMAL)
+        self.assertEqual(
+            self.queue.enqueue.call_args.kwargs["wav_items"][0].data, b"audio"
+        )
+
+    async def test_reference_timeout_never_retries_playback(self) -> None:
+        """A timed-out request might already be playing, unlike an explicit miss."""
+        adapter = self.cloud_adapter()
+        await asyncio.to_thread(adapter.health)
+        with (
+            patch.object(
+                output.urllib.request, "urlopen", side_effect=TimeoutError
+            ) as request,
+            self.assertLogs(output.logger, level="ERROR"),
+        ):
+            await asyncio.to_thread(adapter.play, "demo", [_DEMO_WAV], Priority.HIGH)
+        request.assert_called_once()
+        self.queue.enqueue.assert_not_called()
+
+    async def test_missing_reference_is_atomic_and_requires_auth(self) -> None:
+        """No partial playback and no unauthenticated access to bundled audio."""
+        digest = hashlib.sha256(_DEMO_WAV.read_bytes()).hexdigest()
+        payload = {"wav_refs": [{"name": "demo.wav", "sha256": digest}]}
+        self.service._config = ServiceConfig(api_token="test-token")  # noqa: S106
+        response = await self.http.post("/v1/play", json=payload)
+        self.assertEqual(response.status, 401)
+        payload["wav_refs"].append({"name": "missing.wav", "sha256": "0" * 64})
+        response = await self.http.post(
+            "/v1/play", json=payload, headers={"Authorization": "Bearer test-token"}
+        )
+        self.assertEqual(response.status, 409)
+        self.queue.enqueue.assert_not_called()
+
+    async def test_authenticated_cloud_playback_and_token_changes(self) -> None:
+        """Authenticate both upload formats and stop, reading token edits live."""
+        self.service._config = ServiceConfig(api_token="cloud-test-token")  # noqa: S106
+        token = "wrong-token"  # noqa: S105
+        adapter = output.SendspinServiceClient(
+            service_url=lambda: str(self.http.make_url("/")),
+            timeout_s=lambda: 5.0,
+            api_token=lambda: token,
+        )
+        path = self.directory / "callout.wav"
+        path.write_bytes(b"audio")
+        with self.assertLogs(output.logger, level="ERROR"):
+            await asyncio.to_thread(adapter.play, "test", [path], Priority.NORMAL)
+        self.queue.enqueue.assert_not_called()
+
+        token = " cloud-test-token "  # noqa: S105
+        health = await asyncio.to_thread(adapter.health)
+        self.assertTrue(health["api_auth_required"])
+        with self.assertNoLogs(output.logger, level="ERROR"):
+            for threshold in (0, 1024):
+                with patch.object(output, "_MULTIPART_THRESHOLD_BYTES", threshold):
+                    await asyncio.to_thread(
+                        adapter.play, "test", [path], Priority.NORMAL
+                    )
+        self.assertEqual(self.queue.enqueue.call_count, 2)
+        self.queue.clear.return_value = 2
+        with self.assertNoLogs(output.logger, level="ERROR"):
+            await asyncio.to_thread(adapter.stop)
+        self.queue.clear.assert_called_once()
+
+        token = ""
+        with self.assertLogs(output.logger, level="ERROR"):
+            await asyncio.to_thread(adapter.stop)
+        self.queue.clear.assert_called_once()
 
     async def test_complete_demo_streams_without_base64(self) -> None:
         """Preserve every byte of the full 132-second track using a raw upload."""

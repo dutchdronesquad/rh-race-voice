@@ -4,6 +4,16 @@ All notable shipped changes to Race Voice should be documented in this file.
 
 This changelog is intentionally concise. GitHub Releases can carry the fuller change list and release assets.
 
+## [Unreleased]
+
+### Cloud playback
+
+Stream the same callouts and race sounds locally and to an authenticated cloud service simultaneously. Keep the local service URL and fill in **Cloud Sendspin service URL** and **Cloud Sendspin API token**. Separate queues keep cloud delays from holding up local audio; **Stop audio** acts on both outputs.
+
+### Faster cloud audio
+
+The audio check and race tones can play from files included with the cloud service, avoiding a full upload on each click. Repeated callouts reuse previously uploaded segments. Update both plugin and service for this optimization; older services retain the upload-based behavior. The complete test track is preserved, and local race audio keeps playing immediately.
+
 ## [1.1.0] - 2026-09-13
 
 ### ⚠️ Upgrade requirements

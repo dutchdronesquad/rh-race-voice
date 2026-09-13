@@ -1,6 +1,6 @@
 # Standalone synthesis worker
 
-Implementation step for #298, following the contract in #297. The local HTTP preview connects this worker to event admission and playback; the opt-in RH adapter can publish events, while manual command forwarding, cache lifecycle completion and primary packaging remain before normal activation. The legacy plugin remains usable.
+Implementation step for #298, following the contract in #297. The local HTTP preview connects this worker to event admission and playback; the v2 RH adapter publishes events, while manual command forwarding, cache lifecycle completion and primary packaging remain before normal activation. The plugin entry point always uses the v2 adapter; rollback uses the previous release.
 
 `SynthesisWorker` supervises a long-lived Python child through bounded JSON lines over private pipes. The child starts with a fresh interpreter rather than inheriting RotorHazard's monkey-patched process. Only the child imports Piper/ONNX. A failed or timed-out operation reaps that process; the next request starts a new one. Closing the supervisor settles active and pending callers and reaps the child.
 

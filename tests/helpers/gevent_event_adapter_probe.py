@@ -49,7 +49,7 @@ sys.modules["filtermanager"] = SimpleNamespace(
 )
 sys.modules["RHUI"] = Mock()
 sys.modules["flask"] = Mock()
-os.environ["RACE_VOICE_EXPERIMENTAL_EVENTS"] = "1"
+os.environ.pop("RACE_VOICE_EXPERIMENTAL_EVENTS", None)
 
 from custom_plugins.race_voice import const, initialize
 from custom_plugins.race_voice.event_output import JsonChannel
@@ -193,7 +193,7 @@ class AdapterTests(unittest.TestCase):
         wait_for(self.adapter._publisher._ready)
 
     def test_no_tts_imports_and_callbacks_only_capture_values(self) -> None:
-        """Initialization selects the adapter before importing the legacy plugin."""
+        """Initialization always selects the adapter without an opt-in switch."""
         self.assertFalse(self.service.requests)
         self.connect()
         payload = {

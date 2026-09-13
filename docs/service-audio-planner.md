@@ -1,6 +1,6 @@
 # Race-aware service planning
 
-Implementation for #300, with an opt-in local HTTP receiver for the #299 adapter work. Default deployments keep `/v1/play`. The preview connects source admission, the isolated Piper worker and one Sendspin output; the opt-in RH adapter can now publish into this local path.
+Implementation for #300, with an opt-in local HTTP receiver for the #299 adapter work. Default deployments keep `/v1/play`. The preview connects source admission, the isolated Piper worker and one Sendspin output; the v2 RH adapter now publishes into this local path.
 
 `PreparationPlanner` receives already-admitted, immutable events with their times mapped into the service clock. It keeps four pending laps plus one active speech job, supersedes pending laps for the same pilot, and bounds other announcements separately. Higher-priority speech can displace lower-priority pending work. Ready bundled tones bypass the synthesis worker entirely. Preempted inference results cannot reappear even if a dependency catches task cancellation.
 
@@ -16,7 +16,7 @@ Fourteen deterministic tests cover lap admission/replacement, ready tones during
 
 ## Local HTTP preview
 
-From a source checkout with the Python dependencies and Sendspin extra installed, run `python -m sendspin_service --experimental-race-cache-dir /path/to/race_voice_cache`. The directory contains `models/` and `tts/`. This explicitly selects event mode for the whole service: `/v1/play` and `/v1/stop` return 409, so an old producer cannot bypass the new scheduler. Omit the flag and restart to return to legacy mode. The default RH plugin sends v1 audio; use the explicit adapter mode below when connecting RH to a preview instance.
+From a source checkout with the Python dependencies and Sendspin extra installed, run `python -m sendspin_service --experimental-race-cache-dir /path/to/race_voice_cache`. The directory contains `models/` and `tts/`. This explicitly selects event mode for the whole service: `/v1/play` and `/v1/stop` return 409, so an old producer cannot bypass the new scheduler. The v2 RH plugin requires this event service. The service flag is a development setup step while #303 completes packaging; v2 will not offer users a v1 compatibility mode.
 
 The preview registers `/v2/session`, `/v2/state`, `/v2/clock` and `/v2/events` endpoints. When an API token is configured, every `/v2` request requires that bearer token. A localhost preview without a configured token accepts requests without authentication. It reports `race_event_preview: true` in health, rather than advertising the complete `race-events/1` capability. Requests are limited to 64 KiB, including chunked bodies. Binding the ingest API beyond localhost requires an API token; use TLS at the reverse proxy for remote access. The existing browser player and Sendspin client connection remain available.
 
@@ -30,9 +30,9 @@ A test producer follows this sequence:
 
 Application cleanup stops both planners and reaps the child process. The worker starts on the first speech request, never on service construction. No automatic pre-cache runs. Manual prepare/clear commands, cache lifecycle completion, primary release packaging, cloud relay and personal selections remain separate follow-through work before normal activation.
 
-## RotorHazard adapter preview
+## RotorHazard v2 development setup
 
-Start the service in the local preview mode above. Set `RACE_VOICE_EXPERIMENTAL_EVENTS=1` in RotorHazard's process environment and restart RH. If the service requires a bearer token, set the matching `RACE_VOICE_SERVICE_TOKEN` in that same environment. Configure the existing **Sendspin service URL** field for this service. The entry point selects the adapter before importing the legacy plugin, so this path loads no Piper or ONNX in RH. Release dependency removal and primary packaging remain part of #303.
+Start the service in the local preview mode above and run the v2 RH plugin. The plugin always uses the event adapter; no opt-in environment variable is needed. If the service requires a bearer token, set the matching `RACE_VOICE_SERVICE_TOKEN` in RotorHazard's environment. Configure the existing **Sendspin service URL** field for this service. This path loads no Piper or ONNX in RH. Release dependency removal and primary packaging remain part of #303.
 
 On startup the adapter captures the current heat, assigned pilots and voice settings, then connects in the background. **Service status** reports the last connection/state-delivery result without making an HTTP request. After an RH process restart, an existing publisher session may require the explicit **Connect / take over service** button. This is an operator action; unavailable services never trigger automatic takeover or a fallback to plugin-side synthesis. Enable plugin audio before using either audio test button.
 
@@ -44,6 +44,6 @@ During disconnection or state synchronization, new audio is dropped. Reconnectio
 
 The preview UI hides cloud output and cache commands until those service operations are connected. It does not automatically prepare or clear caches. Heat/stop changes invalidate playback and pending synthesis; completing the service's temporary-file cleanup and manual cache controls is still required before normal activation. The competition UUID persists in an RH option and is renewed on database reset/import/restore/recovery/initialization or pilot deletion; ordinary heat changes retain pilot identities.
 
-Remove `RACE_VOICE_EXPERIMENTAL_EVENTS` and restart RH, then restart the service without its preview flag, to return both sides to legacy operation. Stop audio before switching. The browser player and WindowsSpin still use the default Sendspin output; personal selection and cloud relay are not part of this preview.
+This development branch targets a hard v2.0.0 cutover. Cache operations, cloud output and other release requirements must be completed before publishing v2. Rollback means reinstalling the previous plugin and matching service release, after stopping audio. The browser player and WindowsSpin continue to use Sendspin; no legacy plugin mode or automatic synthesis fallback is provided.
 
 Validation includes a separate interpreter with RH-style gevent patching, real local HTTP sockets, blocked event delivery, lap bursts, state/identity changes, manual takeover, connection recovery, clock refresh and service-URL changes during a handshake. A second test connects that patched adapter to the actual unpatched service admission/speech/playback pipeline with captured audio delivery. These tests establish callback isolation and protocol integration; Raspberry Pi 4 and WindowsSpin 2.2.6 timing and load measurements remain in #304.

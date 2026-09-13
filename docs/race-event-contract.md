@@ -1,6 +1,6 @@
 # Race events v1: standalone service contract
 
-Status: implementation contract for #297, part of epic #296. The existing `/v1/play` API remains operational. The reference parser and admission gate do not advertise a working standalone service. Enable `race-events/1` only when the consumer, worker, adapter and cancellation path pass integration checks.
+Status: implementation contract for #297, part of epic #296. The existing `/v1/play` API remains operational. An explicit [local HTTP preview](service-audio-planner.md#local-http-preview) now wires admission, synthesis and playback. It does not advertise the complete capability: enable `race-events/1` only when the RH adapter, manual commands and remaining integration checks are complete.
 
 ## Decision and boundaries
 
@@ -117,4 +117,4 @@ Existing `/v1/play`, cache references, local/cloud output, and default Sendspin 
 
 ## Conformance and follow-through
 
-`sendspin_service/race_protocol.py` provides strict event parsing, clock bounds, and a single-owner context gate; it does not implement HTTP, snapshot content, ownership persistence, queue capacities, or the worker. Tests exercise duplicate delivery, old sessions, reordered snapshots, reset with reused pilot IDs, expiry, clock offsets/jitter, and cancellation of late worker results. Integration work must enforce the remaining limits before advertising the capability. #298–#304 own worker, adapter, planner, relay, selection, packaging and real hardware checks.
+`sendspin_service/race_protocol.py` provides strict event parsing, clock bounds, and a single-owner context gate. `race_ingest.py` connects these to the worker and planners in the local HTTP preview, validates full snapshot content and fences publisher sessions until service restart. Tests exercise duplicate delivery, old sessions, reordered snapshots, reset with reused pilot IDs, expiry, clock offsets/jitter, and cancellation of late worker results. Integration work must enforce the remaining limits before advertising the capability. #298–#304 own worker, adapter, planner, relay, selection, packaging and real hardware checks.

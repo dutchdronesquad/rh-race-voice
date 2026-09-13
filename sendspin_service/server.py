@@ -52,6 +52,7 @@ class ServiceConfig:
     max_body_bytes: int = DEFAULT_MAX_BODY_MB * BYTES_PER_MIB
     player_dir: Path | None = None
     api_token: str = ""
+    race_cache_dir: Path | None = None
 
 
 class SendspinService:
@@ -60,19 +61,28 @@ class SendspinService:
     def __init__(self, config: ServiceConfig) -> None:
         """Initialize the service backend."""
         self._config = config
+        if (
+            config.race_cache_dir is not None
+            and config.api_host not in {"127.0.0.1", "::1", "localhost"}
+            and not config.api_token
+        ):
+            raise ValueError("Race ingest on a network interface requires an API token")
         asset_dir = Path(__file__).parent / "assets"
         if not asset_dir.is_dir():
             asset_dir = (
                 Path(__file__).resolve().parents[1] / "custom_plugins/race_voice/assets"
             )
         self._audio_cache = AudioCache(asset_dir)
+        self._asset_dir = asset_dir
         self._sendspin = SendSpinServer(
             host=config.sendspin_host,
             port=config.sendspin_port,
             advertise=config.advertise,
         )
-        self._queue = AudioQueue(
-            player=self._sendspin.play, interrupt=self._sendspin.stop
+        self._queue = (
+            AudioQueue(player=self._sendspin.play, interrupt=self._sendspin.stop)
+            if config.race_cache_dir is None
+            else None
         )
 
     def start(self) -> None:
@@ -95,9 +105,10 @@ class SendspinService:
             "connected_players": connected_clients,
             "max_body_bytes": self._config.max_body_bytes,
             "api_auth_required": bool(self._config.api_token),
-            "supports_multipart_play": True,
-            "supports_audio_references": True,
+            "supports_multipart_play": self._queue is not None,
+            "supports_audio_references": self._queue is not None,
             "bundled_audio": self._audio_cache.bundled_hashes,
+            "race_event_preview": self._config.race_cache_dir is not None,
         }
 
     @property
@@ -119,6 +130,8 @@ class SendspinService:
         self, payload: dict[str, Any], wav_items: list[WavItem] | None = None
     ) -> dict[str, Any]:
         """Queue playback options with inline or separately uploaded WAV data."""
+        if self._queue is None:
+            raise web.HTTPConflict(reason="Race event mode owns playback; use v2")
         if wav_items is None:
             wav_items = _wav_items(payload)
         cached_audio = None
@@ -152,14 +165,45 @@ class SendspinService:
 
     def stop(self) -> dict[str, Any]:
         """Stop active playback and clear queued jobs."""
+        if self._queue is None:
+            raise web.HTTPConflict(reason="Stop via a new v2 state generation")
         dropped = self._queue.clear()
         self._sendspin.stop()
         return {"stopped": True, "dropped": dropped}
 
     def shutdown(self) -> None:
         """Stop playback and close the underlying Sendspin server."""
-        self._queue.clear()
+        if self._queue is not None:
+            self._queue.clear()
         self._sendspin.close()
+
+    def add_race_routes(self, app: web.Application) -> None:
+        """Load primary-only dependencies when explicitly enabled in a checkout."""
+        if self._config.race_cache_dir is None:
+            return
+        from .race_ingest import RaceIngest, add_routes  # noqa: PLC0415
+        from .race_planner import SendspinPlaybackSink  # noqa: PLC0415
+        from .synthesis import SynthesisWorker  # noqa: PLC0415
+
+        assets = {
+            name: (self._asset_dir / filename).read_bytes()
+            for name, filename in {
+                "stage": "stage.wav",
+                "buzzer": "buzzer.wav",
+                "audio_check": "moavii-foreign.wav",
+            }.items()
+        }
+        ingest = RaceIngest(
+            SynthesisWorker(self._config.race_cache_dir),
+            SendspinPlaybackSink(self._sendspin),
+            assets,
+        )
+        add_routes(app, ingest)
+
+        async def cleanup(_app: web.Application) -> None:
+            await ingest.close()
+
+        app.on_cleanup.append(cleanup)
 
 
 def _create_app(service: SendspinService) -> web.Application:
@@ -172,6 +216,7 @@ def _create_app(service: SendspinService) -> web.Application:
     app.router.add_get("/health", _health)
     app.router.add_post("/v1/play", _play)
     app.router.add_post("/v1/stop", _stop)
+    service.add_race_routes(app)
     add_player_routes(app, service.player_dir)
     return app
 
@@ -197,6 +242,8 @@ async def _play(request: web.Request) -> web.Response:
             payload = await _read_json(request)
             result = await asyncio.to_thread(_service(request).play, payload)
         return web.json_response(result, status=202)
+    except web.HTTPConflict as exc:
+        return web.json_response({"error": exc.reason}, status=409)
     except web.HTTPRequestEntityTooLarge:
         return web.json_response({"error": "request body too large"}, status=413)
     except MissingAudioError as exc:
@@ -221,6 +268,8 @@ async def _stop(request: web.Request) -> web.Response:
     try:
         result = await asyncio.to_thread(_service(request).stop)
         return web.json_response(result)
+    except web.HTTPConflict as exc:
+        return web.json_response({"error": exc.reason}, status=409)
     except Exception:
         logger.exception("Sendspin service stop request failed")
         return web.json_response({"error": "internal server error"}, status=500)
@@ -231,7 +280,7 @@ async def _api_token_middleware(
     request: web.Request,
     handler: web.RequestHandler,
 ) -> web.StreamResponse:
-    if request.path in {"/v1/play", "/v1/stop"}:
+    if request.path in {"/v1/play", "/v1/stop"} or request.path.startswith("/v2/"):
         _require_api_token(request)
     return await handler(request)
 
@@ -472,7 +521,13 @@ def _parse_args(argv: Sequence[str] | None = None) -> ServiceConfig:
     parser.add_argument(
         "--api-token",
         default=_env_str("SENDSPIN_API_TOKEN", ""),
-        help="Optional bearer token required for /v1/play and /v1/stop",
+        help="Bearer token for playback and race ingest endpoints",
+    )
+    parser.add_argument(
+        "--experimental-race-cache-dir",
+        type=Path,
+        dest="race_cache_dir",
+        help="Enable the local race-event preview using this Piper cache directory",
     )
     args = parser.parse_args(argv)
     max_body_mb = _body_limit_mb(args.max_body_mb)
@@ -485,6 +540,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> ServiceConfig:
         max_body_bytes=max_body_mb * BYTES_PER_MIB,
         player_dir=args.player_dir,
         api_token=args.api_token.strip(),
+        race_cache_dir=args.race_cache_dir,
     )
 
 

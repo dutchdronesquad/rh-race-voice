@@ -1,7 +1,7 @@
 """Cover the aiosendspin 9 server API and open playback admission."""
 
 # Use the standard-library test runner.
-# ruff: noqa: PT009, SLF001
+# ruff: noqa: PT009, PT027, SLF001
 
 from __future__ import annotations
 
@@ -17,6 +17,21 @@ from sendspin_service.sendspin import SendSpinServer, _load_identity
 
 class SendspinStartupTests(unittest.IsolatedAsyncioTestCase):
     """Exercise the real dependency constructor without opening a network port."""
+
+    async def test_strict_stop_reports_group_failure_after_stopping_other_groups(
+        self,
+    ) -> None:
+        """Primary stop acknowledgement must include failures clearing client groups."""
+        backend = SendSpinServer()
+        failed = Mock(stop=AsyncMock(side_effect=RuntimeError("group failed")))
+        healthy = Mock(stop=AsyncMock())
+        backend._server = Mock(
+            connected_clients=[Mock(group=failed), Mock(group=healthy)]
+        )
+        with self.assertRaisesRegex(RuntimeError, "group failed"):
+            await backend._stop_stream(strict=True)
+        healthy.stop.assert_awaited_once()
+        failed.stop.assert_awaited_once()
 
     async def test_starts_with_installed_api_and_persists_identity(self) -> None:
         """Catch constructor-breaking dependency upgrades and identity rotation."""

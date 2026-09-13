@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -41,6 +40,7 @@ from .piper import PiperSynthesizer, SynthesisParams, SynthesisResult
 from .services import schedule
 from .services.clock_callouts import ClockCallouts
 from .services.lap_callouts import LapCalloutSegments
+from .services.lap_synthesis import LapSynthesisQueue
 from .services.precache import PrecacheManager
 from .services.schedule import ScheduleCalloutManager
 from .ui import register_ui
@@ -108,9 +108,10 @@ class RaceVoicePlugin:
         )
         self._prepared_settings: VoiceSettings | None = None
         self._synth_pool = ThreadPoolExecutor(
-            max_workers=os.cpu_count() or 4,
+            max_workers=1,
             thread_name_prefix="race_voice_synth",
         )
+        self._lap_synthesis = LapSynthesisQueue(self._synth_pool, self._synthesize_lap)
         self._schedule_callouts = ScheduleCalloutManager(
             enqueue_callout=self._enqueue_schedule_callout,
             phrase_for=self._schedule_phrase_for_settings,
@@ -219,7 +220,7 @@ class RaceVoicePlugin:
             "expires_at": time.monotonic() + _LAP_CALLOUT_EXPIRY_SEC,
             "settings": self._settings(),
         }
-        self._synth_pool.submit(self._synthesize_lap, snapshot)
+        self._lap_synthesis.submit(snapshot)
         return payload
 
     def _synthesize_lap(self, snapshot: dict[str, Any]) -> None:
@@ -232,11 +233,12 @@ class RaceVoicePlugin:
         settings = snapshot["settings"]
         callout = self._lap_callouts.plan(snapshot, settings.model_name)
 
-        wav_paths = [
-            path
-            for segment in callout.segments
-            if (path := self._synthesize(segment.text, segment.subdir, settings))
-        ]
+        wav_paths = []
+        for segment in callout.segments:
+            if time.monotonic() > expires_at:
+                return
+            if path := self._synthesize(segment.text, segment.subdir, settings):
+                wav_paths.append(path)
 
         if wav_paths:
             self._enqueue_audio(

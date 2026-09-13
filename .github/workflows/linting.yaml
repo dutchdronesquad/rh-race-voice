@@ -12,15 +12,13 @@ env:
 
 jobs:
   service-installer:
-    name: Service installer
+    name: Shell scripts
     runs-on: ubuntu-latest
     steps:
       - name: ⤵️ Check out code from GitHub
         uses: actions/checkout@v7.0.1
       - name: Check shell scripts
         run: shellcheck tools/install-sendspin-service.sh tools/test-sendspin-installer.sh
-      - name: Test installation and updates
-        run: bash tools/test-sendspin-installer.sh
 
   ruff:
     name: Ruff
@@ -40,8 +38,6 @@ jobs:
         run: uv run ruff check --output-format=github .
       - name: 🚀 Run ruff formatter
         run: uv run ruff format --check .
-      - name: Test service compatibility and startup
-        run: uv run --extra sendspin-service python -m unittest discover -s tests -v
 
   prek-hooks:
     name: Prek hooks

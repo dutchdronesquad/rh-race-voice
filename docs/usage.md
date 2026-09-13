@@ -1,137 +1,86 @@
 # Usage Guide
 
-Race Voice generates RotorHazard callout WAV files on the timing server and sends them to `sendspin-service` over HTTP. The RotorHazard plugin serves its browser player at `/player`; the Docker image also includes a player at `/`.
+Race Voice sends RotorHazard audio to one Sendspin server at a time:
 
-**For use with the RotorHazard plugin, we recommend the [`.deb` installation](#sendspin-service) on the same Raspberry Pi OS machine as RotorHazard.** Playback clients such as WindowsSpin can run on another PC on the same network. [Docker Compose](#docker-image) is an optional cloud deployment with its own browser player.
+- **Recommended:** the `.deb` service on the same Raspberry Pi OS machine as RotorHazard. Listen through the plugin's `/player` page or WindowsSpin on another LAN device.
+- **Optional:** [Docker Compose in the cloud](#docker-image), with its own browser player. Change **Sendspin service URL** in RotorHazard to select it.
 
-The plugin currently sends audio to **one Sendspin server at a time**, selected by **Sendspin service URL**. You can select the local service or the cloud service. Sending to both in parallel is not currently supported.
-
-For the standard Raspberry Pi setup, install both the plugin ZIP and service `.deb` from the same release. The plugin provides RotorHazard integration and the `/player` page. The `.deb` runs Sendspin independently as a systemd service on that same Pi, with its own Python runtime and dependencies.
+Parallel output to both servers is not supported. Keep the plugin and selected service on the same release.
 
 ## Setup
 
-1. [Install and verify `sendspin-service`](#sendspin-service).
-2. In RotorHazard, open **Settings** -> **Race Voice**.
-3. Enable **Plugin audio**.
-4. Keep **Sendspin service URL** at `http://127.0.0.1:8766` for the local `.deb` installation. To use the cloud service, follow [Docker Image](#docker-image) and change this setting to its HTTP API base URL.
-5. Choose a voice model and speech settings.
-6. Open the browser player from the RotorHazard UI on the playback device, for example `<RotorHazard UI base URL>/player`.
-7. Set normal RotorHazard browser Voice Volume and Tone Volume to `0` on clients that should not play duplicate built-in callouts, staging tones, or start sounds.
-8. Use **Generate test phrase** or **Play audio check**.
+Follow the [Quick Start](../README.md#quick-start) for the complete plugin setup. Service installation, updates, and cloud setup are covered below.
 
 ## Sendspin Service
 
-### Install on Debian or Raspberry Pi OS
+### Install
 
-**Already running Sendspin in Docker on this machine?** [Stop that container first](#port-conflicts). Both installations use ports `8766` and `8927` by default, so the `.deb` service cannot start while the container occupies those ports.
-
-The `.deb` package is designed to run Sendspin as a standalone service on **the same Raspberry Pi running RotorHazard**, using 64-bit Raspberry Pi OS. It also supports 64-bit Debian systems with systemd (`arm64` and `amd64`). Open a terminal on the RotorHazard machine (or connect over SSH) and paste:
+On the **RotorHazard machine**, running 64-bit Raspberry Pi OS or Debian with systemd (`arm64` or `amd64`), run:
 
 ```shell
 curl -fL https://github.com/dutchdronesquad/rh-race-voice/releases/latest/download/install-sendspin-service.sh -o install-sendspin-service.sh &&
   bash install-sendspin-service.sh
 ```
 
-Choose the release matching your plugin from the menu of recent stable releases (newest first). The menu shows releases with a package and checksum available for your machine. The installer shows any installed version and asks you to confirm the installation or update. Enter your sudo password if prompted. It detects `arm64` or `amd64`, verifies the package checksum, installs it, and restarts the service with startup at boot enabled. The package includes its own Python runtime and dependencies. Wait for **installed and running** before continuing; if the selected version is already installed, the script leaves it unchanged.
+Choose the release matching your plugin and confirm. The installer selects the package, verifies its checksum, and starts the service at installation and boot. Python and service dependencies are bundled.
 
-Use `race_voice.zip` from the same release you selected. In RotorHazard, enable **Plugin audio** and leave **Sendspin service URL** at `http://127.0.0.1:8766`. Open the `/player` page on your playback device, press **Connect**, then use **Play audio check** in RotorHazard.
-
-If `curl` is missing, run `sudo apt update && sudo apt install -y curl`, then repeat the command. A 32-bit OS (`armhf`) is not supported by the release packages.
-
-To skip the menu, use `bash install-sendspin-service.sh --latest` or pass an exact release tag, for example `bash install-sendspin-service.sh v1.2.3` (replace `v1.2.3` with your plugin's release tag). Both still ask for confirmation before making changes. The release menu requires Python 3.9 or newer; `--latest` and explicit tags do not require Python.
+If Sendspin already runs in Docker on this machine, [stop that container first](#port-conflicts).
 
 <details>
-<summary>Manual package installation</summary>
+<summary>Prerequisites and manual installation</summary>
 
-Run `dpkg --print-architecture` on the service machine. Download the matching `sendspin-service_<version>_arm64.deb` or `sendspin-service_<version>_amd64.deb` from the [same release as your plugin](https://github.com/dutchdronesquad/rh-race-voice/releases). In the directory containing the downloaded package, run `sudo apt install ./<filename>`, replacing `<filename>` with its actual name. The package enables and starts the service automatically.
+- If `curl` is missing, run `sudo apt update && sudo apt install -y curl`.
+- The release menu needs Python 3.9+. Use `--latest` or an exact release tag to skip the menu without Python.
+- 32-bit systems (`armhf`) are not supported by the release packages.
+- For manual installation, run `dpkg --print-architecture`, download the matching `.deb` from your plugin's [release](https://github.com/dutchdronesquad/rh-race-voice/releases), and run `sudo apt install ./<filename>` with the downloaded filename.
 
 </details>
 
-### Verify the service and connect a player
+### Connect and test
 
-On the service machine, check that the service is running and its HTTP API responds:
+1. In RotorHazard, enable **Settings → Race Voice → Plugin audio**. Keep **Sendspin service URL** at `http://127.0.0.1:8766`.
+2. Connect a player:
+   - **Browser:** open `<RotorHazard UI base URL>/player`, set **Server URL** to `http://<Pi LAN address>:8927`, and press **Connect**.
+   - **WindowsSpin:** connect to the Pi's LAN address on port `8927`.
+3. Click **Play audio check** in RotorHazard.
 
-```shell
-systemctl status sendspin-service --no-pager
-curl --fail http://127.0.0.1:8766/health
-```
+The service stays on the Pi; players can run on other LAN devices. Keep port `8766` local and allow clients to reach port `8927`. Use the Pi's LAN address in remote players, not `127.0.0.1`.
 
-The status should show `active (running)`, and `/health` should return JSON including the installed service `version`. Keep the plugin ZIP, `.deb` package, and Docker image on the same Race Voice release version; Race Voice warns in the RotorHazard UI when the plugin and service versions differ.
+### Update or choose a version
 
-In RotorHazard, enable **Plugin audio** under **Settings** -> **Race Voice** and set **Sendspin service URL** to `http://127.0.0.1:8766` when both run on the same host. On the playback device, open `<RotorHazard UI base URL>/player`, set the player's **Server URL** to `http://<service-host>:8927`, and press **Connect**. Replace `<service-host>` with the service machine's LAN IP address or hostname reachable from that device. Use **Play audio check** in RotorHazard to confirm sound.
-
-Port `8766` is the HTTP API used by RotorHazard; port `8927` is the Sendspin endpoint used by players. Allow playback devices to reach TCP port `8927` if the service machine has a firewall. On a separate playback device, `127.0.0.1` refers to that device, so use the service machine's LAN address in the player.
-
-If the service is not running or the health check fails, inspect its logs:
-
-```shell
-journalctl -u sendspin-service -n 80 --no-pager
-```
-
-### Listening from another PC on the local network
-
-The `.deb` service runs on the same machine as RotorHazard. Keep RotorHazard's **Sendspin service URL** at `http://127.0.0.1:8766` and keep `SENDSPIN_INGEST_HOST=127.0.0.1` in the service configuration.
-
-To listen from WindowsSpin on another PC, connect it to the RotorHazard machine's LAN IP address or hostname on port `8927`. For example, if the Pi is `192.168.1.50`, the connection is:
-
-```text
-RotorHazard -> http://127.0.0.1:8766 -> local Sendspin service
-WindowsSpin on another PC -> 192.168.1.50:8927 -> local Sendspin service
-```
-
-The client connects directly to Sendspin's player endpoint, which already listens on the network by default. Allow TCP port `8927` from playback devices if a firewall is enabled. The HTTP API on port `8766` stays local to the Pi. You can also use the plugin's `/player` page from another device, with **Server URL** set to `http://192.168.1.50:8927` in this example.
-
-### Configuration and upgrades
-
-Default config is stored in `/etc/default/sendspin-service`:
-
-```shell
-SENDSPIN_INGEST_HOST=127.0.0.1
-SENDSPIN_INGEST_PORT=8766
-SENDSPIN_HOST=0.0.0.0
-SENDSPIN_PORT=8927
-SENDSPIN_ADVERTISE=true
-SENDSPIN_MAX_BODY_MB=50
-```
-
-Restart the service with `sudo systemctl restart sendspin-service` after editing the configuration.
-
-To update an existing installation, run the downloaded installer again:
+Run the downloaded script again:
 
 ```shell
 bash install-sendspin-service.sh
 ```
 
-It shows the installed version and lets you select the target release. Alternatively, update to the latest stable release directly:
+It shows the installed version and asks you to select and confirm the target release. Updates preserve `/etc/default/sendspin-service` and restart the service. The same version makes no changes; an older version is labelled **Downgrade**.
+
+| Command | Action |
+|---|---|
+| `bash install-sendspin-service.sh --latest` | Install or update to the latest stable release |
+| `bash install-sendspin-service.sh v1.2.3` | Select an exact release tag; replace `v1.2.3` with yours |
+| `bash install-sendspin-service.sh --help` | Show all options |
+
+Add `--yes` to confirm without prompting, including downgrades. Unattended runs also require sudo without a password prompt. Download the script again to get installer updates.
+
+Update the RotorHazard plugin separately to the same release, then run **Play audio check**.
+
+### Configuration and checks
+
+Settings are in `/etc/default/sendspin-service`. Defaults: local HTTP API on `127.0.0.1:8766`, Sendspin player endpoint on `0.0.0.0:8927`. After editing, run `sudo systemctl restart sendspin-service`.
 
 ```shell
-bash install-sendspin-service.sh --latest
+systemctl status sendspin-service --no-pager
+curl --fail http://127.0.0.1:8766/health
+journalctl -u sendspin-service -n 80 --no-pager
 ```
 
-The installer displays the current and target versions and asks for confirmation before updating and restarting the service. It preserves your settings in `/etc/default/sendspin-service`. Selecting the installed version makes no changes. Selecting an older version explicitly shows **Downgrade** and also requires confirmation.
-
-For unattended use, pass both a release choice and `--yes`, for example `bash install-sendspin-service.sh --latest --yes`. This confirms the change, including a downgrade when an older tag is specified; sudo must already be available without a password prompt. Use `--help` to see the options.
-
-Update the RotorHazard plugin separately to the same release, then verify `/health` and **Play audio check**. To get improvements to the installer itself, repeat the download command in the installation section.
-
-The service API accepts inline WAV payloads via `wav_files`. It does not accept filesystem paths. This keeps the packaged service independent of RotorHazard/plugin directory permissions while running with `DynamicUser=yes`.
+Expect `active (running)` and a JSON health response containing the service version.
 
 ## Docker Image
 
-Docker Compose is an **optional extra for cloud hosting**. For use with the RotorHazard plugin, the recommended installation is the [`.deb` package](#sendspin-service) on the same Raspberry Pi OS machine as RotorHazard. The container runs on the cloud server and includes its own browser player at `/`. To send audio there, change RotorHazard's **Sendspin service URL** from `http://127.0.0.1:8766` to the cloud service's reachable HTTP API base URL. Open the cloud player and connect it to that cloud Sendspin server. The plugin then sends audio only to the cloud server; change the setting back to use the local service again.
-
-**Already running the `.deb` service on this machine?** [Stop and disable it first](#port-conflicts). Docker publishes the same host ports (`8766` and `8927`) by default and cannot start while the service occupies them. A local `.deb` service on the Pi and a Docker service on a separate cloud host do not conflict, even when they use the same port numbers.
-
-For a quick local test of the cloud image:
-
-```shell
-docker run --rm \
-  -p 8766:8766 \
-  -p 8927:8927 \
-  ghcr.io/dutchdronesquad/sendspin-service:latest
-```
-
-For the cloud deployment, run Docker Compose on your cloud server from a checkout of this repository:
+Use Docker Compose for optional cloud hosting. Run these commands on the cloud server from a checkout of this repository:
 
 ```shell
 cp .env.example .env
@@ -139,35 +88,19 @@ sed -i "s/change-this-token/$(openssl rand -hex 32)/" .env
 docker compose up -d
 ```
 
-The included Compose file builds the local Dockerfile by default. To run the published image instead, replace the `build:` block with `image: ghcr.io/dutchdronesquad/sendspin-service:latest`.
-Container runtime settings are read from `.env`; the checked-in `.env.example` contains the default host, port, advertise, body-size, player-dir, and API-token settings.
+The Compose file builds from source. To use the published image, replace its `build:` block with `image: ghcr.io/dutchdronesquad/sendspin-service:latest`. Runtime settings are in `.env`.
 
-The container serves the browser player at `http://<container-host>:8766/`. The HTTP ingest API is on the same port under `/v1`, and the health check is available at `/health`. Browser clients connect to the Sendspin WebSocket endpoint on port `8927` at `/sendspin`.
+To use the cloud service:
 
-Container defaults:
+1. Set RotorHazard's **Sendspin service URL** to the cloud HTTP API base URL (port `8766` by default).
+2. Open the cloud player at `http://<cloud-host>:8766/` and connect it to that server's Sendspin endpoint on port `8927`.
+3. Run **Play audio check** in RotorHazard.
 
-```shell
-SENDSPIN_INGEST_HOST=0.0.0.0
-SENDSPIN_INGEST_PORT=8766
-SENDSPIN_HOST=0.0.0.0
-SENDSPIN_PORT=8927
-SENDSPIN_ADVERTISE=false
-SENDSPIN_MAX_BODY_MB=50
-SENDSPIN_PLAYER_DIR=/opt/sendspin-service/player
-```
+The plugin sends only to the selected server. Set its URL back to `http://127.0.0.1:8766` to use the local service again.
 
-For a public container deployment, set `SENDSPIN_API_TOKEN` before exposing port `8766`. Producers must send `Authorization: Bearer <token>` for `/v1/play` and `/v1/stop`. Keep it unset only for local-only testing on a trusted machine.
+For a public deployment, set `SENDSPIN_API_TOKEN`; producers must send `Authorization: Bearer <token>` for `/v1/play` and `/v1/stop`. Keep the token unset only for local testing on a trusted machine.
 
-The image does not include the RotorHazard plugin. The bundled player is for direct container use; the normal RotorHazard plugin ZIP still serves its own `/player` route.
-
-Manual playback test:
-
-```shell
-WAV=$(base64 -w0 custom_plugins/race_voice/assets/moavii-foreign.wav)
-curl -s -X POST http://127.0.0.1:8766/v1/play \
-  -H "Content-Type: application/json" \
-  -d "{\"wav_files\":[{\"name\":\"test.wav\",\"data\":\"$WAV\"}],\"priority\":\"high\",\"volume\":1.0}"
-```
+The container includes its own player; install the RotorHazard plugin separately. Local and cloud servers on separate machines can use the same ports. If testing Docker on the Pi, avoid [port conflicts](#port-conflicts) with the `.deb` service.
 
 ## Package Build
 

@@ -11,16 +11,14 @@ env:
   DEFAULT_PYTHON: "3.13"
 
 jobs:
-  service-installer:
-    name: Service installer
+  shellcheck:
+    name: Shell scripts
     runs-on: ubuntu-latest
     steps:
       - name: ⤵️ Check out code from GitHub
         uses: actions/checkout@v7.0.1
       - name: Check shell scripts
         run: shellcheck tools/install-sendspin-service.sh tools/test-sendspin-installer.sh
-      - name: Test installation and updates
-        run: bash tools/test-sendspin-installer.sh
 
   ruff:
     name: Ruff

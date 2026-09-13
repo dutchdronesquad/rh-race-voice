@@ -5,7 +5,7 @@ Race Voice sends RotorHazard audio to one Sendspin server at a time:
 - **Recommended:** the `.deb` service on the same Raspberry Pi OS machine as RotorHazard. Listen through the plugin's `/player` page or WindowsSpin on another LAN device.
 - **Optional:** [Docker Compose in the cloud](#docker-image), with its own browser player. Change **Sendspin service URL** in RotorHazard to select it.
 
-Parallel output to both servers is not supported. Keep the plugin and selected service on the same release.
+Parallel output to both servers is not supported. The plugin and selected service can be updated independently while the service supports the API required by the plugin.
 
 ## Setup
 
@@ -22,7 +22,7 @@ curl -fL https://github.com/dutchdronesquad/rh-race-voice/releases/latest/downlo
   bash install-sendspin-service.sh
 ```
 
-Choose the release matching your plugin and confirm. The installer selects the package, verifies its checksum, and starts the service at installation and boot. Python and service dependencies are bundled.
+Choose a stable service release and confirm. The installer selects the package, verifies its checksum, and starts the service at installation and boot. Python and service dependencies are bundled.
 
 If Sendspin already runs in Docker on this machine, [stop that container first](#port-conflicts).
 
@@ -32,7 +32,7 @@ If Sendspin already runs in Docker on this machine, [stop that container first](
 - If `curl` is missing, run `sudo apt update && sudo apt install -y curl`.
 - The release menu needs Python 3.9+. Use `--latest` or an exact release tag to skip the menu without Python.
 - 32-bit systems (`armhf`) are not supported by the release packages.
-- For manual installation, run `dpkg --print-architecture`, download the matching `.deb` from your plugin's [release](https://github.com/dutchdronesquad/rh-race-voice/releases), and run `sudo apt install ./<filename>` with the downloaded filename.
+- For manual installation, run `dpkg --print-architecture`, download the matching `.deb` from the selected service [release](https://github.com/dutchdronesquad/rh-race-voice/releases), and run `sudo apt install ./<filename>` with the downloaded filename.
 
 </details>
 
@@ -64,7 +64,9 @@ It shows the installed version and asks you to select and confirm the target rel
 
 Add `--yes` to confirm without prompting, including downgrades. Unattended runs also require sudo without a password prompt. Download the script again to get installer updates.
 
-Update the RotorHazard plugin separately to the same release, then run **Play audio check**.
+A plugin update does not by itself require a service update. Keep the existing service when it supports the API required by the plugin; update it for relevant fixes or new service features. If a future plugin feature requires a newer service, its release notes must explain the requirement and upgrade path.
+
+After updating either component, connect a player and run **Play audio check**.
 
 ### Configuration and checks
 
@@ -269,7 +271,7 @@ Running both on the same host requires separate host ports for each deployment. 
 
 - **No audio in `/player`**: confirm `sendspin-service` is running, the player Server URL points at the same service RotorHazard sends to, and the player is connected.
 - **Service unreachable**: confirm `curl http://127.0.0.1:8766/health` works from the RotorHazard host.
-- **Outdated service**: compare the plugin release with `version` from `curl http://127.0.0.1:8766/health`. If they differ, reinstall or upgrade the component that does not match the intended Race Voice release.
+- **Playback fails after an update**: check service health, RotorHazard logs, and service logs for the actual failure. Record the plugin release and the service `version` from `curl http://127.0.0.1:8766/health` for diagnosis; different release numbers alone do not indicate incompatibility. Check release notes for any service requirement before upgrading, then retry **Play audio check**.
 - **Player page unreachable**: confirm `<RotorHazard UI base URL>/player` works from the playback device.
 - **Some players hear different or duplicate audio**: verify that each player connects to the server selected by RotorHazard's **Sendspin service URL**. If multiple services run on the same host, give them distinct host ports. Check both `systemctl status sendspin-service` and `docker ps` on hosts where you have tested container deployments.
 - **Duplicate voice callouts or tones**: set RotorHazard Voice Volume and Tone Volume to `0` in regular RotorHazard browser clients.

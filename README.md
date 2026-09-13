@@ -76,7 +76,7 @@ Server-side voice callouts for the [RotorHazard] timing platform, powered by [Pi
      bash install-sendspin-service.sh
    ```
 
-   Choose the same release as the plugin and confirm. The installer starts the service automatically. Stop any Sendspin Docker container on this machine first to avoid a [port conflict](docs/usage.md#port-conflicts).
+   Choose a stable service release and confirm. Plugin and service release numbers do not need to match; see [update guidance](docs/usage.md#update-or-choose-a-version). The installer starts the service automatically. Stop any Sendspin Docker container on this machine first to avoid a [port conflict](docs/usage.md#port-conflicts).
 
 3. In **Settings → Race Voice**, enable **Plugin audio** and keep **Sendspin service URL** at `http://127.0.0.1:8766`.
 4. On your playback device, open `<RotorHazard UI base URL>/player` and press **Connect**. Alternatively, connect WindowsSpin to the Pi's LAN address on port `8927`.

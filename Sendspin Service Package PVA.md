@@ -484,7 +484,7 @@ Before public release packages are attached to GitHub Releases:
 
 - [x] Release branches use `release/vX.Y.Z` and the separate Version checks workflow checks that `manifest.json` matches.
 - [x] Release tag version is included in package name and `/health`.
-- [ ] Add service API compatibility metadata and plugin-side handling only when the service API gets a breaking change.
+- [ ] Add service API compatibility metadata and plugin-side handling only when the service API gets a breaking change. Follow the [compatibility policy](docs/architecture.md#plugin-and-service-compatibility), including support for existing services without metadata and actionable upgrade guidance.
 - [x] Tagged release builds `amd64` and `arm64` `.deb` packages.
 - [ ] Tagged release builds `linux/amd64` and `linux/arm64` Docker images.
 - [x] Release artifacts are named consistently.

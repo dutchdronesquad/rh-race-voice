@@ -27,6 +27,7 @@ runs:
         version: "latest"
         python-version: ${{ inputs.python-version }}
         enable-cache: true
+        cache-suffix: sendspin-deb
     - name: 🏗 Set up Go
       uses: actions/setup-go@v7.0.0
       with:

@@ -208,7 +208,9 @@ class PiperSynthesizer:
                 with config_path.open("r", encoding="utf-8") as f:
                     config_dict = json.load(f)
                 sess_options = onnxruntime.SessionOptions()
-                sess_options.intra_op_num_threads = os.cpu_count() or 4
+                sess_options.intra_op_num_threads = max(
+                    1, min(2, (os.cpu_count() or 2) - 1)
+                )
                 self._voice = PiperVoice(
                     config=PiperConfig.from_dict(config_dict),
                     session=onnxruntime.InferenceSession(

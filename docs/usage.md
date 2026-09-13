@@ -106,6 +106,18 @@ The container includes its own player; install the RotorHazard plugin separately
 
 ## Package Build
 
+For local development, build and install the service from your checkout with:
+
+```shell
+bash tools/install-sendspin-service.sh --dev
+```
+
+This requires a supported systemd host, `python3` (3.11+), `uv`, and `nfpm`. Run the script from the checkout, not a standalone downloaded copy. It asks for confirmation, builds the local source for the host architecture, copies the resulting package to `/tmp`, and installs it while preserving configuration. The build tool downloads its runtime and dependencies as needed; only installation requires sudo.
+
+Local builds use `0.0.0+dev`. Running `--dev` again rebuilds and reinstalls even when that version is already installed, so local code changes take effect. A failed build stops installation. Switching from a stable version is labelled **Downgrade**. Return to the latest stable service with `bash tools/install-sendspin-service.sh --latest`, then run **Play audio check**.
+
+For building a package without installing it, use the commands below.
+
 Maintainer build requirements: `uv`, `nfpm`, and a local Python 3.11+ interpreter for the build script.
 
 ```shell

@@ -14,9 +14,27 @@ import tempfile
 source = Path('tools/install-sendspin-service.sh').read_text()
 with tempfile.TemporaryDirectory() as directory:
     root = Path(directory)
-    script = root / 'installer.sh'
+    checkout = root / 'checkout'
+    (checkout / 'tools').mkdir(parents=True)
+    (checkout / 'sendspin_service').mkdir()
+    script = checkout / 'tools/install-sendspin-service.sh'
     # Simulate a systemd host without changing the real host or production script.
     script.write_text(source.replace('/run/systemd/system', directory))
+    standalone = root / 'installer.sh'
+    standalone.write_text(script.read_text())
+    # Exercise local build orchestration without installing dependencies or a service.
+    (checkout / 'tools/build_sendspin_service_deb.py').write_text("""
+import json, os, sys
+from pathlib import Path
+architecture = sys.argv[sys.argv.index('--architecture') + 1]
+version = os.environ['SENDSPIN_SERVICE_VERSION']
+with open(os.environ['CALL_LOG'], 'a') as log:
+    log.write(json.dumps(['build', architecture, version, str(Path.cwd())]) + '\\n')
+if os.environ.get('BUILD_FAIL'):
+    sys.exit(1)
+Path('dist').mkdir(exist_ok=True)
+Path(f'dist/sendspin-service_{version}_{architecture}.deb').write_bytes(b'local package')
+""")
     mock = root / 'mock'
     mock.write_text('''#!/usr/bin/env python3
 import hashlib, json, os, pathlib, sys
@@ -58,7 +76,7 @@ elif name == 'curl':
             target.write_bytes(b'package')
 ''')
     mock.chmod(0o755)
-    for name in ['curl', 'dpkg', 'dpkg-query', 'apt', 'systemctl', 'sudo']:
+    for name in ['curl', 'dpkg', 'dpkg-query', 'apt', 'systemctl', 'sudo', 'uv', 'nfpm']:
         (root / name).symlink_to(mock)
 
     def run(label, args, overrides=None, answer=None, expected=0, action=None):
@@ -69,7 +87,7 @@ elif name == 'curl':
         master, slave = pty.openpty()
         try:
             process = subprocess.Popen(
-                ['bash', str(script), *args], env=env,
+                ['bash', str(standalone if env.get('NO_CHECKOUT') else script), *args], env=env,
                 stdin=slave if answer is not None else subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             )
@@ -110,5 +128,24 @@ elif name == 'curl':
     run('apt failure stops installation', ['--latest', '--yes'], {'APT_FAIL': '1'}, expected=100, action='Install')
     stdout, _, _ = run('inactive service fails', ['--latest', '--yes'], {'SERVICE_FAIL': '1'}, expected=1, action='Install')
     assert 'is installed and running' not in stdout
+    stdout, _, calls = run('local development build and install', ['--dev', '--yes'], action='Install')
+    assert ['build', 'arm64', '0.0.0+dev', str(checkout)] in calls
+    assert not any(call[0] == 'curl' for call in calls)
+    assert 'Build and install local development checkout:' in stdout
+    _, _, calls = run('local development amd64', ['--dev', '--yes'], {'TEST_ARCH': 'amd64'}, action='Install')
+    assert ['build', 'amd64', '0.0.0+dev', str(checkout)] in calls
+    run('stable to local development', ['--dev', '--yes'], {'INSTALLED_VERSION': '1.2.3'}, action='Downgrade')
+    _, _, calls = run('local changes rebuild and reinstall', ['--dev', '--yes'], {'INSTALLED_VERSION': '0.0.0+dev'}, action='Reinstall')
+    assert any(call[0] == 'build' for call in calls)
+    assert any(call[0] == 'apt' and '--reinstall' in call for call in calls)
+    run('local development to stable', ['--latest', '--yes'], {'INSTALLED_VERSION': '0.0.0+dev'}, action='Update')
+    _, _, calls = run('decline local build', ['--dev'], answer='n\n')
+    assert not any(call[0] == 'build' for call in calls)
+    _, _, calls = run('local build requires confirmation', ['--dev'], expected=1)
+    assert not any(call[0] == 'build' for call in calls)
+    run('failed local build never installs stale package', ['--dev', '--yes'], {'BUILD_FAIL': '1'}, expected=1)
+    run('standalone installer cannot build checkout', ['--dev', '--yes'], {'NO_CHECKOUT': '1'}, expected=1)
+    run('local build conflicts with latest', ['--dev', '--latest'], expected=1)
+    run('local build conflicts with pinned release', ['v1.2.3', '--dev'], expected=1)
     run('help', ['--help'])
 PY

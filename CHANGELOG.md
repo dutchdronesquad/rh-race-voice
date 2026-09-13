@@ -6,6 +6,10 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 ## [Unreleased]
 
+### Local development installation
+
+Developers can use `bash tools/install-sendspin-service.sh --dev` from a checkout to build and install their local service changes. Repeating the command rebuilds and reinstalls the development package; `--latest` returns to a stable release.
+
 ### Independent plugin and service updates
 
 Updating the RotorHazard plugin no longer produces a warning just because the Sendspin service has a different release number. You can keep your existing service while it supports the API required by the plugin. Service version information remains available in `/health` for troubleshooting.

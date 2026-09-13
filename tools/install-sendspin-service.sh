@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install a released Sendspin service package on Debian-based systems.
+# Install a released or locally built Sendspin service on Debian-based systems.
 set -euo pipefail
 
 fail() {
@@ -9,10 +9,11 @@ fail() {
 
 usage() {
     cat <<'EOF'
-Usage: bash install-sendspin-service.sh [--latest | RELEASE_TAG] [--yes]
+Usage: bash install-sendspin-service.sh [--latest | --dev | RELEASE_TAG] [--yes]
 
 Without a version, choose from recent stable releases in an interactive menu.
   --latest   Install or update to the latest stable release.
+  --dev      Build and install from this local checkout (requires python3, uv, nfpm).
   RELEASE_TAG  Install an exact release, for example v1.2.3.
   --yes      Confirm installation, updates, or downgrades without prompting.
   --help     Show this help.
@@ -31,6 +32,10 @@ for argument in "$@"; do
             [[ -z "$release_tag" ]] || fail 'Choose only one release.'
             release_tag=latest
             ;;
+        --dev)
+            [[ -z "$release_tag" ]] || fail 'Choose only one release.'
+            release_tag=dev
+            ;;
         -*) fail "Unknown option: $argument. Use --help for usage." ;;
         *)
             [[ -z "$release_tag" ]] || fail 'Choose only one release.'
@@ -39,7 +44,11 @@ for argument in "$@"; do
     esac
 done
 
-for command in curl dpkg dpkg-query apt sha256sum systemctl; do
+required_commands=(dpkg dpkg-query apt systemctl)
+if [[ "$release_tag" != dev ]]; then
+    required_commands+=(curl sha256sum)
+fi
+for command in "${required_commands[@]}"; do
     command -v "$command" >/dev/null || fail "Required command not found: $command"
 done
 [[ -d /run/systemd/system ]] || fail 'This installer requires a system running systemd.'
@@ -98,14 +107,30 @@ if [[ "$release_tag" == latest ]]; then
     [[ "$release_url" == "$release_base/tag/"* ]] || fail 'Could not determine the latest release.'
     release_tag=${release_url##*/}
 fi
-[[ "$release_tag" =~ ^v?[0-9][A-Za-z0-9.+-]*$ ]] || fail "Invalid release tag: $release_tag"
-version=${release_tag#v}
+if [[ "$release_tag" == dev ]]; then
+    repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+    [[ -f "$repo_dir/tools/build_sendspin_service_deb.py" && -d "$repo_dir/sendspin_service" ]] \
+        || fail '--dev requires the installer inside a Race Voice checkout.'
+    for command in python3 uv nfpm; do
+        command -v "$command" >/dev/null || fail "Local development build requires: $command"
+    done
+    version=0.0.0+dev
+    printf 'Build and install local development checkout: %s\n' "$repo_dir"
+else
+    [[ "$release_tag" =~ ^v?[0-9][A-Za-z0-9.+-]*$ ]] || fail "Invalid release tag: $release_tag"
+    version=${release_tag#v}
+fi
 action=Install
 apt_options=(-y -o Dpkg::Options::=--force-confold)
 if [[ -n "$installed_version" ]]; then
     if dpkg --compare-versions "$installed_version" eq "$version"; then
-        printf 'Sendspin service %s is already installed; no changes made.\n' "$version"
-        exit 0
+        if [[ "$release_tag" == dev ]]; then
+            action=Reinstall
+            apt_options+=(--reinstall)
+        else
+            printf 'Sendspin service %s is already installed; no changes made.\n' "$version"
+            exit 0
+        fi
     elif dpkg --compare-versions "$installed_version" lt "$version"; then
         action=Update
     else
@@ -130,13 +155,21 @@ install_dir=$(mktemp -d /tmp/sendspin-install.XXXXXXXX)
 trap 'rm -rf "$install_dir"' EXIT
 # Allow apt's _apt user to read the downloaded package.
 chmod 755 "$install_dir"
-printf 'Downloading Sendspin service %s for %s...\n' "$version" "$architecture"
-curl --fail --silent --show-error --location "$download_url" -o "$install_dir/$package"
-curl --fail --silent --show-error --location "$download_url.sha256" -o "$install_dir/checksum"
-read -r expected_checksum _ < "$install_dir/checksum"
-[[ "$expected_checksum" =~ ^[[:xdigit:]]{64}$ ]] || fail 'Invalid package checksum.'
-printf '%s  %s\n' "$expected_checksum" "$install_dir/$package" | sha256sum --check --status \
-    || fail 'Package checksum verification failed.'
+if [[ "$release_tag" == dev ]]; then
+    (
+        cd "$repo_dir"
+        SENDSPIN_SERVICE_VERSION="$version" python3 -m tools.build_sendspin_service_deb --architecture "$architecture"
+    )
+    cp "$repo_dir/dist/$package" "$install_dir/$package"
+else
+    printf 'Downloading Sendspin service %s for %s...\n' "$version" "$architecture"
+    curl --fail --silent --show-error --location "$download_url" -o "$install_dir/$package"
+    curl --fail --silent --show-error --location "$download_url.sha256" -o "$install_dir/checksum"
+    read -r expected_checksum _ < "$install_dir/checksum"
+    [[ "$expected_checksum" =~ ^[[:xdigit:]]{64}$ ]] || fail 'Invalid package checksum.'
+    printf '%s  %s\n' "$expected_checksum" "$install_dir/$package" | sha256sum --check --status \
+        || fail 'Package checksum verification failed.'
+fi
 chmod 644 "$install_dir/$package"
 
 privilege=()

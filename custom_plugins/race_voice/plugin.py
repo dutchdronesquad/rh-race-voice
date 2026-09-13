@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -41,6 +41,7 @@ from .piper import PiperSynthesizer, SynthesisParams, SynthesisResult
 from .services import schedule
 from .services.clock_callouts import ClockCallouts
 from .services.lap_callouts import LapCalloutSegments
+from .services.lap_synthesis import LapSynthesisQueue
 from .services.precache import PrecacheManager
 from .services.schedule import ScheduleCalloutManager
 from .ui import register_ui
@@ -81,6 +82,8 @@ class RaceVoicePlugin:
     def __init__(self, rhapi: Any) -> None:
         """Initialize the plugin and register RotorHazard integration points."""
         self._rhapi = rhapi
+        self._generation = 0
+        self._generation_lock = threading.RLock()
         data_dir = Path(
             getattr(self._rhapi.server, "data_dir", Path.home() / "rh-data")
         )
@@ -93,6 +96,7 @@ class RaceVoicePlugin:
         self._sendspin = SendspinServiceClient(
             service_url=self._sendspin_service_url,
             timeout_s=self._sendspin_service_timeout,
+            reuse_audio=True,
         )
         self._audio_queue = AudioQueue(player=self._sendspin.play)
         self._cloud_sendspin = SendspinServiceClient(
@@ -103,14 +107,12 @@ class RaceVoicePlugin:
             reuse_audio=True,
         )
         self._cloud_audio_queue = AudioQueue(player=self._cloud_sendspin.play)
-        self._output_control_pool = ThreadPoolExecutor(
-            max_workers=2, thread_name_prefix="race_voice_output_control"
-        )
         self._prepared_settings: VoiceSettings | None = None
         self._synth_pool = ThreadPoolExecutor(
-            max_workers=os.cpu_count() or 4,
+            max_workers=1,
             thread_name_prefix="race_voice_synth",
         )
+        self._lap_synthesis = LapSynthesisQueue(self._synth_pool, self._synthesize_lap)
         self._schedule_callouts = ScheduleCalloutManager(
             enqueue_callout=self._enqueue_schedule_callout,
             phrase_for=self._schedule_phrase_for_settings,
@@ -211,15 +213,18 @@ class RaceVoicePlugin:
         lap_number: int = payload.get("lap", 0)
         if lap_number == 0:
             return payload  # holeshot - not announced
+        received_at = time.monotonic()
         snapshot = {
+            "received_at": received_at,
+            "generation": self._generation,
             "lap": lap_number,
             "pilot": payload.get("pilot"),
             "callsign": payload.get("callsign"),
             "phonetic": payload.get("phonetic"),
-            "expires_at": time.monotonic() + _LAP_CALLOUT_EXPIRY_SEC,
+            "expires_at": received_at + _LAP_CALLOUT_EXPIRY_SEC,
             "settings": self._settings(),
         }
-        self._synth_pool.submit(self._synthesize_lap, snapshot)
+        self._lap_synthesis.submit(snapshot)
         return payload
 
     def _synthesize_lap(self, snapshot: dict[str, Any]) -> None:
@@ -229,21 +234,38 @@ class RaceVoicePlugin:
             logger.info("Race Voice dropped expired lap synthesis job")
             return
 
+        if not self._is_current(snapshot["generation"]):
+            return
+        synthesis_started = time.monotonic()
         settings = snapshot["settings"]
         callout = self._lap_callouts.plan(snapshot, settings.model_name)
 
-        wav_paths = [
-            path
-            for segment in callout.segments
-            if (path := self._synthesize(segment.text, segment.subdir, settings))
-        ]
+        wav_paths = []
+        for segment in callout.segments:
+            if (
+                not self._is_current(snapshot["generation"])
+                or time.monotonic() > expires_at
+            ):
+                return
+            if path := self._synthesize(segment.text, segment.subdir, settings):
+                wav_paths.append(path)
 
         if wav_paths:
+            ready_at = time.monotonic()
+            received_at = snapshot["received_at"]
+            log = logger.info if ready_at - received_at >= 1.0 else logger.debug
+            log(
+                "Race Voice lap audio ready: wait=%.0fms synthesis=%.0fms total=%.0fms",
+                (synthesis_started - received_at) * 1000,
+                (ready_at - synthesis_started) * 1000,
+                (ready_at - received_at) * 1000,
+            )
             self._enqueue_audio(
                 text=callout.label,
                 wav_paths=wav_paths,
-                priority=Priority.NORMAL,
+                priority=Priority.LAP,
                 expiry_sec=max(0.0, expires_at - time.monotonic()),
+                generation=snapshot["generation"],
             )
 
     def _on_phonetic_text(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -261,6 +283,7 @@ class RaceVoicePlugin:
             time.monotonic() + 5.0,
             "",
             self._settings(),
+            generation=self._generation,
         )
         return payload
 
@@ -290,7 +313,7 @@ class RaceVoicePlugin:
         self._enqueue_audio(
             text="race start",
             wav_paths=[_BUZZER_WAV],
-            priority=Priority.HIGH,
+            priority=Priority.SIGNAL,
             expiry_sec=_expiry_sec_after_scheduled_play(
                 play_at, _START_BUZZER_STALE_AFTER_SEC
             ),
@@ -305,7 +328,7 @@ class RaceVoicePlugin:
         self._enqueue_audio(
             text="stage tone",
             wav_paths=[_STAGE_BEEP_WAV],
-            priority=Priority.HIGH,
+            priority=Priority.SIGNAL,
             expiry_sec=_expiry_sec_after_scheduled_play(
                 play_at, _STAGE_TONE_STALE_AFTER_SEC
             ),
@@ -324,7 +347,7 @@ class RaceVoicePlugin:
             self._enqueue_audio(
                 text="race clock tone",
                 wav_paths=[_STAGE_BEEP_WAV],
-                priority=Priority.HIGH,
+                priority=Priority.SIGNAL,
                 expiry_sec=_expiry_sec_after_scheduled_play(
                     play_at, _STAGE_TONE_STALE_AFTER_SEC
                 ),
@@ -335,7 +358,7 @@ class RaceVoicePlugin:
             self._enqueue_audio(
                 text="race clock buzzer",
                 wav_paths=[_BUZZER_WAV],
-                priority=Priority.HIGH,
+                priority=Priority.SIGNAL,
                 expiry_sec=_expiry_sec_after_scheduled_play(
                     play_at, _START_BUZZER_STALE_AFTER_SEC
                 ),
@@ -348,11 +371,12 @@ class RaceVoicePlugin:
         self._synth_pool.submit(
             self._enqueue,
             text,
-            Priority.HIGH,
+            Priority.SIGNAL,
             expires_at,
             self._clock_callouts.subdir,
             settings,
             play_at,
+            generation=self._generation,
         )
 
     def _on_event_cache_reset(self, _args: dict[str, Any]) -> None:
@@ -383,10 +407,11 @@ class RaceVoicePlugin:
         self._synth_pool.submit(
             self._enqueue,
             phrase,
-            Priority.HIGH,
+            Priority.SIGNAL,
             time.monotonic() + 8.0,
             schedule.PRECACHE_SUBDIR,
             settings,
+            generation=self._generation,
         )
 
     # ------------------------------------------------------------------
@@ -400,11 +425,17 @@ class RaceVoicePlugin:
         ).strip()
         if not text:
             text = DEFAULT_TEST_PHRASE
+        generation = self._generation
         wav_path = self._synthesize(text, "test")
         if wav_path is None:
             self._rhapi.ui.message_alert("Race Voice test failed - check logs")
             return
-        self._enqueue_audio(text=text, wav_paths=[wav_path], priority=Priority.HIGH)
+        self._enqueue_audio(
+            text=text,
+            wav_paths=[wav_path],
+            priority=Priority.HIGH,
+            generation=generation,
+        )
         self._rhapi.ui.message_notify(f"Race Voice test phrase queued: {wav_path.name}")
 
     def play_audio_check(self, _args: dict[str, Any] | None = None) -> None:
@@ -461,10 +492,11 @@ class RaceVoicePlugin:
 
     def stop_audio(self, _args: dict[str, Any] | None = None) -> None:
         """Stop current Sendspin playback and clear queued audio."""
-        dropped = self._clear_audio_queues()
-        self._output_control_pool.submit(self._sendspin.stop)
-        if self._cloud_enabled():
-            self._output_control_pool.submit(self._cloud_sendspin.stop)
+        with self._generation_lock:
+            dropped = self._clear_audio_queues()
+            self._audio_queue.stop(self._sendspin.stop)
+            if self._cloud_enabled():
+                self._cloud_audio_queue.stop(self._cloud_sendspin.stop)
         self._rhapi.ui.message_notify(
             f"Race Voice audio stop requested ({dropped} queued jobs cleared)"
         )
@@ -521,8 +553,12 @@ class RaceVoicePlugin:
         subdir: str = "",
         settings: VoiceSettings | None = None,
         play_at: float | None = None,
+        *,
+        generation: int | None = None,
     ) -> None:
         """Synthesize text and push it onto the audio queue."""
+        if not self._is_current(generation):
+            return
         if time.monotonic() > expires_at:
             logger.info("Race Voice dropped expired enqueue job: '%s'", text)
             return
@@ -533,6 +569,7 @@ class RaceVoicePlugin:
                 priority=priority,
                 expiry_sec=max(0.0, expires_at - time.monotonic()),
                 play_at=play_at,
+                generation=generation,
             )
 
     def _record_generation(self, result: SynthesisResult) -> None:
@@ -651,24 +688,34 @@ class RaceVoicePlugin:
         expiry_sec: float = DEFAULT_EXPIRY_SEC,
         play_at: float | None = None,
         volume: float = 1.0,
+        *,
+        generation: int | None = None,
     ) -> None:
         """Fan out generated audio to independent local and cloud workers."""
-        queues = [self._audio_queue]
-        if self._cloud_enabled():
-            queues.append(self._cloud_audio_queue)
-        expires_at = time.monotonic() + expiry_sec
-        for audio_queue in queues:
-            audio_queue.enqueue(
-                text=text,
-                wav_paths=wav_paths,
-                priority=priority,
-                expiry_sec=max(0.0, expires_at - time.monotonic()),
-                play_at=play_at,
-                volume=volume,
-            )
+        with self._generation_lock:
+            if not self._is_current(generation):
+                return
+            queues = [self._audio_queue]
+            if self._cloud_enabled():
+                queues.append(self._cloud_audio_queue)
+            expires_at = time.monotonic() + expiry_sec
+            for audio_queue in queues:
+                audio_queue.enqueue(
+                    text=text,
+                    wav_paths=wav_paths,
+                    priority=priority,
+                    expiry_sec=max(0.0, expires_at - time.monotonic()),
+                    play_at=play_at,
+                    volume=volume,
+                )
 
     def _clear_audio_queues(self) -> int:
-        return self._audio_queue.clear() + self._cloud_audio_queue.clear()
+        with self._generation_lock:
+            self._generation += 1
+            return self._audio_queue.clear() + self._cloud_audio_queue.clear()
+
+    def _is_current(self, generation: int | None) -> bool:
+        return generation is None or generation == self._generation
 
     def _sendspin_cloud_url(self) -> str:
         return str(self._option(SENDSPIN_CLOUD_URL_OPTION, default="") or "").strip()

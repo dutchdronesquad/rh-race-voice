@@ -55,6 +55,35 @@ class SendspinUploadTests(unittest.IsolatedAsyncioTestCase):
             reuse_audio=True,
         )
 
+    async def test_signal_and_lap_metadata_survive_inline_and_cached_uploads(
+        self,
+    ) -> None:
+        """New services identify laps; older services retain useful ordering."""
+        for priority, kind, wire in (
+            (Priority.SIGNAL, "race_signal", "high"),
+            (Priority.LAP, "lap", "low"),
+        ):
+            for adapter in (self.adapter, self.cloud_adapter()):
+                with patch.object(
+                    output.urllib.request,
+                    "urlopen",
+                    wraps=output.urllib.request.urlopen,
+                ) as request:
+                    await asyncio.to_thread(
+                        adapter.play, "audio", [_DEMO_WAV], priority
+                    )
+                job = self.queue.enqueue.call_args.kwargs
+                self.assertEqual(job["priority"], priority)
+                play_requests = [
+                    c.args[0]
+                    for c in request.call_args_list
+                    if c.args[0].full_url.endswith("/v1/play")
+                ]
+                if isinstance(play_requests[-1].data, bytes):
+                    payload = json.loads(play_requests[-1].data)
+                    self.assertEqual(payload["priority"], wire)
+                    self.assertEqual(payload["kind"], kind)
+
     async def test_bundled_demo_needs_no_audio_upload(self) -> None:
         """Play the full song on the first click using only a tiny JSON request."""
         adapter = self.cloud_adapter()
@@ -318,3 +347,23 @@ class SendspinUploadTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.to_thread(self.adapter.play, "test", [path], Priority.NORMAL)
         request.assert_called_once()
         self.queue.enqueue.assert_not_called()
+
+    async def test_local_reuse_reduces_repeated_uploads(self) -> None:
+        """Reuse a local clip without changing its playback metadata."""
+        adapter = self.cloud_adapter()
+        path = self.directory / "pilot.wav"
+        path.write_bytes(b"pilot segment" * 1000)
+        await asyncio.to_thread(adapter.play, "first", [path], Priority.NORMAL)
+        with patch.object(
+            output.urllib.request, "urlopen", wraps=output.urllib.request.urlopen
+        ) as request:
+            await asyncio.to_thread(
+                adapter.play, "second", [path], Priority.HIGH, None, None, 0.4
+            )
+        body = request.call_args.args[0].data
+        self.assertLess(len(body), path.stat().st_size // 10)
+        self.assertEqual(json.loads(body)["wav_files"], [])
+        job = self.queue.enqueue.call_args.kwargs
+        self.assertEqual(job["priority"], Priority.HIGH)
+        self.assertEqual(job["volume"], 0.4)
+        self.assertEqual(job["wav_items"][0].data, path.read_bytes())

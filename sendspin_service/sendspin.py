@@ -37,7 +37,8 @@ _INITIAL_PLAYBACK_DELAY_S = 0.25
 _TIMEOUT_MARGIN_S = 10
 _BUFFER_LIMIT_US = 500_000
 _LATE_JOIN_SYNC_INTERVAL_S = 0.1
-_MIN_SCHEDULE_DELAY_S = 0.05
+_SCHEDULED_TAIL_S = 0.1
+_IDLE_DRAIN_S = 0.1
 _SCHEDULED_BUFFER_MARGIN_US = 100_000
 _STARTUP_TIMEOUT_S = 30.0
 
@@ -45,8 +46,8 @@ _STARTUP_TIMEOUT_S = 30.0
 @dataclass(frozen=True)
 class _StreamOptions:
     max_buffer_us: int
-    full_clip: bool = False
     volume: float = 1.0
+    cancelled: threading.Event | None = None
 
 
 @dataclass(frozen=True)
@@ -163,6 +164,8 @@ class SendSpinServer:
         expires_at: float | None = None,
         play_at: float | None = None,
         volume: float = 1.0,
+        *,
+        cancelled: threading.Event | None = None,
     ) -> None:
         """Queue WAV files to connected clients without resetting active playback."""
         if not self._ready.wait(timeout=5.0) or self._loop is None:
@@ -177,20 +180,27 @@ class SendSpinServer:
             )
             return
 
+        if cancelled is not None and cancelled.is_set():
+            return
         clips = _read_wav_clips(wav_items)
         if not clips:
             logger.warning("Sendspin service: no readable WAV files to play")
             return
 
+        if play_at is not None:
+            clips[-1] = _with_silent_tail(clips[-1])
         duration_s = sum(clip.duration_s for clip in clips)
         timeout = max(30.0, duration_s + _INITIAL_PLAYBACK_DELAY_S + _TIMEOUT_MARGIN_S)
         future = asyncio.run_coroutine_threadsafe(
-            self._append_to_stream(clips, expires_at, play_at, duration_s, volume),
+            self._append_to_stream(
+                clips, expires_at, play_at, duration_s, volume, cancelled
+            ),
             self._loop,
         )
         try:
             future.result(timeout=timeout)
         except TimeoutError:
+            future.cancel()
             logger.warning("Sendspin service: Sendspin stream timed out")
         except Exception:
             logger.exception("Sendspin service: Sendspin stream error")
@@ -393,31 +403,35 @@ class SendSpinServer:
                 return_exceptions=True,
             )
 
-    async def _append_to_stream(
+    async def _append_to_stream(  # noqa: PLR0913
         self,
         clips: list[_WavClip],
         expires_at: float | None,
         play_at: float | None,
         duration_s: float,
         volume: float,
+        cancelled: threading.Event | None = None,
     ) -> None:
         lock = self._stream_lock
         if lock is None:
             logger.warning("Sendspin service: Sendspin stream lock not ready")
             return
         async with lock:
+            if cancelled is not None and cancelled.is_set():
+                return
             self._cancel_idle_stop()
             await self._append_to_stream_locked(
-                clips, expires_at, play_at, duration_s, volume
+                clips, expires_at, play_at, duration_s, volume, cancelled
             )
 
-    async def _append_to_stream_locked(
+    async def _append_to_stream_locked(  # noqa: PLR0913
         self,
         clips: list[_WavClip],
         expires_at: float | None,
         play_at: float | None,
         duration_s: float,
         volume: float,
+        cancelled: threading.Event | None = None,
     ) -> None:
         server = self._server
         if server is None:
@@ -435,14 +449,18 @@ class SendSpinServer:
 
         play_start_us = self._next_play_start_us
         now_us = server.clock.now_us()
-        stream_options = _StreamOptions(max_buffer_us=_BUFFER_LIMIT_US, volume=volume)
+        stream_options = _StreamOptions(
+            max_buffer_us=_BUFFER_LIMIT_US, volume=volume, cancelled=cancelled
+        )
         if play_at is not None:
-            play_start_us = _scheduled_play_start_us(play_at, now_us)
+            play_start_us = _scheduled_play_start_us(
+                play_at, now_us, _group_lead_time_us(group)
+            )
             stream_options = _StreamOptions(
                 max_buffer_us=_scheduled_buffer_limit_us(
                     play_start_us, now_us, duration_s
                 ),
-                full_clip=True,
+                cancelled=cancelled,
                 volume=volume,
             )
         elif play_start_us is None or play_start_us <= now_us:
@@ -465,7 +483,7 @@ class SendSpinServer:
                 options=stream_options,
             )
             client_count = max(client_count, await sync_clients())
-            if streamed_count:
+            if streamed_count and not (cancelled is not None and cancelled.is_set()):
                 logger.info(
                     "Sendspin service: queued %d WAV(s) to %d client(s)",
                     streamed_count,
@@ -492,6 +510,8 @@ class SendSpinServer:
         client_count = 0
         next_play_start_us: int | None = play_start_us
         for clip in clips:
+            if options.cancelled is not None and options.cancelled.is_set():
+                break
             next_play_start_us, clip_end_us, client_count = await _stream_wav(
                 stream,
                 clip,
@@ -499,6 +519,8 @@ class SendSpinServer:
                 sync_clients=sync_clients,
                 options=options,
             )
+            if options.cancelled is not None and options.cancelled.is_set():
+                break
             if clip_end_us is not None:
                 play_end_us = clip_end_us
                 self._next_play_start_us = clip_end_us
@@ -556,7 +578,7 @@ class SendSpinServer:
                 if self._stream_group is not group:
                     return
                 await self._sync_connected_clients(group)
-                delay_s = (play_end_us - clock.now_us()) / 1_000_000
+                delay_s = (play_end_us - clock.now_us()) / 1_000_000 + _IDLE_DRAIN_S
                 if delay_s <= 0:
                     break
                 await asyncio.sleep(min(delay_s, _LATE_JOIN_SYNC_INTERVAL_S))
@@ -636,11 +658,16 @@ def _group_lead_time_us(group: SendspinGroup) -> int:
         return floor
 
 
-def _scheduled_play_start_us(play_at: float, now_us: int) -> int:
+def _scheduled_play_start_us(play_at: float, now_us: int, lead_time_us: int) -> int:
     """Map a process-local monotonic target time to the Sendspin clock."""
     clock_offset_us = now_us - int(time.monotonic() * 1_000_000)
     requested_start_us = int(play_at * 1_000_000) + clock_offset_us
-    minimum_start_us = now_us + int(_MIN_SCHEDULE_DELAY_S * 1_000_000)
+    minimum_start_us = now_us + lead_time_us
+    if requested_start_us < minimum_start_us:
+        logger.info(
+            "Sendspin scheduled audio arrived with insufficient lead: delayed %.1f ms",
+            (minimum_start_us - requested_start_us) / 1000,
+        )
     return max(requested_start_us, minimum_start_us)
 
 
@@ -675,11 +702,8 @@ async def _stream_wav(
         logger.warning("Sendspin service: misaligned WAV skipped: %s", clip.name)
         return play_start_us, None, client_count
     pcm_data = _scale_pcm(pcm_data, audio_format.bit_depth // 8, options.volume)
-    if options.full_clip:
-        chunk_bytes = len(pcm_data)
-    else:
-        chunk_frames = max(1, int(audio_format.sample_rate * _CHUNK_DURATION_S))
-        chunk_bytes = chunk_frames * bytes_per_frame
+    chunk_frames = max(1, int(audio_format.sample_rate * _CHUNK_DURATION_S))
+    chunk_bytes = chunk_frames * bytes_per_frame
     play_end_us: int | None = None
 
     for offset in range(0, len(pcm_data), chunk_bytes):
@@ -687,6 +711,10 @@ async def _stream_wav(
             return play_start_us, play_end_us, client_count
         client_count = await sync_clients()
         await stream.sleep_to_limit_buffer(max_buffer_us=options.max_buffer_us)
+        if stream.is_stopped or (
+            options.cancelled is not None and options.cancelled.is_set()
+        ):
+            return play_start_us, None, client_count
         chunk = pcm_data[offset : offset + chunk_bytes]
         stream.prepare_audio(chunk, audio_format, channel_id=MAIN_CHANNEL)
         chunk_start_us = await stream.commit_audio(play_start_us=play_start_us)
@@ -695,6 +723,18 @@ async def _stream_wav(
         play_end_us = chunk_start_us + chunk_duration_us
         play_start_us = None
     return play_start_us, play_end_us, client_count
+
+
+def _with_silent_tail(clip: _WavClip) -> _WavClip:
+    """Feed the resampler/encoder enough trailing PCM to deliver a short tone."""
+    frames = int(clip.audio_format.sample_rate * _SCHEDULED_TAIL_S)
+    frame_bytes = clip.audio_format.channels * (clip.audio_format.bit_depth // 8)
+    return _WavClip(
+        name=clip.name,
+        audio_format=clip.audio_format,
+        pcm_data=clip.pcm_data + bytes(frames * frame_bytes),
+        duration_s=clip.duration_s + frames / clip.audio_format.sample_rate,
+    )
 
 
 def _scale_pcm(pcm_data: bytes, sample_width: int, volume: float) -> bytes:

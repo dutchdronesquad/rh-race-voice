@@ -58,6 +58,8 @@ class PluginStartupTests(unittest.TestCase):
             ),
         ):
             self.plugin = plugin_module.RaceVoicePlugin(self.rhapi)
+        self.plugin._audio_queue.clear.return_value = 0
+        self.plugin._cloud_audio_queue.clear.return_value = 0
 
     def test_startup_event_schedules_background_check(self) -> None:
         """Wait for RH startup and dispatch the check instead of performing I/O."""
@@ -155,13 +157,74 @@ class PluginStartupTests(unittest.TestCase):
         self.plugin.stop_audio()
         self.plugin._audio_queue.clear.assert_called_once()
         self.plugin._cloud_audio_queue.clear.assert_called_once()
-        self.assertEqual(
-            [
-                call.args[0]
-                for call in self.plugin._output_control_pool.submit.call_args_list
-            ],
-            [self.plugin._sendspin.stop, self.plugin._cloud_sendspin.stop],
+        self.plugin._audio_queue.stop.assert_called_once_with(
+            self.plugin._sendspin.stop
         )
+        self.plugin._cloud_audio_queue.stop.assert_called_once_with(
+            self.plugin._cloud_sendspin.stop
+        )
+
+    def test_synthesis_finishing_after_stop_cannot_requeue(self) -> None:
+        """Stop while synthesis is running and discard the resulting audio."""
+        generation = self.plugin._generation
+
+        def synthesize(*_args):  # noqa: ANN002, ANN202
+            self.plugin.stop_audio()
+            return Path("old.wav")
+
+        with patch.object(self.plugin, "_synthesize", side_effect=synthesize):
+            self.plugin._enqueue(
+                "old",
+                plugin_module.Priority.NORMAL,
+                float("inf"),
+                generation=generation,
+            )
+        self.plugin._audio_queue.enqueue.assert_not_called()
+        self.plugin._enqueue_audio("new", [Path("new.wav")])
+        self.plugin._audio_queue.enqueue.assert_called_once()
+
+    def test_heat_change_skips_pending_old_synthesis(self) -> None:
+        """Invalidate pending jobs without clearing reusable pre-cache files."""
+        generation = self.plugin._generation
+        with patch.object(self.plugin, "_clear_wavs") as clear:
+            self.plugin._on_heat_set({})
+        self.assertEqual(clear.call_count, 1)
+        self.assertEqual(clear.call_args.args[1], "ephemeral")
+        with patch.object(self.plugin, "_synthesize") as synthesize:
+            self.plugin._enqueue(
+                "old",
+                plugin_module.Priority.NORMAL,
+                float("inf"),
+                generation=generation,
+            )
+        synthesize.assert_not_called()
+
+    def test_stop_waits_for_active_upload_before_clearing_service(self) -> None:
+        """Order an in-flight upload, stop, then fresh audio without blocking RH."""
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        calls = []
+
+        def player(text, *_args):  # noqa: ANN001, ANN002, ANN202
+            if text == "old":
+                started.set()
+                release.wait(2)
+            calls.append(text)
+            if text == "new":
+                finished.set()
+
+        queue = plugin_module.AudioQueue(player)
+        try:
+            queue.enqueue("old", [Path("old.wav")])
+            self.assertTrue(started.wait(1))
+            queue.stop(lambda: calls.append("stop"))
+            queue.enqueue("new", [Path("new.wav")])
+            release.set()
+            self.assertTrue(finished.wait(2))
+            self.assertEqual(calls, ["old", "stop", "new"])
+        finally:
+            release.set()
 
     def test_blocked_cloud_does_not_delay_local_audio(self) -> None:
         """A second local callout plays while the first cloud upload is blocked."""
@@ -194,3 +257,34 @@ class PluginStartupTests(unittest.TestCase):
                 release_cloud.set()
                 self.plugin._audio_queue._queue.join()
                 self.plugin._cloud_audio_queue._queue.join()
+
+    def test_spoken_race_countdown_has_signal_priority(self) -> None:
+        """Remaining-time voice announcements can interrupt ordinary speech."""
+        self.options[plugin_module.ENABLE_OPTION] = True
+        for seconds in (60, 30, 10):
+            with self.subTest(seconds=seconds):
+                self.plugin._on_clock_callout({"seconds_remaining": seconds})
+                job = self.plugin._synth_pool.submit.call_args
+                with patch.object(
+                    self.plugin, "_synthesize", return_value=Path("clock.wav")
+                ):
+                    job.args[0](*job.args[1:], **job.kwargs)
+                self.assertEqual(
+                    self.plugin._audio_queue.enqueue.call_args.kwargs["priority"],
+                    plugin_module.Priority.SIGNAL,
+                )
+
+    def test_spoken_scheduled_start_has_signal_priority(self) -> None:
+        """A spoken pre-start countdown has the same priority as race tones."""
+        self.plugin._enqueue_schedule_callout(
+            "Race begins in 5 seconds", self.plugin._settings()
+        )
+        job = self.plugin._synth_pool.submit.call_args
+        with patch.object(
+            self.plugin, "_synthesize", return_value=Path("schedule.wav")
+        ):
+            job.args[0](*job.args[1:], **job.kwargs)
+        self.assertEqual(
+            self.plugin._audio_queue.enqueue.call_args.kwargs["priority"],
+            plugin_module.Priority.SIGNAL,
+        )

@@ -58,6 +58,8 @@ class PluginStartupTests(unittest.TestCase):
             ),
         ):
             self.plugin = plugin_module.RaceVoicePlugin(self.rhapi)
+        self.plugin._audio_queue.clear.return_value = 0
+        self.plugin._cloud_audio_queue.clear.return_value = 0
 
     def test_startup_event_schedules_background_check(self) -> None:
         """Wait for RH startup and dispatch the check instead of performing I/O."""
@@ -148,13 +150,74 @@ class PluginStartupTests(unittest.TestCase):
         self.plugin.stop_audio()
         self.plugin._audio_queue.clear.assert_called_once()
         self.plugin._cloud_audio_queue.clear.assert_called_once()
-        self.assertEqual(
-            [
-                call.args[0]
-                for call in self.plugin._output_control_pool.submit.call_args_list
-            ],
-            [self.plugin._sendspin.stop, self.plugin._cloud_sendspin.stop],
+        self.plugin._audio_queue.stop.assert_called_once_with(
+            self.plugin._sendspin.stop
         )
+        self.plugin._cloud_audio_queue.stop.assert_called_once_with(
+            self.plugin._cloud_sendspin.stop
+        )
+
+    def test_synthesis_finishing_after_stop_cannot_requeue(self) -> None:
+        """Stop while synthesis is running and discard the resulting audio."""
+        generation = self.plugin._generation
+
+        def synthesize(*_args):  # noqa: ANN002, ANN202
+            self.plugin.stop_audio()
+            return Path("old.wav")
+
+        with patch.object(self.plugin, "_synthesize", side_effect=synthesize):
+            self.plugin._enqueue(
+                "old",
+                plugin_module.Priority.NORMAL,
+                float("inf"),
+                generation=generation,
+            )
+        self.plugin._audio_queue.enqueue.assert_not_called()
+        self.plugin._enqueue_audio("new", [Path("new.wav")])
+        self.plugin._audio_queue.enqueue.assert_called_once()
+
+    def test_heat_change_skips_pending_old_synthesis(self) -> None:
+        """Invalidate pending jobs without clearing reusable pre-cache files."""
+        generation = self.plugin._generation
+        with patch.object(self.plugin, "_clear_wavs") as clear:
+            self.plugin._on_heat_set({})
+        self.assertEqual(clear.call_count, 1)
+        self.assertEqual(clear.call_args.args[1], "ephemeral")
+        with patch.object(self.plugin, "_synthesize") as synthesize:
+            self.plugin._enqueue(
+                "old",
+                plugin_module.Priority.NORMAL,
+                float("inf"),
+                generation=generation,
+            )
+        synthesize.assert_not_called()
+
+    def test_stop_waits_for_active_upload_before_clearing_service(self) -> None:
+        """Order an in-flight upload, stop, then fresh audio without blocking RH."""
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        calls = []
+
+        def player(text, *_args):  # noqa: ANN001, ANN002, ANN202
+            if text == "old":
+                started.set()
+                release.wait(2)
+            calls.append(text)
+            if text == "new":
+                finished.set()
+
+        queue = plugin_module.AudioQueue(player)
+        try:
+            queue.enqueue("old", [Path("old.wav")])
+            self.assertTrue(started.wait(1))
+            queue.stop(lambda: calls.append("stop"))
+            queue.enqueue("new", [Path("new.wav")])
+            release.set()
+            self.assertTrue(finished.wait(2))
+            self.assertEqual(calls, ["old", "stop", "new"])
+        finally:
+            release.set()
 
     def test_blocked_cloud_does_not_delay_local_audio(self) -> None:
         """A second local callout plays while the first cloud upload is blocked."""

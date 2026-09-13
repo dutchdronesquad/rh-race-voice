@@ -30,16 +30,24 @@ class Priority(IntEnum):
     LAP = 3  # lap-time speech always yields to other announcements
 
 
+class _ControlPriority(IntEnum):
+    """Local control jobs run ahead of any audio priority."""
+
+    STOP = -2
+
+
 @dataclass(order=True)
 class AudioJob:
     """A single audio playback job: one or more WAV files played in sequence."""
 
-    priority: Priority
+    priority: Priority | _ControlPriority
     expires_at: float
     text: str = field(compare=False)
     wav_paths: list[Path] = field(compare=False)
     play_at: float | None = field(compare=False, default=None)
     volume: float = field(compare=False, default=1.0)
+    generation: int = field(compare=False, default=0)
+    stop_player: Callable[[], None] | None = field(compare=False, default=None)
 
 
 class AudioQueue:
@@ -59,6 +67,8 @@ class AudioQueue:
     ) -> None:
         """Start the background worker thread."""
         self._player = player
+        self._generation = 0
+        self._lock = threading.RLock()
         self._queue: queue.PriorityQueue[AudioJob] = queue.PriorityQueue()
         self._thread = threading.Thread(
             target=self._worker, daemon=True, name="race_voice_audio"
@@ -75,33 +85,63 @@ class AudioQueue:
         volume: float = 1.0,
     ) -> None:
         """Add a job to the queue. Returns immediately."""
-        job = AudioJob(
-            priority=priority,
-            expires_at=time.monotonic() + expiry_sec,
-            text=text,
-            wav_paths=wav_paths,
-            play_at=play_at,
-            volume=volume,
-        )
-        self._queue.put(job)
-        logger.debug("Race Voice queued [%s] '%s'", priority.name, text)
+        with self._lock:
+            job = AudioJob(
+                priority=priority,
+                generation=self._generation,
+                expires_at=time.monotonic() + expiry_sec,
+                text=text,
+                wav_paths=wav_paths,
+                play_at=play_at,
+                volume=volume,
+            )
+            self._queue.put(job)
+            logger.debug("Race Voice queued [%s] '%s'", priority.name, text)
 
     def clear(self) -> int:
         """Drop queued jobs that have not started yet."""
-        count = 0
-        while True:
-            try:
-                self._queue.get_nowait()
-            except queue.Empty:
-                return count
-            self._queue.task_done()
-            count += 1
+        with self._lock:
+            self._generation += 1
+            count = 0
+            controls = []
+            while True:
+                try:
+                    job = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                if job.stop_player is not None:
+                    controls.append(job)
+                else:
+                    count += 1
+                self._queue.task_done()
+            for job in controls:
+                self._queue.put(job)
+            return count
+
+    def stop(self, stop_player: Callable[[], None]) -> None:
+        """Serialize stop after any active upload, before subsequent audio."""
+        with self._lock:
+            self.clear()
+            self._queue.put(
+                AudioJob(
+                    priority=_ControlPriority.STOP,
+                    expires_at=float("inf"),
+                    text="stop",
+                    wav_paths=[],
+                    stop_player=stop_player,
+                )
+            )
 
     def _worker(self) -> None:
         """Drain the queue, drop expired jobs, play ready jobs."""
         while True:
             job = self._queue.get()
             try:
+                if job.stop_player is not None:
+                    job.stop_player()
+                    continue
+                if job.generation != self._generation:
+                    continue
                 if time.monotonic() > job.expires_at:
                     logger.info("Race Voice dropped expired job: '%s'", job.text)
                     continue

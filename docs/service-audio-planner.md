@@ -18,7 +18,7 @@ Fourteen deterministic tests cover lap admission/replacement, ready tones during
 
 From a source checkout with the Python dependencies and Sendspin extra installed, run `python -m sendspin_service --experimental-race-cache-dir /path/to/race_voice_cache`. The directory contains `models/` and `tts/`. This explicitly selects event mode for the whole service: `/v1/play` and `/v1/stop` return 409, so an old producer cannot bypass the new scheduler. Omit the flag and restart to return to legacy mode. Do not point the current RH plugin at a preview instance; it still sends v1 audio.
 
-The preview registers authenticated `/v2/session`, `/v2/state`, `/v2/clock` and `/v2/events` endpoints. It reports `race_event_preview: true` in health, rather than advertising the complete `race-events/1` capability. Requests are limited to 64 KiB, including chunked bodies. Binding the ingest API beyond localhost requires an API token; use TLS at the reverse proxy for remote access. The existing browser player and Sendspin client connection remain available.
+The preview registers `/v2/session`, `/v2/state`, `/v2/clock` and `/v2/events` endpoints. When an API token is configured, every `/v2` request requires that bearer token. A localhost preview without a configured token accepts requests without authentication. It reports `race_event_preview: true` in health, rather than advertising the complete `race-events/1` capability. Requests are limited to 64 KiB, including chunked bodies. Binding the ingest API beyond localhost requires an API token; use TLS at the reverse proxy for remote access. The existing browser player and Sendspin client connection remain available.
 
 A test producer follows this sequence:
 

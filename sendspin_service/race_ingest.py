@@ -129,7 +129,7 @@ class RaceIngest:
             logger.info("Race Voice dropped prepared audio: %s", plan.event.event_id)
 
     def owner(self) -> dict:
-        """Allow authenticated ownership discovery and lost-response recovery."""
+        """Expose ownership and retry recovery under the configured API token policy."""
         return {
             "boot_id": self._boot_id,
             "owner_revision": self._owner_revision,
@@ -291,7 +291,7 @@ class RaceIngest:
 
 
 def add_routes(app: web.Application, ingest: RaceIngest) -> None:
-    """Register the explicit preview API; the outer app authenticates all v2 paths."""
+    """Register preview routes; the app enforces auth when an API token is set."""
 
     async def handle(request: web.Request) -> web.Response:
         try:

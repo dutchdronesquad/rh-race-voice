@@ -49,13 +49,7 @@ Service endpoints:
 
 `POST /v1/play` accepts `wav_files` entries with base64 WAV data plus optional `text`, `priority`, `expiry_sec`, `play_at_delay_sec`, and `volume`.
 
-Services advertising `supports_multipart_play: true` in `/health` also accept
-`multipart/form-data` on the same endpoint. A `metadata` part contains the JSON
-playback options; one or more `wav_files` parts contain raw WAV bytes in playback
-order, with percent-encoded filenames. The body limit applies to raw uploads as
-well, including uploads without a content length. The plugin uses this format
-for at least 1 MiB of audio, streaming files in 64 KiB chunks. Smaller requests
-and servers without the capability retain the existing JSON API.
+Services advertising `supports_multipart_play: true` in `/health` also accept `multipart/form-data` on the same endpoint. A `metadata` part contains the JSON playback options; one or more `wav_files` parts contain raw WAV bytes in playback order, with percent-encoded filenames. The body limit applies to raw uploads as well, including uploads without a content length. The plugin uses this format for at least 1 MiB of audio, streaming files in 64 KiB chunks. Smaller requests and servers without the capability retain the existing JSON API.
 
 ## Plugin and Service Compatibility
 

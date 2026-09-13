@@ -55,6 +55,28 @@ class SendspinUploadTests(unittest.IsolatedAsyncioTestCase):
             reuse_audio=True,
         )
 
+    async def test_signal_metadata_survives_inline_and_cached_uploads(self) -> None:
+        """New services preempt signals; old services still see high priority."""
+        for adapter in (self.adapter, self.cloud_adapter()):
+            with patch.object(
+                output.urllib.request, "urlopen", wraps=output.urllib.request.urlopen
+            ) as request:
+                await asyncio.to_thread(
+                    adapter.play, "tone", [_DEMO_WAV], Priority.SIGNAL
+                )
+            job = self.queue.enqueue.call_args.kwargs
+            self.assertEqual(job["priority"], Priority.SIGNAL)
+            play_requests = [
+                c.args[0]
+                for c in request.call_args_list
+                if c.args[0].full_url.endswith("/v1/play")
+            ]
+            # The cached path uses JSON; a large inline demo may use multipart.
+            if isinstance(play_requests[-1].data, bytes):
+                payload = json.loads(play_requests[-1].data)
+                self.assertEqual(payload["priority"], "high")
+                self.assertEqual(payload["kind"], "race_signal")
+
     async def test_bundled_demo_needs_no_audio_upload(self) -> None:
         """Play the full song on the first click using only a tiny JSON request."""
         adapter = self.cloud_adapter()

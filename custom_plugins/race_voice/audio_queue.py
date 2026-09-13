@@ -23,6 +23,7 @@ DEFAULT_EXPIRY_SEC = 5.0
 class Priority(IntEnum):
     """Job priority — lower value = higher priority."""
 
+    SIGNAL = -1  # time-critical race tones
     HIGH = 0  # winner, interrupt messages
     NORMAL = 1  # lap callouts, pilot done
     LOW = 2  # crossing beeps

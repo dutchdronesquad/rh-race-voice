@@ -134,7 +134,8 @@ class SendspinServiceClient:
             return
         payload: dict[str, Any] = {
             "text": text,
-            "priority": priority.name.lower(),
+            "priority": "high" if priority.name == "SIGNAL" else priority.name.lower(),
+            "kind": "race_signal" if priority.name == "SIGNAL" else "voice",
             "volume": volume,
         }
         now = time.monotonic()
@@ -199,7 +200,10 @@ class SendspinServiceClient:
             ]
             payload: dict[str, Any] = {
                 "text": text,
-                "priority": priority.name.lower(),
+                "priority": "high"
+                if priority.name == "SIGNAL"
+                else priority.name.lower(),
+                "kind": "race_signal" if priority.name == "SIGNAL" else "voice",
                 "volume": volume,
                 "wav_refs": references,
             }

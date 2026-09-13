@@ -26,6 +26,8 @@ For the standard Raspberry Pi setup, install both the plugin ZIP and service `.d
 
 ### Install on Debian or Raspberry Pi OS
 
+**Already running Sendspin in Docker on this machine?** [Stop that container first](#port-conflicts). Both installations use ports `8766` and `8927` by default, so the `.deb` service cannot start while the container occupies those ports.
+
 The `.deb` package is designed to run Sendspin as a standalone service on **the same Raspberry Pi running RotorHazard**, using 64-bit Raspberry Pi OS. It also supports 64-bit Debian systems with systemd (`arm64` and `amd64`). Open a terminal on the RotorHazard machine (or connect over SSH) and paste:
 
 ```shell
@@ -120,7 +122,7 @@ The service API accepts inline WAV payloads via `wav_files`. It does not accept 
 
 Docker Compose is the intended deployment path for **running `sendspin-service` in the cloud**. The container runs independently of the RotorHazard machine and includes a browser player at `/`. RotorHazard and playback clients must be able to reach that cloud service. The standard local Raspberry Pi OS setup uses the [`.deb` package](#sendspin-service) on the same Pi as RotorHazard.
 
-Do not run the `.deb` service and a Docker/container service on the same host for the same timing setup unless you deliberately assign separate ingest and Sendspin ports. If both are active, Race Voice may send audio to one service while browser players connect to the other, or different players may connect to different services.
+**Already running the `.deb` service on this machine?** [Stop and disable it first](#port-conflicts). Docker publishes the same host ports (`8766` and `8927`) by default and cannot start while the service occupies them. Use one deployment per machine for the normal setup.
 
 For a quick local test of the cloud image:
 
@@ -316,6 +318,21 @@ Cache behavior:
 - If no Sendspin browser player is connected, generated audio is dropped and logged.
 
 ## Troubleshooting
+
+### Port conflicts
+
+The `.deb` service and Docker variant both use TCP ports `8766` (HTTP API) and `8927` (Sendspin) by default. If you start both on the same machine, the second deployment can fail with `Address already in use` or `port is already allocated`.
+
+Choose the deployment you want to keep:
+
+- **Keep the `.deb` service on your Raspberry Pi:** run `docker compose down` from the directory of the Sendspin Compose project, then run `sudo systemctl restart sendspin-service`. For a container started with `docker run`, find it with `docker ps` and remove that Sendspin container with `docker rm -f <container-name>` (replace the placeholder with its actual name).
+- **Keep Docker for your cloud deployment:** run `sudo systemctl disable --now sendspin-service`, then run `docker compose up -d` from the Sendspin Compose directory. Disabling the systemd service also prevents it from starting at the next boot.
+
+Check `systemctl status sendspin-service --no-pager` and `docker ps` to confirm which deployment is running. If a port is still occupied, `sudo ss -ltnp '( sport = :8766 or sport = :8927 )'` shows the listeners. Verify the retained service with **Play audio check**.
+
+Running both deliberately requires separate host ports for each deployment and matching URLs in RotorHazard and every player. Otherwise, audio may be sent to one service while players connect to the other.
+
+### Other issues
 
 - **No audio in `/player`**: confirm `sendspin-service` is running, the player Server URL points at the same service RotorHazard sends to, and the player is connected.
 - **Service unreachable**: confirm `curl http://127.0.0.1:8766/health` works from the RotorHazard host.

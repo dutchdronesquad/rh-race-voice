@@ -68,6 +68,8 @@ Server-side voice callouts for the [RotorHazard] timing platform, powered by [Pi
 
 This is the standard setup for **RotorHazard and Sendspin on the same Raspberry Pi running 64-bit Raspberry Pi OS**. The `.deb` package runs Sendspin as its own systemd service, with its own Python runtime. Docker Compose is the deployment option for running the service in the cloud; see the [cloud setup](docs/usage.md#docker-image).
 
+**Use one Sendspin deployment per machine.** The `.deb` service and Docker variant both use ports `8766` and `8927` by default. Running both on the same machine causes a port conflict. [Stop the existing deployment](docs/usage.md#port-conflicts) before starting the other.
+
 1. Download `race_voice.zip` from the latest GitHub release.
 2. In RotorHazard, open the plugin manager and upload the ZIP file.
 3. Restart RotorHazard if requested.

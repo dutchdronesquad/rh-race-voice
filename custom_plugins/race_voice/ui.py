@@ -38,7 +38,6 @@ def register_ui(  # noqa: PLR0913
     stop_audio_callback: Any,
     clear_cache_callback: Any,
     rebuild_precache_callback: Any,
-    service_check_callback: Any,
 ) -> None:
     """Register the Race Voice settings panel, options, and quick buttons."""
     _register_player_blueprint(rhapi)
@@ -151,12 +150,6 @@ def register_ui(  # noqa: PLR0913
         name="race_voice_test_phrase",
         label="Generate test phrase",
         function=test_callback,
-    )
-    rhapi.ui.register_quickbutton(
-        panel=PANEL_ID,
-        name="race_voice_service_check",
-        label="Check Sendspin service",
-        function=service_check_callback,
     )
     rhapi.ui.register_quickbutton(
         panel=PANEL_ID,

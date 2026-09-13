@@ -1,0 +1,52 @@
+# Standalone synthesis worker
+
+Implementation step for #298, following the contract in #297. The existing service
+does not yet advertise standalone synthesis: the new event adapter and planner
+must connect these components before activation. The legacy plugin remains usable.
+
+`SynthesisWorker` supervises a long-lived Python child through bounded JSON lines
+over private pipes. The child starts with a fresh interpreter rather than inheriting
+RotorHazard's monkey-patched process. Only the child imports Piper/ONNX. A failed
+or timed-out operation reaps that process; the next request starts a new one.
+Closing the supervisor settles active and pending callers and reaps the child.
+
+Eight pending unique requests and 64 subscribers are allowed initially, alongside
+one active operation. Identical requests share a result; a live high-priority
+request promotes an identical queued background request. A subscriber timing out
+or leaving does not cancel another subscriber. Work with no remaining subscribers
+is skipped before inference. Active inference may finish, but obsolete callers
+do not receive it. The planner still owns per-source generation and lap limits.
+
+`SpeechEngine` reuses the plugin's localized lap and countdown phrase planners.
+It preserves upstream spoken names and phonetic times. `prepare()` is an explicit
+incremental operation that fills missing reusable phrases, reports progress,
+and lets live work run between phrases. Construction does not prepare or load
+anything. Tone events never submit a synthesis request. Before a cache clear, the
+planner must invalidate old jobs and stop playback; the worker only performs the
+serialized filesystem operation requested by that owner.
+
+The worker currently shares `custom_plugins/race_voice/piper.py` and the phrase
+modules. The plugin initializer defers its RH-specific import until RH calls
+`initialize`; missing runtime dependencies still fail there. Packaging #303 must
+include these shared files and Piper dependencies for primary deployments; relay
+deployments must not start the worker. A source checkout has the shared files;
+the existing release packages are not yet standalone-primary packages.
+
+New cache filenames include normalized case-sensitive text, canonical tuning,
+Piper version, and a content digest of the model/config. Existing legacy files
+are left intact. Reuse/import of legacy filenames requires the compatibility
+checks in #303 rather than assuming matching model names mean identical audio.
+File revision signatures avoid hashing the same model for every phrase. A changed
+model revision invalidates the loaded voice. The serial child needs one cache
+lock, avoiding a growing lock dictionary for dynamic lap phrases.
+
+Before admitting the next worker command the supervisor reads generated WAVs into
+bounded immutable bytes off the asyncio loop (4 MiB per clip). Thus eviction/clear
+cannot invalidate a returned callout, and multiple destinations can share those
+bytes. The planner must bound its own retained audio. Worker stderr is inherited
+instead of being an undrained pipe that can deadlock inference.
+
+Tests use real subprocesses for blocking, crashes, hangs, deduplication, shutdown
+and promotion. Fake voice tests exercise actual WAV writes, cache reuse, model
+changes and clear operations. Hardware sign-off remains in #304, targeting the
+operator's Raspberry Pi 4 (RAM not yet recorded) and WindowsSpin 2.2.6.

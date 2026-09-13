@@ -66,6 +66,18 @@ jobs:
             dist/sendspin-service_*.deb
             dist/sendspin-service_*.deb.sha256
 
+  publish-installer:
+    name: Publish service installer
+    needs: [build-player, build-deb]
+    runs-on: ubuntu-latest
+    steps:
+      - name: ⤵️ Check out code from GitHub
+        uses: actions/checkout@v7.0.1
+      - name: ⬆️ Upload installer
+        uses: softprops/action-gh-release@v3.0.3
+        with:
+          files: tools/install-sendspin-service.sh
+
   build-docker:
     name: Build Docker image
     runs-on: ubuntu-latest

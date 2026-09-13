@@ -397,15 +397,16 @@ class AdapterTests(unittest.TestCase):
 def integration(url: str) -> None:
     """Use the actual aiohttp service supplied by the parent test process."""
     adapter, _rh, _options, _pilot = make_adapter(url)
+    channel = JsonChannel("")
     try:
         adapter._startup()
         wait_for(adapter._publisher._ready)
         adapter._lap(
             {"pilot_id": 7, "pilot": "Alfa", "lap": 3, "phonetic": "twenty seconds"}
         )
-        gevent.sleep(0.15)
+        wait_for(lambda: channel.request(url, "GET", "/test/playback")[1]["count"] >= 1)
         adapter._stage({"scheduled_at_monotonic": time.monotonic() + 1})
-        gevent.sleep(0.15)
+        wait_for(lambda: channel.request(url, "GET", "/test/playback")[1]["count"] >= 2)
         adapter.stop_audio()
         wait_for(adapter._publisher._ready)
         sys.stdout.write(
@@ -418,6 +419,7 @@ def integration(url: str) -> None:
             )
         )
     finally:
+        channel.close()
         adapter.close()
 
 

@@ -12,6 +12,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from sendspin_service.server import SendspinService, ServiceConfig, _create_app
@@ -56,7 +57,13 @@ class EventAdapterTests(unittest.IsolatedAsyncioTestCase):
             patch("sendspin_service.synthesis.SynthesisWorker", return_value=worker),
         ):
             service = SendspinService(ServiceConfig(race_cache_dir=root))
-            async with TestClient(TestServer(_create_app(service))) as client:
+            app = _create_app(service)
+
+            async def playback(_request: web.Request) -> web.Response:
+                return web.json_response({"count": backend.play.call_count})
+
+            app.router.add_get("/test/playback", playback)
+            async with TestClient(TestServer(app)) as client:
                 result = await self.run_probe(str(client.make_url("")))
         self.assertEqual(result, {"connected": True, "tts_imported": False})
         self.assertGreaterEqual(backend.play.call_count, 2)

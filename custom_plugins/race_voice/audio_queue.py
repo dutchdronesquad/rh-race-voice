@@ -26,14 +26,19 @@ class Priority(IntEnum):
     HIGH = 0  # winner, interrupt messages
     NORMAL = 1  # lap callouts, pilot done
     LOW = 2  # crossing beeps
-    CONTROL = -2  # serialized stop after an in-flight upload
+
+
+class _ControlPriority(IntEnum):
+    """Local control jobs run ahead of any audio priority."""
+
+    STOP = -2
 
 
 @dataclass(order=True)
 class AudioJob:
     """A single audio playback job: one or more WAV files played in sequence."""
 
-    priority: Priority
+    priority: Priority | _ControlPriority
     expires_at: float
     text: str = field(compare=False)
     wav_paths: list[Path] = field(compare=False)
@@ -117,7 +122,7 @@ class AudioQueue:
             self.clear()
             self._queue.put(
                 AudioJob(
-                    priority=Priority.CONTROL,
+                    priority=_ControlPriority.STOP,
                     expires_at=float("inf"),
                     text="stop",
                     wav_paths=[],

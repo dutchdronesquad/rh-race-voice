@@ -240,7 +240,7 @@ Use **Sync** for most race-day setups. Switch to **Quality** if playback resets 
 - **Play audio check**: Plays a bundled demo WAV without synthesizing TTS. Confirms `sendspin-service` is reachable and clients receive audio even if no voice model is loaded yet.
 - **Stop audio**: Immediately stops all queued and active audio on the Sendspin service. Useful when a callout needs to be cut mid-playback.
 - **Clear TTS cache**: Removes all generated WAV files. Use after a voice model change to avoid stale audio from the previous model.
-- **Rebuild pre-cache**: Pre-generates WAV files for race-clock callouts, the current heat's pilot names, lap segments, and schedule phrases. Run this after startup or after changing voice settings so common phrases are ready before racing starts.
+- **Prepare pre-cache**: Manually fills missing or invalid race-clock, current-heat pilot, lap-number, and schedule segments for the selected voice settings. Valid files are reused. Startup never prepares audio automatically. To regenerate everything, use **Clear TTS cache** first, then **Prepare pre-cache**.
 
 ## Cache Layout
 
@@ -265,7 +265,7 @@ race_voice_cache/
 Cache behavior:
 
 - `tmp/` is cleared whenever a heat is selected.
-- `precache/` keeps existing reusable phrases. Use **Rebuild pre-cache** to generate race-clock callout phrases, schedule phrases, current-heat pilot-name segments, and lap-number segments on demand.
+- `precache/` keeps existing reusable phrases. Use **Prepare pre-cache** to generate race-clock callout phrases, schedule phrases, current-heat pilot-name segments, and lap-number segments on demand.
 - `tmp/` and `precache/` are cleared on RotorHazard data reset.
 - **Clear TTS cache** removes all WAV files for the selected model.
 

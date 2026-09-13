@@ -138,7 +138,7 @@ def register_ui(  # noqa: PLR0913
         '<a href="/player" target="_blank" rel="noopener noreferrer">'
         "Open browser player in a new tab</a>\n\n"
         "⚠ Set Voice Volume and Tone Volume to 0 on all browser clients.\n\n"
-        "After first setup or voice model/settings changes, use Rebuild pre-cache to "
+        "After first setup or voice model/settings changes, use Prepare pre-cache to "
         "prepare race-clock, schedule, and current-heat WAV files.",
     )
 
@@ -181,7 +181,7 @@ def register_ui(  # noqa: PLR0913
     rhapi.ui.register_quickbutton(
         panel=PANEL_ID,
         name="race_voice_rebuild_precache",
-        label="Rebuild pre-cache",
+        label="Prepare pre-cache",
         function=rebuild_precache_callback,
     )
 

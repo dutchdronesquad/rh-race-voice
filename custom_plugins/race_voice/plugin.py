@@ -518,7 +518,7 @@ class RaceVoicePlugin:
         )
 
     def rebuild_precache(self, _args: dict[str, Any] | None = None) -> None:
-        """Clear and regenerate pre-cached phrases for the current model and heat."""
+        """Prepare reusable phrases for the current model and heat on demand."""
         self._precache.rebuild(self._settings(), self._current_heat_id())
 
     # ------------------------------------------------------------------

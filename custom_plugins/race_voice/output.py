@@ -3,22 +3,28 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import logging
+import os
 import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
     from .audio_queue import Priority
 
 logger = logging.getLogger(__name__)
+
+_MULTIPART_THRESHOLD_BYTES = 1024 * 1024
+_UPLOAD_CHUNK_BYTES = 64 * 1024
 
 
 def service_version_warning(health: dict[str, Any]) -> str | None:
@@ -75,17 +81,17 @@ class SendspinServiceClient:
         play_at: float | None = None,
         volume: float = 1.0,
     ) -> None:
-        """Send WAV files to the service as inline base64 payloads."""
+        """Send WAV files using JSON or negotiated streaming multipart uploads."""
         if expires_at is not None and time.monotonic() > expires_at:
             logger.info("Race Voice dropped stale service audio: '%s'", text)
             return
-        wav_files = self._wav_files(wav_paths)
-        if not wav_files:
+        multipart = self._use_multipart(wav_paths)
+        wav_files = [] if multipart else self._wav_files(wav_paths)
+        if not multipart and not wav_files:
             logger.warning("Race Voice: no readable WAV files for Sendspin service")
             return
         payload: dict[str, Any] = {
             "text": text,
-            "wav_files": wav_files,
             "priority": priority.name.lower(),
             "volume": volume,
         }
@@ -94,7 +100,24 @@ class SendspinServiceClient:
             payload["expiry_sec"] = max(0.0, expires_at - now)
         if play_at is not None:
             payload["play_at_delay_sec"] = max(0.0, play_at - now)
-        self._post_json("/v1/play", payload)
+        if multipart:
+            self._post_json("/v1/play", payload, wav_paths=wav_paths)
+        else:
+            payload["wav_files"] = wav_files
+            self._post_json("/v1/play", payload)
+
+    def _use_multipart(self, wav_paths: list[Path]) -> bool:
+        """Negotiate raw uploads for large clips, retaining the older JSON API."""
+        try:
+            if (
+                sum(path.stat().st_size for path in wav_paths)
+                < _MULTIPART_THRESHOLD_BYTES
+            ):
+                return False
+            return self.health().get("supports_multipart_play") is True
+        except (OSError, ValueError, TypeError):
+            logger.debug("Race Voice: raw upload capability unavailable", exc_info=True)
+            return False
 
     def stop(self) -> None:
         """Stop service playback and clear queued service audio."""
@@ -121,17 +144,27 @@ class SendspinServiceClient:
             )
         return wav_files
 
-    def _post_json(self, path: str, payload: dict[str, Any]) -> None:
+    def _post_json(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        wav_paths: list[Path] | None = None,
+    ) -> None:
         data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         try:
             base_url = self._base_url()
-            request = urllib.request.Request(  # noqa: S310
-                f"{base_url}{path}",
-                data=data,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(request, timeout=self._timeout_s()) as response:  # noqa: S310
+            with contextlib.ExitStack() as stack:
+                headers = {"Content-Type": "application/json"}
+                body: bytes | Iterator[bytes] = data
+                if wav_paths is not None:
+                    body, headers = _multipart_body(stack, data, wav_paths)
+                request = urllib.request.Request(  # noqa: S310
+                    f"{base_url}{path}", data=body, headers=headers, method="POST"
+                )
+                response = stack.enter_context(
+                    urllib.request.urlopen(request, timeout=self._timeout_s())  # noqa: S310
+                )
                 if response.status >= 400:
                     logger.error(
                         "Race Voice: Sendspin service request failed: %s %s",
@@ -160,6 +193,8 @@ class SendspinServiceClient:
             )
         except ValueError:
             logger.exception("Race Voice: invalid Sendspin service URL")
+        except OSError:
+            logger.exception("Race Voice: Sendspin upload failed: %s", path)
 
     def _base_url(self) -> str:
         url = self._service_url().strip().rstrip("/")
@@ -175,3 +210,53 @@ class SendspinServiceClient:
             message = "invalid Sendspin service URL: use http(s)://host[:port]"
             raise ValueError(message)
         return url
+
+
+def _multipart_body(
+    stack: contextlib.ExitStack, metadata: bytes, wav_paths: list[Path]
+) -> tuple[Iterator[bytes], dict[str, str]]:
+    """Stream WAV files with an exact content length and bounded read buffers."""
+    boundary = uuid.uuid4().hex
+    prefix = (
+        (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="metadata"\r\n'
+            "Content-Type: application/json\r\n\r\n"
+        ).encode()
+        + metadata
+        + b"\r\n"
+    )
+    files = []
+    length = len(prefix)
+    for path in wav_paths:
+        file = stack.enter_context(path.open("rb"))
+        size = os.fstat(file.fileno()).st_size
+        name = urllib.parse.quote(path.name, safe="")
+        header = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="wav_files"; filename="{name}"\r\n'
+            "Content-Type: audio/wav\r\n\r\n"
+        ).encode()
+        files.append((header, file, size))
+        length += len(header) + size + 2
+    suffix = f"--{boundary}--\r\n".encode()
+    length += len(suffix)
+
+    def chunks() -> Iterator[bytes]:
+        yield prefix
+        for header, file, size in files:
+            yield header
+            remaining = size
+            while remaining:
+                chunk = file.read(min(_UPLOAD_CHUNK_BYTES, remaining))
+                if not chunk:
+                    raise OSError("WAV file became shorter during upload")
+                remaining -= len(chunk)
+                yield chunk
+            yield b"\r\n"
+        yield suffix
+
+    return chunks(), {
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "Content-Length": str(length),
+    }

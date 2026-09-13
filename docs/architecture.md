@@ -49,9 +49,11 @@ Service endpoints:
 
 `POST /v1/play` accepts `wav_files` entries with base64 WAV data plus optional `text`, `priority`, `expiry_sec`, `play_at_delay_sec`, and `volume`.
 
+Services advertising `supports_multipart_play: true` in `/health` also accept `multipart/form-data` on the same endpoint. A `metadata` part contains the JSON playback options; one or more `wav_files` parts contain raw WAV bytes in playback order, with percent-encoded filenames. The body limit applies to raw uploads as well, including uploads without a content length. The plugin uses this format for at least 1 MiB of audio, streaming files in 64 KiB chunks. Smaller requests and servers without the capability retain the existing JSON API.
+
 ## Plugin and Service Compatibility
 
-Compatibility is defined by the HTTP API contract, currently `/v1/play` and `/v1/stop`, including the payload fields and playback behavior the plugin relies on. Package release numbers do not need to match. The service `version` in `/health` is diagnostic metadata, not an API version; the plugin does not fetch it at startup or during **Play audio check**.
+Compatibility is defined by the HTTP API contract, currently `/v1/play` and `/v1/stop`, including the payload fields and playback behavior the plugin relies on. Package release numbers do not need to match. The service `version` in `/health` is diagnostic metadata, not an API version. Health checks report backend compatibility, and large uploads negotiate multipart support through an explicit capability rather than a release number.
 
 Keep changes to the existing API backward compatible where possible. A new optional field is only safe for an older service when the plugin can operate correctly without its effect. Do not infer compatibility solely from the `/v1` path if required behavior changes.
 

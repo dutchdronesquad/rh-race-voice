@@ -20,6 +20,7 @@ from urllib.parse import unquote
 
 from aiohttp import BodyPartReader, web
 
+from .audio_cache import AudioCache, MissingAudioError
 from .audio_queue import DEFAULT_EXPIRY_SEC, AudioQueue, Priority, WavItem
 from .player import add_player_routes
 from .sendspin import SendSpinServer
@@ -59,6 +60,12 @@ class SendspinService:
     def __init__(self, config: ServiceConfig) -> None:
         """Initialize the service backend."""
         self._config = config
+        asset_dir = Path(__file__).parent / "assets"
+        if not asset_dir.is_dir():
+            asset_dir = (
+                Path(__file__).resolve().parents[1] / "custom_plugins/race_voice/assets"
+            )
+        self._audio_cache = AudioCache(asset_dir)
         self._sendspin = SendSpinServer(
             host=config.sendspin_host,
             port=config.sendspin_port,
@@ -87,6 +94,8 @@ class SendspinService:
             "max_body_bytes": self._config.max_body_bytes,
             "api_auth_required": bool(self._config.api_token),
             "supports_multipart_play": True,
+            "supports_audio_references": True,
+            "bundled_audio": self._audio_cache.bundled_hashes,
         }
 
     @property
@@ -110,6 +119,11 @@ class SendspinService:
         """Queue playback options with inline or separately uploaded WAV data."""
         if wav_items is None:
             wav_items = _wav_items(payload)
+        cached_audio = None
+        if "wav_refs" in payload:
+            wav_items, cached_audio = self._audio_cache.resolve(
+                payload["wav_refs"], wav_items
+            )
         if not wav_items:
             raise ValueError("wav_files must contain at least one WAV")
         priority = _priority(payload.get("priority"))
@@ -125,7 +139,10 @@ class SendspinService:
             play_at=play_at,
             volume=volume,
         )
-        return {"queued": True, "count": len(wav_items)}
+        result = {"queued": True, "count": len(wav_items)}
+        if cached_audio is not None:
+            result["cached_audio"] = cached_audio
+        return result
 
     def stop(self) -> dict[str, Any]:
         """Stop active playback and clear queued jobs."""
@@ -176,6 +193,8 @@ async def _play(request: web.Request) -> web.Response:
         return web.json_response(result, status=202)
     except web.HTTPRequestEntityTooLarge:
         return web.json_response({"error": "request body too large"}, status=413)
+    except MissingAudioError as exc:
+        return web.json_response({"missing_audio": exc.hashes}, status=409)
     except (TypeError, ValueError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception:

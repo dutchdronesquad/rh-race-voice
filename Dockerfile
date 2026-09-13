@@ -58,6 +58,7 @@ RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
     && rm /tmp/sendspin-service-requirements.txt
 
 COPY sendspin_service ./sendspin_service
+COPY custom_plugins/race_voice/assets/*.wav ./sendspin_service/assets/
 COPY --from=player-build /build/custom_plugins/race_voice/player ./player
 
 RUN adduser -D -H -u 10001 -s /sbin/nologin sendspin

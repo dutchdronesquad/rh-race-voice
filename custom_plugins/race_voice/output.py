@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -13,6 +14,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -56,10 +58,19 @@ class SendspinServiceClient:
         *,
         service_url: Callable[[], str],
         timeout_s: Callable[[], float],
+        api_token: Callable[[], str] | None = None,
+        enabled: Callable[[], bool] | None = None,
+        reuse_audio: bool = False,
     ) -> None:
         """Configure lazy option lookups for each request."""
         self._service_url = service_url
         self._timeout_s = timeout_s
+        self._api_token = api_token
+        self._enabled = enabled
+        self._reuse_audio = reuse_audio
+        self._reference_support: tuple[str, bool, set[str]] | None = None
+        self._bundled_audio: set[str] = set()
+        self._fingerprints: OrderedDict[tuple, str] = OrderedDict()
         self._multipart_support: tuple[str, bool] | None = None
 
     def health(self) -> dict[str, Any]:
@@ -67,7 +78,8 @@ class SendspinServiceClient:
         base_url = self._base_url()
         self._multipart_support = None
         request = urllib.request.Request(  # noqa: S310
-            f"{base_url}/health", headers={"Accept": "application/json"}
+            f"{base_url}/health",
+            headers=self._request_headers(),
         )
         with urllib.request.urlopen(request, timeout=self._timeout_s()) as response:  # noqa: S310
             payload = json.load(response)
@@ -76,6 +88,19 @@ class SendspinServiceClient:
         self._multipart_support = (
             base_url,
             payload.get("supports_multipart_play") is True,
+        )
+        known = set()
+        if (
+            self._reference_support is not None
+            and self._reference_support[0] == base_url
+        ):
+            known.update(self._reference_support[2])
+        self._bundled_audio = _audio_hashes(payload.get("bundled_audio"))
+        known.update(self._bundled_audio)
+        self._reference_support = (
+            base_url,
+            payload.get("supports_audio_references") is True,
+            known,
         )
         return payload
 
@@ -89,8 +114,18 @@ class SendspinServiceClient:
         volume: float = 1.0,
     ) -> None:
         """Send WAV files using JSON or negotiated streaming multipart uploads."""
+        if self._enabled is not None and not self._enabled():
+            return
         if expires_at is not None and time.monotonic() > expires_at:
             logger.info("Race Voice dropped stale service audio: '%s'", text)
+            return
+        if self._reuse_audio and self._references_available():
+            try:
+                self._play_references(
+                    text, wav_paths, priority, expires_at, play_at, volume
+                )
+            except (OSError, ValueError):
+                logger.exception("Race Voice: cannot prepare cached cloud audio")
             return
         multipart = self._use_multipart(wav_paths)
         wav_files = [] if multipart else self._wav_files(wav_paths)
@@ -113,6 +148,96 @@ class SendspinServiceClient:
             payload["wav_files"] = wav_files
             self._post_json("/v1/play", payload)
 
+    def _references_available(self) -> bool:
+        try:
+            base_url = self._base_url()
+            if (
+                self._reference_support is None
+                or self._reference_support[0] != base_url
+            ):
+                self.health()
+            return self._reference_support is not None and self._reference_support[1]
+        except (OSError, ValueError, TypeError):
+            return False
+
+    def _fingerprint(self, path: Path) -> str:
+        stat = path.stat()
+        key = (str(path), stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        if key not in self._fingerprints:
+            with path.open("rb") as file:
+                self._fingerprints[key] = hashlib.file_digest(
+                    file, "sha256"
+                ).hexdigest()
+        self._fingerprints.move_to_end(key)
+        while len(self._fingerprints) > 256:
+            self._fingerprints.popitem(last=False)
+        return self._fingerprints[key]
+
+    def _play_references(  # noqa: PLR0913
+        self,
+        text: str,
+        wav_paths: list[Path],
+        priority: Priority,
+        expires_at: float | None,
+        play_at: float | None,
+        volume: float,
+    ) -> None:
+        if self._reference_support is None:
+            return
+        base_url, _, known = self._reference_support
+        references = [
+            {"name": path.name, "sha256": self._fingerprint(path)} for path in wav_paths
+        ]
+        for attempt in range(2):
+            now = time.monotonic()
+            if expires_at is not None and now > expires_at:
+                return
+            pending = [
+                path
+                for path, ref in zip(wav_paths, references, strict=True)
+                if ref["sha256"] not in known
+            ]
+            payload: dict[str, Any] = {
+                "text": text,
+                "priority": priority.name.lower(),
+                "volume": volume,
+                "wav_refs": references,
+            }
+            if expires_at is not None:
+                payload["expiry_sec"] = max(0.0, expires_at - now)
+            if play_at is not None:
+                payload["play_at_delay_sec"] = max(0.0, play_at - now)
+            multipart = bool(pending) and self._use_multipart(pending)
+            if not multipart:
+                payload["wav_files"] = self._wav_files(pending)
+            result = self._post_json(
+                "/v1/play",
+                payload,
+                wav_paths=pending if multipart else None,
+                base_url=base_url,
+                read_response=True,
+            )
+            if result is None:
+                return
+            missing = _audio_hashes(result.get("missing_audio"))
+            if missing:
+                known.difference_update(missing)
+                if attempt == 0:
+                    continue
+                logger.error("Race Voice: cloud audio references still unavailable")
+                return
+            self._remember_audio(known, references, result)
+            return
+
+    def _remember_audio(
+        self, known: set[str], references: list[dict[str, str]], result: dict[str, Any]
+    ) -> None:
+        known.difference_update(ref["sha256"] for ref in references)
+        retained = _audio_hashes(result.get("cached_audio"))
+        known.update(retained)
+        if len(known) > 4096:
+            known.intersection_update(self._bundled_audio | retained)
+
     def _use_multipart(self, wav_paths: list[Path]) -> bool:
         """Negotiate raw uploads for large clips, retaining the older JSON API."""
         try:
@@ -133,6 +258,8 @@ class SendspinServiceClient:
 
     def stop(self) -> None:
         """Stop service playback and clear queued service audio."""
+        if self._enabled is not None and not self._enabled():
+            return
         self._post_json("/v1/stop", {})
 
     @staticmethod
@@ -162,15 +289,18 @@ class SendspinServiceClient:
         payload: dict[str, Any],
         *,
         wav_paths: list[Path] | None = None,
-    ) -> None:
+        base_url: str | None = None,
+        read_response: bool = False,
+    ) -> dict[str, Any] | None:
         data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         try:
-            base_url = self._base_url()
+            base_url = base_url or self._base_url()
             with contextlib.ExitStack() as stack:
                 headers = {"Content-Type": "application/json"}
                 body: bytes | Iterator[bytes] = data
                 if wav_paths is not None:
                     body, headers = _multipart_body(stack, data, wav_paths)
+                headers.update(self._request_headers())
                 request = urllib.request.Request(  # noqa: S310
                     f"{base_url}{path}", data=body, headers=headers, method="POST"
                 )
@@ -183,13 +313,12 @@ class SendspinServiceClient:
                         response.status,
                         path,
                     )
+                if read_response:
+                    result = json.load(response)
+                    return _response_object(result)
         except urllib.error.HTTPError as exc:
-            error_body = exc.read().decode("utf-8", errors="replace")
-            logger.exception(
-                "Race Voice: Sendspin service rejected %s (%s): %s",
-                path,
-                exc.code,
-                error_body,
+            return self._http_error_result(
+                exc, base_url, path, read_response=read_response
             )
         except urllib.error.URLError as exc:
             logger.exception(
@@ -203,10 +332,54 @@ class SendspinServiceClient:
                 self._timeout_s(),
                 path,
             )
-        except ValueError:
-            logger.exception("Race Voice: invalid Sendspin service URL")
+        except (ValueError, TypeError):
+            logger.exception("Race Voice: invalid Sendspin request or response")
         except OSError:
             logger.exception("Race Voice: Sendspin upload failed: %s", path)
+        return None
+
+    def _http_error_result(
+        self,
+        exc: urllib.error.HTTPError,
+        base_url: str | None,
+        path: str,
+        *,
+        read_response: bool,
+    ) -> dict[str, Any] | None:
+        with exc:
+            error_body = exc.read().decode("utf-8", errors="replace")
+        if exc.code == 409 and read_response:
+            with contextlib.suppress(ValueError):
+                result = json.loads(error_body)
+                if isinstance(result, dict) and _audio_hashes(
+                    result.get("missing_audio")
+                ):
+                    return result
+        if exc.code == 403 and "error code: 1010" in error_body.lower():
+            logger.error(
+                "Race Voice: Cloudflare blocked %s%s (403, code 1010). "
+                "Check Browser Integrity Check for the cloud API hostname; "
+                "configure an API-scoped exception. This request did not "
+                "reach Sendspin.",
+                base_url,
+                path,
+            )
+            return None
+        logger.error(
+            "Race Voice: Sendspin service rejected %s (%s): %s",
+            path,
+            exc.code,
+            error_body,
+            exc_info=exc,
+        )
+        return None
+
+    def _request_headers(self) -> dict[str, str]:
+        token = self._api_token().strip() if self._api_token is not None else ""
+        headers = {"User-Agent": "RaceVoice/1.0", "Accept": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        return headers
 
     def _base_url(self) -> str:
         url = self._service_url().strip().rstrip("/")
@@ -222,6 +395,22 @@ class SendspinServiceClient:
             message = "invalid Sendspin service URL: use http(s)://host[:port]"
             raise ValueError(message)
         return url
+
+
+def _response_object(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise TypeError("invalid Sendspin response")
+    return value
+
+
+def _audio_hashes(value: Any) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    return {
+        item
+        for item in value
+        if isinstance(item, str) and re.fullmatch(r"[0-9a-f]{64}", item)
+    }
 
 
 def _multipart_body(

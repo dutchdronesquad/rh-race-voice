@@ -84,7 +84,7 @@ Server-side voice callouts for the [RotorHazard] timing platform, powered by [Pi
 
 Set RotorHazard browser **Voice Volume** and **Tone Volume** to `0` to prevent duplicate audio. The first use of a voice downloads its model.
 
-[Docker Compose](docs/usage.md#docker-image) is an optional cloud setup with its own player. Select local or cloud using **Sendspin service URL**; the plugin sends to one server at a time.
+[Docker Compose](docs/usage.md#docker-image) is an optional cloud setup with its own player. Keep the local service URL and add **Cloud Sendspin service URL** plus **Cloud Sendspin API token** to stream the same audio locally and to the cloud simultaneously.
 
 ## Documentation
 

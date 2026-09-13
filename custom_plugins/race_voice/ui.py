@@ -12,7 +12,6 @@ from .const import (
     DEFAULT_MODEL,
     DEFAULT_NOISE_SCALE,
     DEFAULT_NOISE_W_SCALE,
-    DEFAULT_SENDSPIN_SERVICE_TIMEOUT,
     DEFAULT_SENDSPIN_SERVICE_URL,
     DEFAULT_SPEED,
     DEFAULT_TEST_PHRASE,
@@ -20,7 +19,8 @@ from .const import (
     NOISE_SCALE_OPTION,
     NOISE_W_SCALE_OPTION,
     PANEL_ID,
-    SENDSPIN_SERVICE_TIMEOUT_OPTION,
+    SENDSPIN_CLOUD_TOKEN_OPTION,
+    SENDSPIN_CLOUD_URL_OPTION,
     SENDSPIN_SERVICE_URL_OPTION,
     SPEECH_SPEED_OPTION,
     TEST_PHRASE_OPTION,
@@ -59,18 +59,27 @@ def register_ui(  # noqa: PLR0913
             "Sendspin service URL",
             UIFieldType.TEXT,
             value=DEFAULT_SENDSPIN_SERVICE_URL,
-            desc="Local HTTP endpoint for sendspin-service.",
+            desc="Local service API URL.",
         ),
         panel=PANEL_ID,
     )
     rhapi.fields.register_option(
         UIField(
-            SENDSPIN_SERVICE_TIMEOUT_OPTION,
-            "Sendspin service timeout",
-            UIFieldType.NUMBER,
-            value=DEFAULT_SENDSPIN_SERVICE_TIMEOUT,
-            desc="HTTP timeout in seconds for service requests.",
-            html_attributes={"min": "0.2", "max": "10.0", "step": "0.1"},
+            SENDSPIN_CLOUD_URL_OPTION,
+            "Cloud Sendspin service URL",
+            UIFieldType.TEXT,
+            value="",
+            desc="Additional cloud API URL. Empty disables cloud output.",
+        ),
+        panel=PANEL_ID,
+    )
+    rhapi.fields.register_option(
+        UIField(
+            SENDSPIN_CLOUD_TOKEN_OPTION,
+            "Cloud Sendspin API token",
+            UIFieldType.PASSWORD,
+            value="",
+            desc="Cloud service API token.",
         ),
         panel=PANEL_ID,
     )

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+import threading
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -42,11 +43,19 @@ class PluginStartupTests(unittest.TestCase):
     def setUp(self) -> None:
         """Record RH registrations and defer executor work until the test runs it."""
         self.rhapi = Mock()
+        self.options = {}
+        self.rhapi.db.option.side_effect = lambda name, default: self.options.get(  # noqa: PLW0108
+            name, default
+        )
         self.rhapi.server.data_dir = self.enterContext(TemporaryDirectory())
         with (
-            patch.object(plugin_module, "AudioQueue"),
-            patch.object(plugin_module, "ThreadPoolExecutor"),
-            patch.object(plugin_module, "SendspinServiceClient"),
+            patch.object(plugin_module, "AudioQueue", side_effect=lambda **_: Mock()),
+            patch.object(
+                plugin_module, "ThreadPoolExecutor", side_effect=lambda **_: Mock()
+            ),
+            patch.object(
+                plugin_module, "SendspinServiceClient", side_effect=lambda **_: Mock()
+            ),
         ):
             self.plugin = plugin_module.RaceVoicePlugin(self.rhapi)
 
@@ -73,10 +82,7 @@ class PluginStartupTests(unittest.TestCase):
             self.assertFalse(self.plugin._check_sendspin_service())
         self.plugin._sendspin.health.reset_mock()
         self.plugin.play_audio_check()
-        self.plugin._synth_pool.submit.assert_called_once_with(
-            self.plugin._play_audio_check
-        )
-        self.plugin._synth_pool.submit.call_args.args[0]()
+        self.plugin._synth_pool.submit.assert_not_called()
         self.plugin._sendspin.health.assert_not_called()
         self.plugin._audio_queue.enqueue.assert_called_once()
 
@@ -108,3 +114,76 @@ class PluginStartupTests(unittest.TestCase):
         ]
         self.assertIn("race_voice_audio_check", names)
         self.assertNotIn("race_voice_service_check", names)
+
+    def test_audio_is_copied_to_cloud_with_timing_and_priority(self) -> None:
+        """Send the same clips and schedule to both queues without resynthesis."""
+        self.options[plugin_module.SENDSPIN_CLOUD_URL_OPTION] = "https://cloud.example"
+        paths = [Path("tone.wav")]
+        self.plugin._enqueue_audio(
+            "tone", paths, plugin_module.Priority.HIGH, 3.0, 123.0, 0.4
+        )
+        for queue in (self.plugin._audio_queue, self.plugin._cloud_audio_queue):
+            queue.enqueue.assert_called_once()
+            job = queue.enqueue.call_args.kwargs
+            self.assertIs(job["wav_paths"], paths)
+            self.assertEqual(job["play_at"], 123.0)
+            self.assertEqual(job["priority"], plugin_module.Priority.HIGH)
+            self.assertEqual(job["volume"], 0.4)
+            self.assertGreater(job["expiry_sec"], 2.5)
+            self.assertLessEqual(job["expiry_sec"], 3.0)
+
+    def test_empty_or_duplicate_cloud_url_only_queues_once(self) -> None:
+        """Default local setup and duplicate URLs must not produce double audio."""
+        for url in ("", " http://127.0.0.1:8766/ "):
+            self.options[plugin_module.SENDSPIN_CLOUD_URL_OPTION] = url
+            self.plugin._enqueue_audio("test", [Path("test.wav")])
+        self.assertEqual(self.plugin._audio_queue.enqueue.call_count, 2)
+        self.plugin._cloud_audio_queue.enqueue.assert_not_called()
+
+    def test_stop_clears_both_queues_and_dispatches_both_services(self) -> None:
+        """Neither service's stop request waits for the other's network response."""
+        self.options[plugin_module.SENDSPIN_CLOUD_URL_OPTION] = "https://cloud.example"
+        self.plugin._audio_queue.clear.return_value = 1
+        self.plugin._cloud_audio_queue.clear.return_value = 2
+        self.plugin.stop_audio()
+        self.plugin._audio_queue.clear.assert_called_once()
+        self.plugin._cloud_audio_queue.clear.assert_called_once()
+        self.assertEqual(
+            [
+                call.args[0]
+                for call in self.plugin._output_control_pool.submit.call_args_list
+            ],
+            [self.plugin._sendspin.stop, self.plugin._cloud_sendspin.stop],
+        )
+
+    def test_blocked_cloud_does_not_delay_local_audio(self) -> None:
+        """A second local callout plays while the first cloud upload is blocked."""
+        self.options[plugin_module.SENDSPIN_CLOUD_URL_OPTION] = "https://cloud.example"
+        cloud_started = threading.Event()
+        release_cloud = threading.Event()
+        local_finished = threading.Event()
+        local_calls = []
+
+        def local_player(*args):  # noqa: ANN002, ANN202
+            local_calls.append(args[0])
+            if len(local_calls) == 2:
+                local_finished.set()
+
+        def cloud_player(*args):  # noqa: ANN002, ANN202
+            cloud_started.set()
+            release_cloud.wait(5)
+            raise OSError("cloud unavailable")
+
+        self.plugin._audio_queue = plugin_module.AudioQueue(local_player)
+        self.plugin._cloud_audio_queue = plugin_module.AudioQueue(cloud_player)
+        with self.assertLogs("race_voice_startup_test.audio_queue", level="ERROR"):
+            try:
+                self.plugin._enqueue_audio("first", [Path("test.wav")])
+                self.assertTrue(cloud_started.wait(2))
+                self.plugin._enqueue_audio("second", [Path("test.wav")])
+                self.assertTrue(local_finished.wait(2))
+                self.assertEqual(local_calls, ["first", "second"])
+            finally:
+                release_cloud.set()
+                self.plugin._audio_queue._queue.join()
+                self.plugin._cloud_audio_queue._queue.join()

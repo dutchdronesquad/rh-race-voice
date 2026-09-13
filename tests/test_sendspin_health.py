@@ -81,6 +81,60 @@ class ServiceHealthTests(unittest.TestCase):
                 )
                 self.assertEqual(request.call_args.kwargs["timeout"], 2.0)
 
+    def test_identifies_health_json_and_multipart_requests(self) -> None:
+        """Use the application identity for every request, preserving auth."""
+        client = output.SendspinServiceClient(
+            service_url=lambda: "https://cloud.example",
+            timeout_s=lambda: 2.0,
+            api_token=lambda: "test-token",
+        )
+        wav = Path(__file__).resolve().parents[1] / (
+            "custom_plugins/race_voice/assets/stage.wav"
+        )
+        response = Mock()
+        response.__enter__ = Mock(return_value=Mock(status=200))
+        response.__exit__ = Mock(return_value=False)
+        with patch.object(
+            output.urllib.request,
+            "urlopen",
+            side_effect=[io.BytesIO(b'{"ok":true}'), response, response, response],
+        ) as request:
+            client.health()
+            client._post_json("/v1/play", {})
+            client._post_json("/v1/play", {}, wav_paths=[wav])
+            client.stop()
+        self.assertEqual(request.call_count, 4)
+        for call in request.call_args_list:
+            headers = dict(call.args[0].header_items())
+            self.assertEqual(headers["User-agent"], "RaceVoice/1.0")
+            self.assertEqual(headers["Authorization"], "Bearer test-token")
+        self.assertIn(
+            "multipart/form-data",
+            request.call_args_list[2].args[0].get_header("Content-type"),
+        )
+
+    def test_cloudflare_1010_explains_the_block_without_retry(self) -> None:
+        """Point operators to Cloudflare rather than the service token or timeout."""
+        client = output.SendspinServiceClient(
+            service_url=lambda: "https://cloud.example", timeout_s=lambda: 2.0
+        )
+        body = io.BytesIO(b"error code: 1010")
+        error = urllib.error.HTTPError(
+            "https://cloud.example/v1/play", 403, "Forbidden", {}, body
+        )
+        with (
+            patch.object(
+                output.urllib.request, "urlopen", side_effect=error
+            ) as request,
+            self.assertLogs(output.logger, level="ERROR") as logs,
+        ):
+            client._post_json("/v1/play", {})
+        request.assert_called_once()
+        self.assertTrue(body.closed)
+        self.assertIn("Browser Integrity Check", logs.output[0])
+        self.assertIn("https://cloud.example/v1/play", logs.output[0])
+        self.assertNotIn("Traceback", logs.output[0])
+
     def test_invalid_and_unreachable_responses_raise(self) -> None:
         """Failures must reach the UI instead of masquerading as healthy replies."""
         client = output.SendspinServiceClient(

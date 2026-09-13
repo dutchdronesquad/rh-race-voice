@@ -9,6 +9,7 @@ on:
       - .github/workflows/release.yaml
       - .dockerignore
       - Dockerfile
+      - custom_plugins/race_voice/assets/**
       - sendspin_player/**
       - sendspin_service/**
       - tools/build_sendspin_service_deb.py

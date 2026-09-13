@@ -183,6 +183,8 @@ Multiple devices can connect simultaneously and will receive the same audio in s
 
 The player stores the server URL in the browser's local storage and reconnects automatically if the connection drops.
 
+The service supports `aiosendspin` 9.x and stores its server identity and pairing data in systemd's state directory (`/var/lib/sendspin-service` for the `.deb`). Standalone runs default to `~/.local/share/sendspin-service`; `SENDSPIN_STATE_DIR` overrides the location. Docker Compose keeps this directory in the `sendspin-state` volume. Preserve these files across updates so the server retains its identity. Playback remains open to clients that can reach port `8927`: encrypted browser players are admitted automatically, and legacy unencrypted players remain supported.
+
 ### Sync modes
 
 | Mode | Description | Best for |

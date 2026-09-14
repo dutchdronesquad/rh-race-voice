@@ -274,19 +274,19 @@ class PlaybackPlannerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_slow_cloud_queue_does_not_block_local_queue(self) -> None:
         """Each destination owns its waits and receives already-shared audio."""
-        local_sink = _Sink()
-        local_sink.release.set()
-        local = PlaybackPlanner(
-            local_sink, is_current=lambda _: True, destination="cloud"
+        self.sink.release.set()  # self.planner ("local") proceeds immediately
+        cloud_sink = _Sink()  # left blocked, standing in for a slow cloud relay
+        cloud = PlaybackPlanner(
+            cloud_sink, is_current=lambda _: True, destination="cloud"
         )
-        self.addAsyncCleanup(local.close)
+        self.addAsyncCleanup(cloud.close)
         first = plan(1)
         self.planner.submit(first)
-        local.submit(first)
-        local.submit(plan(2, pilot=2))
-        await until(lambda: len(local_sink.played) == 2)
-        self.assertEqual(len(self.sink.played), 1)
-        self.assertIs(local_sink.played[0].audio, self.sink.played[0].audio)
+        cloud.submit(first)
+        self.planner.submit(plan(2, pilot=2))
+        await until(lambda: len(self.sink.played) == 2)
+        self.assertEqual(len(cloud_sink.played), 1)
+        self.assertIs(cloud_sink.played[0].audio, self.sink.played[0].audio)
 
     async def test_expiry_and_memory_limits_prevent_unbounded_backlog(self) -> None:
         """Reject unusable jobs before any interrupt or extra retained audio."""

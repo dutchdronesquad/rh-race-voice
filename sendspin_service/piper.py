@@ -23,7 +23,7 @@ from gevent import get_hub
 from piper import PiperVoice
 from piper.config import PiperConfig, SynthesisConfig
 
-from .const import VOICE_MODELS
+from custom_plugins.race_voice.const import VOICE_MODELS
 
 if TYPE_CHECKING:
     from collections.abc import Callable

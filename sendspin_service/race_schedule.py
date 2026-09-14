@@ -6,13 +6,11 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
-from custom_plugins.race_voice.services.schedule import (
-    DEFAULT_MIN_TIMER_DELAY_SEC,
-    DEFAULT_THRESHOLDS,
-)
-
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+DEFAULT_THRESHOLDS = (60, 30, 10, 5)
+DEFAULT_MIN_TIMER_DELAY_SEC = 0.25
 
 
 class RaceSchedule:

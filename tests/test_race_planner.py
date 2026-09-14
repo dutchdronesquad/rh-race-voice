@@ -12,13 +12,13 @@ import unittest
 from dataclasses import replace
 from unittest.mock import AsyncMock, Mock
 
-from sendspin_service.race_planner import (
+from sendspin_service.race.race_planner import (
     CalloutPlan,
     PlaybackPlanner,
     PreparationPlanner,
     SendspinPlaybackSink,
 )
-from sendspin_service.race_protocol import EventKind, RaceEvent
+from sendspin_service.race.race_protocol import EventKind, RaceEvent
 from tests.test_race_protocol import event_payload
 
 

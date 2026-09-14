@@ -9,8 +9,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
-from sendspin_service.synthesis import SynthesisWorker, WorkerUnavailableError
-from sendspin_service.synthesis_worker import (
+from sendspin_service.synthesis.synthesis import SynthesisWorker, WorkerUnavailableError
+from sendspin_service.synthesis.synthesis_worker import (
     WorkerSynthesizer,
     execute,
     validate_request,

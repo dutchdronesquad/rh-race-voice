@@ -9,8 +9,8 @@ import unittest
 from dataclasses import replace
 from unittest.mock import AsyncMock
 
-from sendspin_service.race_protocol import EventKind, RaceEvent
-from sendspin_service.speech import SpeechEngine
+from sendspin_service.race.race_protocol import EventKind, RaceEvent
+from sendspin_service.race.speech import SpeechEngine
 from tests.test_race_protocol import event_payload
 
 SETTINGS = {"model": "nl_NL-pim-medium", "speed": 1, "noise": 0.667, "noise_w": 0.8}

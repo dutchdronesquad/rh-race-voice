@@ -8,7 +8,7 @@ import copy
 import unittest
 from dataclasses import replace
 
-from sendspin_service.race_protocol import (
+from sendspin_service.race.race_protocol import (
     VERSION,
     Admission,
     ClockMapping,

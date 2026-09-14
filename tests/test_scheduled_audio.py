@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from aiosendspin.server import AudioFormat
 
-from sendspin_service.sendspin import (
+from sendspin_service.playback.sendspin import (
     SendSpinServer,
     _scheduled_play_start_us,
     _stream_wav,
@@ -54,11 +54,13 @@ class ScheduledAudioTests(unittest.IsolatedAsyncioTestCase):
 
     def test_future_target_is_preserved_and_late_target_uses_client_lead(self) -> None:
         """Do not force future targets later; disclose unavoidable late starts."""
-        with patch("sendspin_service.sendspin.time.monotonic", return_value=10.0):
+        with patch(
+            "sendspin_service.playback.sendspin.time.monotonic", return_value=10.0
+        ):
             self.assertEqual(
                 _scheduled_play_start_us(11.0, 20_000_000, 300_000), 21_000_000
             )
-            with self.assertLogs("sendspin_service.sendspin", level="INFO"):
+            with self.assertLogs("sendspin_service.playback.sendspin", level="INFO"):
                 self.assertEqual(
                     _scheduled_play_start_us(10.0, 20_000_000, 300_000), 20_300_000
                 )

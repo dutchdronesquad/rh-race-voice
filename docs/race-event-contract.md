@@ -119,7 +119,7 @@ Release this architecture as v2.0.0 with a hard cutover. Upgrade the RH plugin a
 
 ## Conformance and follow-through
 
-`sendspin_service/race_protocol.py` provides strict event parsing, clock bounds, and a single-owner context gate. `race_ingest.py` connects these to the worker and planners in the local HTTP preview, validates full snapshot content and fences publisher sessions until service restart. Tests exercise duplicate delivery, old sessions, reordered snapshots, reset with reused pilot IDs, expiry, clock offsets/jitter, and cancellation of late worker results. Integration work must enforce the remaining limits before advertising the capability. #298–#304 own worker, adapter, planner, relay, selection, packaging and real hardware checks.
+`sendspin_service/race/race_protocol.py` provides strict event parsing, clock bounds, and a single-owner context gate. `race_ingest.py` connects these to the worker and planners in the local HTTP preview, validates full snapshot content and fences publisher sessions until service restart. Tests exercise duplicate delivery, old sessions, reordered snapshots, reset with reused pilot IDs, expiry, clock offsets/jitter, and cancellation of late worker results. Integration work must enforce the remaining limits before advertising the capability. #298–#304 own worker, adapter, planner, relay, selection, packaging and real hardware checks.
 
 ## Scheduled race countdown
 

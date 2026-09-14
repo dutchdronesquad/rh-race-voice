@@ -31,7 +31,7 @@ from .race_schedule import RaceSchedule
 from .speech import SpeechEngine
 
 if TYPE_CHECKING:
-    from .synthesis import SynthesisWorker
+    from sendspin_service.synthesis.synthesis import SynthesisWorker
 
 logger = logging.getLogger(__name__)
 MAX_BODY_BYTES = 65_536

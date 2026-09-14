@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from sendspin_service.synthesis import (
+from sendspin_service.synthesis.synthesis import (
     SynthesisBusyError,
     SynthesisWorker,
     WorkerUnavailableError,

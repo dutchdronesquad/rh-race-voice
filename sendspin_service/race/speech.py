@@ -16,11 +16,11 @@ from .race_protocol import EventKind, RaceEvent
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
 
-    from .synthesis import SynthesisWorker
+    from sendspin_service.synthesis.synthesis import SynthesisWorker
 
 _LOCALES = json.loads(
     (
-        Path(__file__).resolve().parents[1] / "custom_plugins/race_voice/locales.json"
+        Path(__file__).resolve().parents[2] / "custom_plugins/race_voice/locales.json"
     ).read_text(encoding="utf-8")
 )
 

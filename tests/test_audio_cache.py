@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from sendspin_service.audio_cache import AudioCache, MissingAudioError
-from sendspin_service.audio_queue import WavItem
+from sendspin_service.playback.audio_cache import AudioCache, MissingAudioError
+from sendspin_service.playback.audio_queue import WavItem
 
 
 def reference(data: bytes) -> dict[str, str]:

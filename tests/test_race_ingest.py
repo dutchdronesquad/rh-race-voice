@@ -14,13 +14,13 @@ from unittest.mock import Mock, patch
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from sendspin_service.race_ingest import RaceIngest, logger
-from sendspin_service.race_planner import (
+from sendspin_service.race.race_ingest import RaceIngest, logger
+from sendspin_service.race.race_planner import (
     Destination,
     PreparationPlanner,
     SendspinPlaybackSink,
 )
-from sendspin_service.race_protocol import ClockMapping, ProtocolError
+from sendspin_service.race.race_protocol import ClockMapping, ProtocolError
 from sendspin_service.server import (
     DEFAULT_RACE_CACHE_DIR,
     SendspinService,
@@ -87,7 +87,8 @@ class RaceIngestTests(unittest.IsolatedAsyncioTestCase):
         )
         self.enterContext(
             patch(
-                "sendspin_service.synthesis.SynthesisWorker", return_value=self.worker
+                "sendspin_service.synthesis.synthesis.SynthesisWorker",
+                return_value=self.worker,
             )
         )
         self.service = SendspinService(
@@ -507,7 +508,7 @@ class RaceIngestTests(unittest.IsolatedAsyncioTestCase):
         """Do not delete files when the output cannot confirm that it stopped."""
         self.backend.stop.side_effect = TimeoutError("backend unavailable")
         command = self.command(operation="clear_cache")
-        with self.assertLogs("sendspin_service.cache_commands", level="ERROR"):
+        with self.assertLogs("sendspin_service.race.cache_commands", level="ERROR"):
             await self.client.post("/v2/commands", json=command)
             result = await self.command_result(command)
         self.assertEqual(result["status"], "failed")
@@ -936,7 +937,7 @@ class RaceIngestFanOutTests(unittest.IsolatedAsyncioTestCase):
             "expires_at": now + 10,
             "payload": {"text": "hello"},
         }
-        with self.assertLogs("sendspin_service.race_ingest", level="ERROR"):
+        with self.assertLogs("sendspin_service.race.race_ingest", level="ERROR"):
             self.assertEqual(ingest.event(event)["outcome"], "accepted")
             await until(lambda: len(sink_ok.played) == 1)
 

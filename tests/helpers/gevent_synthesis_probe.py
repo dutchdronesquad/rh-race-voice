@@ -23,7 +23,7 @@ _repo_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_repo_root))  # piper.py imports custom_plugins.race_voice.const
 
 package = ModuleType("race_voice_gevent_probe")
-package.__path__ = [str(_repo_root / "sendspin_service")]
+package.__path__ = [str(_repo_root / "sendspin_service/synthesis")]
 sys.modules[package.__name__] = package
 module = importlib.import_module(f"{package.__name__}.piper")
 original_sleep = monkey.get_original("time", "sleep")

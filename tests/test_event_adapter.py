@@ -54,7 +54,10 @@ class EventAdapterTests(unittest.IsolatedAsyncioTestCase):
         worker = Worker()
         with (
             patch("sendspin_service.server.SendSpinServer", return_value=backend),
-            patch("sendspin_service.synthesis.SynthesisWorker", return_value=worker),
+            patch(
+                "sendspin_service.synthesis.synthesis.SynthesisWorker",
+                return_value=worker,
+            ),
         ):
             service = SendspinService(ServiceConfig(race_cache_dir=root))
             app = _create_app(service)

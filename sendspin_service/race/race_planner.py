@@ -14,14 +14,16 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Protocol
 
+from sendspin_service.playback.audio_queue import Priority, WavItem
+
 from . import telemetry
-from .audio_queue import Priority, WavItem
 from .race_protocol import EventKind, RaceEvent
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from .sendspin import SendSpinServer
+    from sendspin_service.playback.sendspin import SendSpinServer
+
     from .speech import SpeechEngine
 
 logger = logging.getLogger(__name__)

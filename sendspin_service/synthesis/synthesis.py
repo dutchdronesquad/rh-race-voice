@@ -40,7 +40,7 @@ class SynthesisWorker:
         max_pending: int = 8,
         max_waiters: int = 64,
         operation_timeout: float = 120,
-        worker_module: str = "sendspin_service.synthesis_worker",
+        worker_module: str = "sendspin_service.synthesis.synthesis_worker",
     ) -> None:
         """Configure a worker; construction does not load a model or spawn a child."""
         if max_pending < 1 or max_waiters < 1 or operation_timeout <= 0:

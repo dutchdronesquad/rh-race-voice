@@ -8,7 +8,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from sendspin_service import telemetry
+from sendspin_service.race import telemetry
 
 
 class RecordTests(unittest.TestCase):

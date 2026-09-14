@@ -6,7 +6,10 @@ import json
 import logging
 import time
 
-logger = logging.getLogger(__name__)
+# Hardcoded rather than __name__-based: this name is a documented, stable
+# operator-facing attach point (see docs/latency-validation.md) and must not
+# shift if this module ever moves again.
+logger = logging.getLogger("sendspin_service.telemetry")
 
 
 def record(event_id: str, stage: str, /, **fields: object) -> None:

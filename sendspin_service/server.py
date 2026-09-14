@@ -15,9 +15,9 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
-from .audio_cache import AudioCache
-from .player import add_player_routes
-from .sendspin import SendSpinServer
+from .playback.audio_cache import AudioCache
+from .playback.player import add_player_routes
+from .playback.sendspin import SendSpinServer
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -121,9 +121,12 @@ class SendspinService:
 
     def add_race_routes(self, app: web.Application) -> None:
         """Load and register the race-event ingest routes and their dependencies."""
-        from .race_ingest import RaceIngest, add_routes  # noqa: PLC0415
-        from .race_planner import Destination, SendspinPlaybackSink  # noqa: PLC0415
-        from .synthesis import SynthesisWorker  # noqa: PLC0415
+        from .race.race_ingest import RaceIngest, add_routes  # noqa: PLC0415
+        from .race.race_planner import (  # noqa: PLC0415
+            Destination,
+            SendspinPlaybackSink,
+        )
+        from .synthesis.synthesis import SynthesisWorker  # noqa: PLC0415
 
         assets = {
             name: (self._asset_dir / filename).read_bytes()

@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from aiosendspin.noise.trust_store import PskCategory
 
-from sendspin_service.sendspin import SendSpinServer, _load_identity
+from sendspin_service.playback.sendspin import SendSpinServer, _load_identity
 
 
 class SendspinStartupTests(unittest.IsolatedAsyncioTestCase):
@@ -39,7 +39,7 @@ class SendspinStartupTests(unittest.IsolatedAsyncioTestCase):
             state_dir = Path(directory)
             backend = SendSpinServer(advertise=False, state_dir=state_dir)
             with patch(
-                "sendspin_service.sendspin.AioSendspinServer.start_server",
+                "sendspin_service.playback.sendspin.AioSendspinServer.start_server",
                 new_callable=AsyncMock,
             ) as start:
                 try:

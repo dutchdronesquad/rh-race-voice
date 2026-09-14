@@ -173,6 +173,17 @@ def _build_app(runtime_python: Path) -> None:
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
         dirs_exist_ok=True,
     )
+    # sendspin_service imports custom_plugins.race_voice.const/services and reads
+    # locales.json; without this the service fails at startup (FileNotFoundError
+    # on locales.json, well before any request), not just at packaging time.
+    # "player" is the RH plugin's own built browser player (a few MiB) -- the
+    # service has its own, built separately; excluded here to avoid bundling it.
+    shutil.copytree(
+        PROJECT_ROOT / "custom_plugins",
+        APP_BUILD_ROOT / "custom_plugins",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "player"),
+        dirs_exist_ok=True,
+    )
     shutil.copytree(
         PROJECT_ROOT / "custom_plugins/race_voice/assets",
         APP_BUILD_ROOT / "sendspin_service/assets",

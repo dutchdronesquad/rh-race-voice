@@ -7,7 +7,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import Mock, patch
 
-from sendspin_service.race_schedule import RaceSchedule
+from sendspin_service.race.race_schedule import RaceSchedule
 
 
 class RaceScheduleTests(unittest.TestCase):
@@ -20,12 +20,14 @@ class RaceScheduleTests(unittest.TestCase):
         self.loop = Mock()
         self.enterContext(
             patch(
-                "sendspin_service.race_schedule.asyncio.get_running_loop",
+                "sendspin_service.race.race_schedule.asyncio.get_running_loop",
                 return_value=self.loop,
             )
         )
         self.now = self.enterContext(
-            patch("sendspin_service.race_schedule.time.monotonic", return_value=1000)
+            patch(
+                "sendspin_service.race.race_schedule.time.monotonic", return_value=1000
+            )
         )
         self.key = ("session", 1, 970)
 

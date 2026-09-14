@@ -82,7 +82,8 @@ class DenseLapBurstScenarioTests(unittest.IsolatedAsyncioTestCase):
         )
         self.enterContext(
             patch(
-                "sendspin_service.synthesis.SynthesisWorker", return_value=self.worker
+                "sendspin_service.synthesis.synthesis.SynthesisWorker",
+                return_value=self.worker,
             )
         )
         self.service = SendspinService(

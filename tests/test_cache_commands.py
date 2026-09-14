@@ -12,9 +12,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock
 
-from sendspin_service.cache_commands import CacheCommands
-from sendspin_service.speech import SpeechEngine
-from sendspin_service.synthesis import SynthesisWorker
+from sendspin_service.race.cache_commands import CacheCommands
+from sendspin_service.race.speech import SpeechEngine
+from sendspin_service.synthesis.synthesis import SynthesisWorker
 from tests.test_race_ingest import VOICE, until
 
 

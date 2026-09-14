@@ -17,7 +17,7 @@ from aiosendspin.server import AudioFormat
 from aiosendspin.server.push_stream import MAIN_CHANNEL, PushStream
 from aiosendspin.server.roles import AudioRequirements
 
-from sendspin_service.sendspin import SendSpinServer
+from sendspin_service.playback.sendspin import SendSpinServer
 
 if TYPE_CHECKING:
     from aiosendspin.server.client import SendspinClient
@@ -31,7 +31,7 @@ class IndependentGroupTests(unittest.IsolatedAsyncioTestCase):
         root = Path(self.enterContext(TemporaryDirectory()))
         self.backend = SendSpinServer(advertise=False, state_dir=root)
         with patch(
-            "sendspin_service.sendspin.AioSendspinServer.start_server",
+            "sendspin_service.playback.sendspin.AioSendspinServer.start_server",
             new_callable=AsyncMock,
         ):
             await self.backend._start_server()

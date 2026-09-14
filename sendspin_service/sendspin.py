@@ -158,7 +158,7 @@ class SendSpinServer:
             message = "Sendspin server did not become ready"
             raise RuntimeError(message)
 
-    def play(
+    def play(  # noqa: PLR0911
         self,
         wav_items: list[WavItem],
         expires_at: float | None = None,
@@ -166,26 +166,26 @@ class SendSpinServer:
         volume: float = 1.0,
         *,
         cancelled: threading.Event | None = None,
-    ) -> None:
+    ) -> bool:
         """Queue WAV files to connected clients without resetting active playback."""
         if not self._ready.wait(timeout=5.0) or self._loop is None:
             logger.warning("Sendspin service: Sendspin server not yet ready")
-            return
+            return False
         if self._server is None:
             logger.warning("Sendspin service: Sendspin server failed to start")
-            return
+            return False
         if not self._server.connected_clients:
             logger.info(
                 "Sendspin service: no Sendspin clients connected - audio dropped"
             )
-            return
+            return False
 
         if cancelled is not None and cancelled.is_set():
-            return
+            return False
         clips = _read_wav_clips(wav_items)
         if not clips:
             logger.warning("Sendspin service: no readable WAV files to play")
-            return
+            return False
 
         if play_at is not None:
             clips[-1] = _with_silent_tail(clips[-1])
@@ -202,8 +202,11 @@ class SendSpinServer:
         except TimeoutError:
             future.cancel()
             logger.warning("Sendspin service: Sendspin stream timed out")
+            return False
         except Exception:
             logger.exception("Sendspin service: Sendspin stream error")
+            return False
+        return True
 
     def stop(self, *, strict: bool = False) -> None:
         """Stop current playback and clear scheduled client audio."""

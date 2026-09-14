@@ -140,9 +140,7 @@ class RaceIngest:
         if self._output.submit(plan):
             telemetry.record(plan.event.event_id, "output_scheduled")
         else:
-            telemetry.record(
-                plan.event.event_id, "output_dropped", reason="output_queue_full"
-            )
+            # PlaybackPlanner.submit() already recorded the real drop reason.
             logger.info("Race Voice dropped prepared audio: %s", plan.event.event_id)
 
     def owner(self) -> dict:
@@ -384,7 +382,7 @@ class RaceIngest:
             telemetry.record(event.event_id, "dropped", reason="cache_clearing")
             raise web.HTTPTooManyRequests(reason="TTS cache is being cleared")
         if not self._submit(event, deadline, target, voice):
-            telemetry.record(event.event_id, "dropped", reason="preparation_full")
+            # PreparationPlanner.submit() already recorded the real drop reason.
             raise web.HTTPTooManyRequests(
                 reason="Audio preparation is full", headers={"Retry-After": "1"}
             )

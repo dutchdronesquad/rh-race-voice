@@ -219,19 +219,25 @@ class PreparationPlanner:
     async def _prepare(self, item: _Preparation) -> None:
         plan = item.plan
         telemetry.record(plan.event.event_id, "synthesis_start")
-        audio = await self._speech.synthesize(
-            plan.event,
-            item.settings,
-            deadline=plan.deadline,
-            priority=plan.priority,
-            is_current=lambda: not item.cancelled and self._usable(plan),
-            on_segment=lambda result: telemetry.record(
-                plan.event.event_id,
-                "segment",
-                cache_hit=result.get("cache_hit"),
-                duration_ms=result.get("duration_ms"),
-            ),
-        )
+        try:
+            audio = await self._speech.synthesize(
+                plan.event,
+                item.settings,
+                deadline=plan.deadline,
+                priority=plan.priority,
+                is_current=lambda: not item.cancelled and self._usable(plan),
+                on_segment=lambda result: telemetry.record(
+                    plan.event.event_id,
+                    "segment",
+                    cache_hit=result.get("cache_hit"),
+                    duration_ms=result.get("duration_ms"),
+                ),
+            )
+        except asyncio.CancelledError:
+            # A preempting signal cancels this task mid-await; without this the
+            # event would keep no terminal telemetry record at all.
+            telemetry.record(plan.event.event_id, "output_dropped", reason="cancelled")
+            raise
         telemetry.record(plan.event.event_id, "synthesis_end", empty=not audio)
         if audio and not item.cancelled and self._usable(plan):
             self._ready(replace(plan, audio=audio))
@@ -280,7 +286,7 @@ class SendspinPlaybackSink:
             WavItem(name=f"{plan.event.event_id}-{index}.wav", data=data)
             for index, data in enumerate(plan.audio)
         ]
-        await asyncio.to_thread(
+        queued = await asyncio.to_thread(
             self._backend.play,
             clips,
             deadline,
@@ -288,7 +294,12 @@ class SendspinPlaybackSink:
             plan.volume,
             cancelled=cancelled,
         )
-        telemetry.record(plan.event.event_id, "output_played")
+        if queued:
+            telemetry.record(plan.event.event_id, "output_played")
+        else:
+            # The backend can no-op (no connected clients, not ready, stream
+            # error) without raising; don't count that as audible playback.
+            telemetry.record(plan.event.event_id, "output_dropped", reason="sink")
 
     async def stop(self) -> None:
         """Wait for the actual stream clear before the next plan can play."""

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 import unittest
@@ -147,6 +148,27 @@ class PreparationPlannerTests(unittest.IsolatedAsyncioTestCase):
         self.current = True
         await until(lambda: self.planner._active is None)
         self.ready.assert_not_called()
+
+    async def test_preempted_inference_still_records_a_terminal_drop(self) -> None:
+        """Cancellation mid-await must not leave an event with no terminal record."""
+        entered = asyncio.Event()
+
+        async def blocked(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+            entered.set()
+            await asyncio.Event().wait()
+
+        self.speech.synthesize.side_effect = blocked
+        with self.assertLogs("sendspin_service.telemetry", level="INFO") as captured:
+            self.planner.submit(plan(1), {})
+            await entered.wait()
+            self.planner.submit(plan(2, EventKind.TONE), {})  # preempts the lap
+            await until(lambda: self.planner._active is None)
+        drops = [
+            json.loads(entry.getMessage())
+            for entry in captured.records
+            if json.loads(entry.getMessage())["stage"] == "output_dropped"
+        ]
+        self.assertTrue(any(record["reason"] == "cancelled" for record in drops))
 
     async def test_rejected_or_expired_tone_cannot_interrupt(self) -> None:
         """A missing asset or missed deadline must not silence usable speech."""
@@ -313,6 +335,17 @@ class SendspinSinkTests(unittest.IsolatedAsyncioTestCase):
         sink = SendspinPlaybackSink(backend)
         await sink.play(replace(plan(1, EventKind.TONE), target=0), threading.Event())
         backend.play.assert_not_called()
+
+    async def test_backend_no_op_is_recorded_as_dropped_not_played(self) -> None:
+        """A silent backend no-op (e.g. no clients) must not count as played."""
+        backend = Mock()
+        backend.play.return_value = False
+        sink = SendspinPlaybackSink(backend)
+        with self.assertLogs("sendspin_service.telemetry", level="INFO") as captured:
+            await sink.play(plan(1), threading.Event())
+        stages = [json.loads(entry.getMessage())["stage"] for entry in captured.records]
+        self.assertNotIn("output_played", stages)
+        self.assertIn("output_dropped", stages)
 
 
 if __name__ == "__main__":

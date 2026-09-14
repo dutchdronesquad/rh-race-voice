@@ -3,12 +3,11 @@
   "name": "Race Voice",
   "author": "Dutch Drone Squad",
   "license": "MIT",
-  "description": "Generate RotorHazard race voice callout WAV files with Piper TTS.",
+  "description": "Forward RotorHazard race events to the Race Voice service for spoken callouts.",
   "documentation_uri": "https://github.com/dutchdronesquad/rh-race-voice",
   "required_rhapi_version": "1.5",
   "version": "1.2.0",
   "dependencies": [
-    "piper-tts>=1.8.0",
     "gevent>=24.11.1"
   ]
 }

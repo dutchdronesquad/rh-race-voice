@@ -10,5 +10,4 @@
 !sendspin_service/**
 !custom_plugins/
 !custom_plugins/race_voice/
-!custom_plugins/race_voice/assets/
-!custom_plugins/race_voice/assets/*.wav
+!custom_plugins/race_voice/**

@@ -2,21 +2,30 @@
 
 ## Project Context
 
-Race Voice is a RotorHazard RHAPI plugin that generates voice callouts server-side with Piper TTS and streams the resulting WAV audio to Sendspin clients. The primary plugin package lives in `custom_plugins/race_voice/`.
+Race Voice is a RotorHazard RHAPI plugin (`custom_plugins/race_voice/`) that forwards race events and state to a standalone Sendspin voice service (`sendspin_service/`) over HTTP. The plugin is a thin event/state adapter with no synthesis of its own; the service owns Piper TTS synthesis, caching, and fan-out playback to Sendspin clients (the browser player and WindowsSpin). See `docs/architecture.md` for the full runtime flow and module map.
 
 Important modules:
 
-- `piper.py`: Piper model download/loading, ONNX Runtime session setup, synthesis, text normalization, WAV validation, and cache-key generation; reused by the standalone service's isolated synthesis worker, not run in-process by RotorHazard.
-- `sendspin.py`: synchronous adapter around `aiosendspin`, owns the background asyncio loop and active Sendspin stream.
+Plugin package (`custom_plugins/race_voice/`):
+
+- `__init__.py`: entry point; `initialize()` constructs the event adapter and nothing else.
+- `event_adapter.py`: `RaceEventAdapter` — RH event/filter registration, UI registration, and race-state snapshot building.
+- `event_output.py`: `EventPublisher` — bounded, gevent-cooperative HTTP delivery to the service's `/v2/*` routes (session, state, clock, events, commands).
 - `ui.py`: RotorHazard settings panel, quick buttons, and `/player` blueprint.
-- `const.py`: option names, defaults, voice model list, and Sendspin port.
-- `services/`: small stateful helpers shared between the plugin's event adapter and the standalone service.
-  - `services/clock_callouts.py`: race-clock callout phrase planning and reusable pre-cache phrase lists.
-  - `services/lap_callouts.py`: lap callout segment planning and reusable segment lists for pre-cache.
-  - `services/schedule.py`: scheduled-race countdown timers.
+- `const.py`: option names, defaults, and the voice model list.
+- `services/clock_callouts.py`: race-clock callout phrase planning and reusable pre-cache phrase lists; shared with the standalone service.
 - `sendspin_player/`: Vite/React/shadcn source for the browser player; production output is written to `custom_plugins/race_voice/player/`.
 
-This module list and `docs/architecture.md` still have some staleness predating the v2 event-adapter cutover; treat both as directionally correct but not exhaustive.
+Piper synthesis (`piper.py`) and lap-segment planning (`lap_callouts.py`) used to live in this plugin package too, but had no plugin caller (service-only code); they now live under `sendspin_service/synthesis/` and `sendspin_service/race/` respectively.
+
+Service package (`sendspin_service/`), split into subpackages with the entry point at the top:
+
+- `server.py`: process entry point and HTTP app.
+- `race/`: `race_ingest.py` (`RaceIngest`, session/admission and the `/v2/*` routes), `race_planner.py` (`PreparationPlanner`, `PlaybackPlanner`, `Destination`, `SendspinPlaybackSink`), `race_protocol.py` (wire-format parsing and the admission/clock state machine), `race_schedule.py` (scheduled-countdown timers), `speech.py` (`SpeechEngine`), `lap_callouts.py`, `cache_commands.py`, `telemetry.py`.
+- `synthesis/`: `piper.py` (`PiperSynthesizer`), `synthesis.py`/`synthesis_worker.py` (the bounded synthesis subprocess supervisor and its child protocol).
+- `playback/`: `sendspin.py` (`SendSpinServer`, the `aiosendspin` adapter), `audio_queue.py`, `audio_cache.py`, `player.py` (optional static browser-player routes for Docker).
+
+Cross-subpackage imports are absolute (`sendspin_service.playback.audio_queue`, not `..playback.audio_queue`) — ruff (`TID252`) forbids parent-relative imports in this repo. Same-subpackage imports stay relative.
 
 ## Runtime Behavior
 
@@ -48,10 +57,10 @@ Late-joining Sendspin clients should be synced into the active group while playb
 
 ## Cache Layout
 
-Generated files live below RotorHazard's data directory:
+Generated files live under the standalone service's own cache directory (`SENDSPIN_RACE_CACHE_DIR` / `--race-cache-dir`, defaulting to `race-voice-cache` under the service's systemd state directory or Docker volume), not RotorHazard's data directory:
 
 ```text
-race_voice_cache/
+race-voice-cache/
   models/                 downloaded Piper ONNX models
   tts/<model>/            normal cached phrases
   tts/<model>/precache/pilots/
@@ -66,11 +75,11 @@ race_voice_cache/
   tts/<model>/test/       generated test phrases
 ```
 
-Cache keys must include normalized phrase text and synthesis parameters so changing voice tuning does not reuse the wrong WAV.
+Cache keys are content hashes that must include normalized phrase text and synthesis parameters (plus the model file contents and Piper library version) so changing voice tuning, models, or the Piper dependency does not reuse the wrong WAV.
 
 ## Dependency Policy
 
-Target a hard cutover in v2.0.0. The plugin entry point always uses the event adapter and must not load Piper or ONNX inside RH. Do not add legacy modes, automatic fallbacks or compatibility adapters for v1. Complete the required local/cloud and cache workflows before releasing v2; rollback means installing the previous release. Remove obsolete implementation and packaging as the shared service code is extracted. Missing runtime dependencies should fail through the normal dependency path.
+The hard cutover to v2.0.0 has happened: the plugin entry point (`custom_plugins/race_voice/__init__.py`) always constructs the event adapter and never loads Piper or ONNX inside RH, and `custom_plugins/race_voice/manifest.json` no longer lists `piper-tts` as a plugin dependency. Only the `sendspin-service` optional dependency group in `pyproject.toml` pulls in `piper-tts`, `aiosendspin`, `av`, `numpy`, and `pillow`, for the service's isolated synthesis worker subprocess. Do not add legacy modes, automatic fallbacks, or compatibility adapters for the removed v1 HTTP surface or in-process synthesis path. Rollback means installing the previous release. Missing runtime dependencies should fail through the normal dependency path.
 
 Keep dependencies aligned between `pyproject.toml` and `custom_plugins/race_voice/manifest.json`.
 

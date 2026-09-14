@@ -244,10 +244,10 @@ Use **Sync** for most race-day setups. Switch to **Quality** if playback resets 
 
 ## Cache Layout
 
-Generated files live under the RotorHazard data directory:
+Generated files live under the Sendspin service's own cache directory (`race-voice-cache` under `/var/lib/sendspin-service` by default; see `SENDSPIN_RACE_CACHE_DIR`), not the RotorHazard data directory:
 
 ```text
-race_voice_cache/
+race-voice-cache/
   models/                 downloaded Piper ONNX models
   tts/<model>/            cached phrases
   tts/<model>/precache/pilots/

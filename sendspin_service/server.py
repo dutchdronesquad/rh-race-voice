@@ -135,7 +135,7 @@ class SendspinService:
         }
         ingest = RaceIngest(
             SynthesisWorker(self._config.race_cache_dir),
-            SendspinPlaybackSink(self._sendspin),
+            {"local": SendspinPlaybackSink(self._sendspin, destination="local")},
             assets,
         )
         add_routes(app, ingest)

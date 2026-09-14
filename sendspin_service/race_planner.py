@@ -265,9 +265,10 @@ class PlaybackSink(Protocol):
 class SendspinPlaybackSink:
     """Adapt one Sendspin backend to the planner without another semantic queue."""
 
-    def __init__(self, backend: SendSpinServer) -> None:
+    def __init__(self, backend: SendSpinServer, *, destination: str) -> None:
         """Use a backend whose lifecycle is managed by the owner."""
         self._backend = backend
+        self._destination = destination
 
     async def play(self, plan: CalloutPlan, cancelled: threading.Event) -> None:
         """Retain the backend's final expiry check after client lead is calculated."""
@@ -280,6 +281,7 @@ class SendspinPlaybackSink:
                 plan.event.event_id,
                 "output_dropped",
                 reason="cancelled" if cancelled.is_set() else "expired",
+                destination=self._destination,
             )
             return
         clips = [
@@ -295,11 +297,18 @@ class SendspinPlaybackSink:
             cancelled=cancelled,
         )
         if queued:
-            telemetry.record(plan.event.event_id, "output_played")
+            telemetry.record(
+                plan.event.event_id, "output_played", destination=self._destination
+            )
         else:
             # The backend can no-op (no connected clients, not ready, stream
             # error) without raising; don't count that as audible playback.
-            telemetry.record(plan.event.event_id, "output_dropped", reason="sink")
+            telemetry.record(
+                plan.event.event_id,
+                "output_dropped",
+                reason="sink",
+                destination=self._destination,
+            )
 
     async def stop(self) -> None:
         """Wait for the actual stream clear before the next plan can play."""
@@ -320,6 +329,7 @@ class PlaybackPlanner:
         sink: PlaybackSink,
         *,
         is_current: Callable[[RaceEvent], bool],
+        destination: str,
         max_pending: int = 32,
         max_bytes: int = 8 * 1024 * 1024,
     ) -> None:
@@ -328,6 +338,7 @@ class PlaybackPlanner:
             raise ValueError("Playback limits must be positive")
         self._sink = sink
         self._is_current = is_current
+        self._destination = destination
         self._max_pending = max_pending
         self._max_bytes = max_bytes
         self._pending: list[_Playback] = []
@@ -341,12 +352,22 @@ class PlaybackPlanner:
     def submit(self, plan: CalloutPlan) -> bool:
         """Accept prepared audio; source synthesis is never repeated per listener."""
         if not plan.audio or not self._usable(plan):
-            telemetry.record(plan.event.event_id, "output_dropped", reason="expired")
+            telemetry.record(
+                plan.event.event_id,
+                "output_dropped",
+                reason="expired",
+                destination=self._destination,
+            )
             return False
         self._pending = [p for p in self._pending if self._usable(p.plan)]
         pending = self._admit_audio(plan)
         if pending is None:
-            telemetry.record(plan.event.event_id, "output_dropped", reason="no_room")
+            telemetry.record(
+                plan.event.event_id,
+                "output_dropped",
+                reason="no_room",
+                destination=self._destination,
+            )
             return False
         self._pending = pending
         if _preempts(plan.priority, self._last_priority):
@@ -404,14 +425,19 @@ class PlaybackPlanner:
             evicted = min(replaceable, key=lambda p: (-p.plan.priority, p.plan.order))
             pending.remove(evicted)
             telemetry.record(
-                evicted.plan.event.event_id, "output_dropped", reason="evicted"
+                evicted.plan.event.event_id,
+                "output_dropped",
+                reason="evicted",
+                destination=self._destination,
             )
 
-    @staticmethod
-    def _record_superseded(superseded: list[_Playback]) -> None:
+    def _record_superseded(self, superseded: list[_Playback]) -> None:
         for item in superseded:
             telemetry.record(
-                item.plan.event.event_id, "output_dropped", reason="superseded"
+                item.plan.event.event_id,
+                "output_dropped",
+                reason="superseded",
+                destination=self._destination,
             )
 
     def invalidate(self) -> None:

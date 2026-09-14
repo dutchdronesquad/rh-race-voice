@@ -14,7 +14,7 @@ from unittest.mock import Mock, patch
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from sendspin_service.race_ingest import logger
+from sendspin_service.race_ingest import RaceIngest, logger
 from sendspin_service.race_planner import PreparationPlanner, SendspinPlaybackSink
 from sendspin_service.race_protocol import ClockMapping, ProtocolError
 from sendspin_service.server import (
@@ -639,6 +639,226 @@ class RaceIngestTests(unittest.IsolatedAsyncioTestCase):
         """Application shutdown owns the isolated worker lifecycle."""
         await self.client.close()
         self.assertTrue(self.worker.closed)
+
+
+class FakeSink:
+    """A minimal PlaybackSink test double recording calls independently of others."""
+
+    def __init__(self, *, blocked: bool = False) -> None:
+        """Default to completing playback immediately; a test can hold it open."""
+        self.played: list = []
+        self.stops = 0
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        if not blocked:
+            self.release.set()
+
+    async def play(self, plan, cancelled) -> None:  # noqa: ANN001, ARG002
+        """Record the plan, then optionally block until the test releases it."""
+        self.entered.set()
+        await self.release.wait()
+        self.played.append(plan)
+
+    async def stop(self) -> None:
+        """Count stop calls without touching another destination's state."""
+        self.stops += 1
+
+
+class RaceIngestFanOutTests(unittest.IsolatedAsyncioTestCase):
+    """Prove synthesis happens once while each named destination stays independent."""
+
+    async def asyncSetUp(self) -> None:
+        """Wire two fake destinations directly, bypassing HTTP and Sendspin."""
+        self.worker = Worker()
+        self.sink_a = FakeSink()
+        self.sink_b = FakeSink()
+        self.ingest = RaceIngest(self.worker, {"a": self.sink_a, "b": self.sink_b}, {})
+        self.addAsyncCleanup(self.ingest.close)
+        owner = self.ingest.owner()
+        opened = await self.ingest.session(
+            {**owner, "epoch": "rh-process", "nonce": "request-1"}
+        )
+        self.session_id = opened["session_id"]
+        self.snapshot = {
+            "version": "race-events/1",
+            "session_id": self.session_id,
+            "context": {
+                "competition_id": "race-day",
+                "revision": 1,
+                "generation": 0,
+                "heat_id": 1,
+            },
+            "heat_name": "Heat 1",
+            "pilots": [],
+            "voice": dict(VOICE),
+        }
+        self.assertEqual(
+            (await self.ingest.state(self.snapshot))["outcome"], "accepted"
+        )
+        self._synchronize_clock()
+
+    def _synchronize_clock(self) -> None:
+        """Complete the four-timestamp clock handshake without an HTTP round trip."""
+        probe = self.ingest.clock(
+            {"session_id": self.session_id, "sent": time.monotonic()}
+        )
+        self.ingest.clock(
+            {
+                "session_id": self.session_id,
+                "probe_id": probe["probe_id"],
+                "received": time.monotonic(),
+            }
+        )
+
+    def _event(self, sequence: int, *, kind: str = "voice", pilot: int = 1) -> dict:
+        """Build a minimal admissible event for the session under test."""
+        now = time.monotonic()
+        if kind == "lap":
+            payload = {
+                "text": "twenty seconds",
+                "pilot_id": pilot,
+                "pilot_name": "Klaas",
+                "lap": 2,
+            }
+        else:
+            payload = {"text": f"callout {sequence}"}
+        return {
+            "version": "race-events/1",
+            "session_id": self.session_id,
+            "event_id": f"{self.session_id}:{sequence}",
+            "sequence": sequence,
+            "context": dict(self.snapshot["context"]),
+            "kind": kind,
+            "occurred_at": now,
+            "expires_at": now + 10,
+            "payload": payload,
+        }
+
+    async def test_one_synthesis_serves_both_destinations(self) -> None:
+        """A single voice event synthesizes once and reaches every destination."""
+        result = self.ingest.event(self._event(1, kind="voice"))
+        self.assertEqual(result["outcome"], "accepted")
+        await until(lambda: self.sink_a.played and self.sink_b.played)
+        self.assertEqual(len(self.worker.calls), 1)
+        self.assertEqual(len(self.sink_a.played), 1)
+        self.assertEqual(len(self.sink_b.played), 1)
+        self.assertIs(self.sink_a.played[0].audio, self.sink_b.played[0].audio)
+
+    async def test_independent_bounding_isolates_queues(self) -> None:
+        """A stuck, backed-up destination cannot delay or starve another."""
+        self.sink_a.release.clear()  # sink_a never finishes a play() call
+        self.ingest._outputs["a"]._max_pending = 2  # noqa: SLF001
+
+        self.assertEqual(
+            self.ingest.event(self._event(1, kind="voice"))["outcome"], "accepted"
+        )
+        await self.sink_a.entered.wait()
+        await until(lambda: len(self.sink_b.played) == 1)
+        self.assertEqual(len(self.sink_a.played), 0)  # still blocked mid-play
+
+        with self.assertLogs("sendspin_service.telemetry", level="INFO") as captured:
+            for sequence in range(2, 6):
+                outcome = self.ingest.event(self._event(sequence, kind="voice"))
+                self.assertEqual(outcome["outcome"], "accepted")
+            await until(lambda: len(self.sink_b.played) == 5)
+
+        records = [json.loads(entry.getMessage()) for entry in captured.records]
+        a_drops = [
+            record
+            for record in records
+            if record["stage"] == "output_dropped"
+            and record.get("destination") == "a"
+            and record.get("reason") == "no_room"
+        ]
+        self.assertTrue(a_drops)
+        b_drops = [
+            record
+            for record in records
+            if record["stage"] == "output_dropped" and record.get("destination") == "b"
+        ]
+        self.assertEqual(b_drops, [])
+        self.assertEqual(len(self.sink_b.played), 5)
+
+    async def test_flush_and_close_reach_every_destination(self) -> None:
+        """A generation change and shutdown must stop every destination, not one."""
+        self.ingest.event(self._event(1, kind="voice"))
+        await until(lambda: self.sink_a.played and self.sink_b.played)
+        # Session/state setup already triggered a clear on both sinks; compare
+        # against that baseline instead of assuming it starts at zero.
+        base_a, base_b = self.sink_a.stops, self.sink_b.stops
+        self.snapshot["context"].update(revision=2, generation=1)
+        self.assertEqual(
+            (await self.ingest.state(self.snapshot))["outcome"], "accepted"
+        )
+        self.assertEqual(self.sink_a.stops, base_a + 1)
+        self.assertEqual(self.sink_b.stops, base_b + 1)
+        await self.ingest.close()
+        self.assertEqual(self.sink_a.stops, base_a + 2)
+        self.assertEqual(self.sink_b.stops, base_b + 2)
+
+    async def test_telemetry_destination_field_distinguishes_outcomes(self) -> None:
+        """Two destinations' terminal records for one event_id stay attributable."""
+        event_id = f"{self.session_id}:1"
+        with self.assertLogs("sendspin_service.telemetry", level="INFO") as captured:
+            self.ingest.event(self._event(1, kind="voice"))
+            await until(lambda: self.sink_a.played and self.sink_b.played)
+        records = [
+            json.loads(entry.getMessage())
+            for entry in captured.records
+            if json.loads(entry.getMessage())["event_id"] == event_id
+        ]
+        scheduled = [
+            record for record in records if record["stage"] == "output_scheduled"
+        ]
+        self.assertEqual({record["destination"] for record in scheduled}, {"a", "b"})
+        self.assertEqual(len(scheduled), 2)
+
+    async def test_empty_destinations_dict_does_not_crash(self) -> None:
+        """A primary with every output disabled still synthesizes without error."""
+        worker = Worker()
+        ingest = RaceIngest(worker, {}, {})
+        self.addAsyncCleanup(ingest.close)
+        owner = ingest.owner()
+        opened = await ingest.session(
+            {**owner, "epoch": "rh-process", "nonce": "request-1"}
+        )
+        session_id = opened["session_id"]
+        snapshot = {
+            "version": "race-events/1",
+            "session_id": session_id,
+            "context": {
+                "competition_id": "race-day",
+                "revision": 1,
+                "generation": 0,
+                "heat_id": 1,
+            },
+            "heat_name": "Heat 1",
+            "pilots": [],
+            "voice": dict(VOICE),
+        }
+        self.assertEqual((await ingest.state(snapshot))["outcome"], "accepted")
+        probe = ingest.clock({"session_id": session_id, "sent": time.monotonic()})
+        ingest.clock(
+            {
+                "session_id": session_id,
+                "probe_id": probe["probe_id"],
+                "received": time.monotonic(),
+            }
+        )
+        now = time.monotonic()
+        event = {
+            "version": "race-events/1",
+            "session_id": session_id,
+            "event_id": f"{session_id}:1",
+            "sequence": 1,
+            "context": dict(snapshot["context"]),
+            "kind": "voice",
+            "occurred_at": now,
+            "expires_at": now + 10,
+            "payload": {"text": "hello"},
+        }
+        self.assertEqual(ingest.event(event)["outcome"], "accepted")
+        await until(lambda: len(worker.calls) == 1)
 
 
 class RaceModeConfigTests(unittest.TestCase):

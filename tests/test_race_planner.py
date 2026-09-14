@@ -216,7 +216,9 @@ class PlaybackPlannerTests(unittest.IsolatedAsyncioTestCase):
         """Block playback until explicitly released or interrupted."""
         self.sink = _Sink()
         self.current = True
-        self.planner = PlaybackPlanner(self.sink, is_current=lambda _: self.current)
+        self.planner = PlaybackPlanner(
+            self.sink, is_current=lambda _: self.current, destination="local"
+        )
         self.addAsyncCleanup(self.planner.close)
 
     async def test_ready_signals_use_service_order_instead_of_source_sequence(
@@ -272,17 +274,19 @@ class PlaybackPlannerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_slow_cloud_queue_does_not_block_local_queue(self) -> None:
         """Each destination owns its waits and receives already-shared audio."""
-        local_sink = _Sink()
-        local_sink.release.set()
-        local = PlaybackPlanner(local_sink, is_current=lambda _: True)
-        self.addAsyncCleanup(local.close)
+        self.sink.release.set()  # self.planner ("local") proceeds immediately
+        cloud_sink = _Sink()  # left blocked, standing in for a slow cloud relay
+        cloud = PlaybackPlanner(
+            cloud_sink, is_current=lambda _: True, destination="cloud"
+        )
+        self.addAsyncCleanup(cloud.close)
         first = plan(1)
         self.planner.submit(first)
-        local.submit(first)
-        local.submit(plan(2, pilot=2))
-        await until(lambda: len(local_sink.played) == 2)
-        self.assertEqual(len(self.sink.played), 1)
-        self.assertIs(local_sink.played[0].audio, self.sink.played[0].audio)
+        cloud.submit(first)
+        self.planner.submit(plan(2, pilot=2))
+        await until(lambda: len(self.sink.played) == 2)
+        self.assertEqual(len(cloud_sink.played), 1)
+        self.assertIs(cloud_sink.played[0].audio, self.sink.played[0].audio)
 
     async def test_expiry_and_memory_limits_prevent_unbounded_backlog(self) -> None:
         """Reject unusable jobs before any interrupt or extra retained audio."""
@@ -318,7 +322,7 @@ class SendspinSinkTests(unittest.IsolatedAsyncioTestCase):
     async def test_scheduled_tone_passes_strict_latest_start_to_backend(self) -> None:
         """Client lead may not turn a missed countdown into an arbitrarily late beep."""
         backend = Mock()
-        sink = SendspinPlaybackSink(backend)
+        sink = SendspinPlaybackSink(backend, destination="local")
         target = time.monotonic() + 2
         callout = replace(plan(1, EventKind.TONE), target=target)
         cancelled = threading.Event()
@@ -332,7 +336,7 @@ class SendspinSinkTests(unittest.IsolatedAsyncioTestCase):
     async def test_expired_tone_does_not_call_playback_backend(self) -> None:
         """Do not interrupt/start transport for audio whose latest start was missed."""
         backend = Mock()
-        sink = SendspinPlaybackSink(backend)
+        sink = SendspinPlaybackSink(backend, destination="local")
         await sink.play(replace(plan(1, EventKind.TONE), target=0), threading.Event())
         backend.play.assert_not_called()
 
@@ -340,7 +344,7 @@ class SendspinSinkTests(unittest.IsolatedAsyncioTestCase):
         """A silent backend no-op (e.g. no clients) must not count as played."""
         backend = Mock()
         backend.play.return_value = False
-        sink = SendspinPlaybackSink(backend)
+        sink = SendspinPlaybackSink(backend, destination="local")
         with self.assertLogs("sendspin_service.telemetry", level="INFO") as captured:
             await sink.play(plan(1), threading.Event())
         stages = [json.loads(entry.getMessage())["stage"] for entry in captured.records]

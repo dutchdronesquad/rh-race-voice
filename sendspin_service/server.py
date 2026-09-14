@@ -122,7 +122,7 @@ class SendspinService:
     def add_race_routes(self, app: web.Application) -> None:
         """Load and register the race-event ingest routes and their dependencies."""
         from .race_ingest import RaceIngest, add_routes  # noqa: PLC0415
-        from .race_planner import SendspinPlaybackSink  # noqa: PLC0415
+        from .race_planner import Destination, SendspinPlaybackSink  # noqa: PLC0415
         from .synthesis import SynthesisWorker  # noqa: PLC0415
 
         assets = {
@@ -135,7 +135,11 @@ class SendspinService:
         }
         ingest = RaceIngest(
             SynthesisWorker(self._config.race_cache_dir),
-            {"local": SendspinPlaybackSink(self._sendspin, destination="local")},
+            {
+                "local": Destination(
+                    SendspinPlaybackSink(self._sendspin, destination="local")
+                )
+            },
             assets,
         )
         add_routes(app, ingest)

@@ -16,7 +16,7 @@ from custom_plugins.race_voice.const import VOICE_MODELS
 
 from . import telemetry
 from .cache_commands import CacheCommands
-from .race_planner import CalloutPlan, PlaybackPlanner, PreparationPlanner
+from .race_planner import CalloutPlan, Destination, PlaybackPlanner, PreparationPlanner
 from .race_protocol import (
     VERSION,
     Admission,
@@ -31,7 +31,6 @@ from .race_schedule import RaceSchedule
 from .speech import SpeechEngine
 
 if TYPE_CHECKING:
-    from .race_planner import PlaybackSink
     from .synthesis import SynthesisWorker
 
 logger = logging.getLogger(__name__)
@@ -110,7 +109,7 @@ class RaceIngest:
     def __init__(
         self,
         worker: SynthesisWorker,
-        destinations: dict[str, PlaybackSink],
+        destinations: dict[str, Destination],
         assets: dict[str, bytes],
     ) -> None:
         """Wire the existing worker and planners into every named output."""
@@ -127,9 +126,12 @@ class RaceIngest:
         self._changing = False
         self._blocked = True
         self._schedule = RaceSchedule(self._scheduled_callout)
+        self._destinations = destinations
         self._outputs: dict[str, PlaybackPlanner] = {
-            name: PlaybackPlanner(sink, is_current=self._current, destination=name)
-            for name, sink in destinations.items()
+            name: PlaybackPlanner(
+                destination.sink, is_current=self._current, destination=name
+            )
+            for name, destination in destinations.items()
         }
         speech = SpeechEngine(worker)
         self._cache = CacheCommands(speech, self._clear)
@@ -145,6 +147,8 @@ class RaceIngest:
 
     def _ready(self, plan: CalloutPlan) -> None:
         for name, output in self._outputs.items():
+            if not self._destinations[name].accepts(plan):
+                continue
             if output.submit(plan):
                 telemetry.record(
                     plan.event.event_id, "output_scheduled", destination=name

@@ -15,7 +15,11 @@ from unittest.mock import Mock, patch
 from aiohttp.test_utils import TestClient, TestServer
 
 from sendspin_service.race_ingest import RaceIngest, logger
-from sendspin_service.race_planner import PreparationPlanner, SendspinPlaybackSink
+from sendspin_service.race_planner import (
+    Destination,
+    PreparationPlanner,
+    SendspinPlaybackSink,
+)
 from sendspin_service.race_protocol import ClockMapping, ProtocolError
 from sendspin_service.server import (
     DEFAULT_RACE_CACHE_DIR,
@@ -672,7 +676,11 @@ class RaceIngestFanOutTests(unittest.IsolatedAsyncioTestCase):
         self.worker = Worker()
         self.sink_a = FakeSink()
         self.sink_b = FakeSink()
-        self.ingest = RaceIngest(self.worker, {"a": self.sink_a, "b": self.sink_b}, {})
+        self.ingest = RaceIngest(
+            self.worker,
+            {"a": Destination(self.sink_a), "b": Destination(self.sink_b)},
+            {},
+        )
         self.addAsyncCleanup(self.ingest.close)
         owner = self.ingest.owner()
         opened = await self.ingest.session(
@@ -813,10 +821,10 @@ class RaceIngestFanOutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({record["destination"] for record in scheduled}, {"a", "b"})
         self.assertEqual(len(scheduled), 2)
 
-    async def test_empty_destinations_dict_does_not_crash(self) -> None:
-        """A primary with every output disabled still synthesizes without error."""
+    async def _new_ingest(self, destinations: dict[str, Destination]) -> tuple:
+        """Build, admit and clock-sync a standalone ingest for a one-off test."""
         worker = Worker()
-        ingest = RaceIngest(worker, {}, {})
+        ingest = RaceIngest(worker, destinations, {})
         self.addAsyncCleanup(ingest.close)
         owner = ingest.owner()
         opened = await ingest.session(
@@ -845,6 +853,11 @@ class RaceIngestFanOutTests(unittest.IsolatedAsyncioTestCase):
                 "received": time.monotonic(),
             }
         )
+        return ingest, worker, session_id, snapshot
+
+    async def test_empty_destinations_dict_does_not_crash(self) -> None:
+        """A primary with every output disabled still synthesizes without error."""
+        ingest, worker, session_id, snapshot = await self._new_ingest({})
         now = time.monotonic()
         event = {
             "version": "race-events/1",
@@ -859,6 +872,44 @@ class RaceIngestFanOutTests(unittest.IsolatedAsyncioTestCase):
         }
         self.assertEqual(ingest.event(event)["outcome"], "accepted")
         await until(lambda: len(worker.calls) == 1)
+
+    async def test_destination_filter_excludes_non_matching_callouts(self) -> None:
+        """A destination's accepts() predicate, not just bounding, decides delivery."""
+        sink_all = FakeSink()
+        sink_pilot_one = FakeSink()
+        ingest, _worker, session_id, snapshot = await self._new_ingest(
+            {
+                "all": Destination(sink_all),
+                "personal": Destination(
+                    sink_pilot_one, accepts=lambda plan: plan.event.pilot_id == 1
+                ),
+            }
+        )
+
+        def lap_event(sequence: int, pilot_id: int) -> dict:
+            now = time.monotonic()
+            return {
+                "version": "race-events/1",
+                "session_id": session_id,
+                "event_id": f"{session_id}:{sequence}",
+                "sequence": sequence,
+                "context": dict(snapshot["context"]),
+                "kind": "lap",
+                "occurred_at": now,
+                "expires_at": now + 10,
+                "payload": {
+                    "text": "twenty seconds",
+                    "pilot_id": pilot_id,
+                    "pilot_name": "Klaas",
+                    "lap": 2,
+                },
+            }
+
+        self.assertEqual(ingest.event(lap_event(1, pilot_id=1))["outcome"], "accepted")
+        self.assertEqual(ingest.event(lap_event(2, pilot_id=2))["outcome"], "accepted")
+        await until(lambda: len(sink_all.played) == 2)
+        self.assertEqual(len(sink_pilot_one.played), 1)
+        self.assertEqual(sink_pilot_one.played[0].event.pilot_id, 1)
 
 
 class RaceModeConfigTests(unittest.TestCase):

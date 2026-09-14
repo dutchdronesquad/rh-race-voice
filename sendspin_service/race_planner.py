@@ -262,6 +262,23 @@ class PlaybackSink(Protocol):
         ...
 
 
+def accept_all(_plan: CalloutPlan) -> bool:
+    """Default filter: a destination with no restriction receives every callout."""
+    return True
+
+
+@dataclass(frozen=True)
+class Destination:
+    """One named playback output and an optional filter over what it receives.
+
+    Unmatched callouts are never submitted to this destination at all --
+    they are not a bounded-queue drop, so they get no output_dropped record.
+    """
+
+    sink: PlaybackSink
+    accepts: Callable[[CalloutPlan], bool] = accept_all
+
+
 class SendspinPlaybackSink:
     """Adapt one Sendspin backend to the planner without another semantic queue."""
 

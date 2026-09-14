@@ -11,16 +11,21 @@ Plugin package (`custom_plugins/race_voice/`):
 - `__init__.py`: entry point; `initialize()` constructs the event adapter and nothing else.
 - `event_adapter.py`: `RaceEventAdapter` — RH event/filter registration, UI registration, and race-state snapshot building.
 - `event_output.py`: `EventPublisher` — bounded, gevent-cooperative HTTP delivery to the service's `/v2/*` routes (session, state, clock, events, commands).
-- `piper.py`: Piper model download/loading, ONNX Runtime session setup, synthesis, text normalization, WAV validation, and cache-key generation; imported directly by the standalone service's isolated synthesis worker subprocess as the base class for `WorkerSynthesizer`, never run in-process by RotorHazard.
 - `ui.py`: RotorHazard settings panel, quick buttons, and `/player` blueprint.
 - `const.py`: option names, defaults, and the voice model list.
-- `services/`: small stateful helpers shared between the plugin's event adapter and the standalone service.
-  - `services/clock_callouts.py`: race-clock callout phrase planning and reusable pre-cache phrase lists.
-  - `services/lap_callouts.py`: lap callout segment planning and reusable segment lists for pre-cache.
-  - `services/schedule.py`: shared scheduled-race countdown constants; the service's own `sendspin_service/race_schedule.py` owns the actual timers.
+- `services/clock_callouts.py`: race-clock callout phrase planning and reusable pre-cache phrase lists; shared with the standalone service.
 - `sendspin_player/`: Vite/React/shadcn source for the browser player; production output is written to `custom_plugins/race_voice/player/`.
 
-Service package (`sendspin_service/`): `server.py` (process entry point and HTTP app), `race_ingest.py` (`RaceIngest`, session/admission and the `/v2/*` routes), `race_planner.py` (`PreparationPlanner`, `PlaybackPlanner`, `Destination`, `SendspinPlaybackSink`), `race_protocol.py` (wire-format parsing and the admission/clock state machine), `race_schedule.py` (scheduled-countdown timers), `speech.py` (`SpeechEngine`), `synthesis.py`/`synthesis_worker.py` (the bounded synthesis subprocess supervisor and its child protocol), `cache_commands.py`, `telemetry.py`, `sendspin.py` (`SendSpinServer`, the `aiosendspin` adapter), `audio_queue.py`, `audio_cache.py`, and `player.py` (optional static browser-player routes for Docker).
+Piper synthesis (`piper.py`) and lap-segment planning (`lap_callouts.py`) used to live in this plugin package too, but had no plugin caller (service-only code); they now live under `sendspin_service/synthesis/` and `sendspin_service/race/` respectively.
+
+Service package (`sendspin_service/`), split into subpackages with the entry point at the top:
+
+- `server.py`: process entry point and HTTP app.
+- `race/`: `race_ingest.py` (`RaceIngest`, session/admission and the `/v2/*` routes), `race_planner.py` (`PreparationPlanner`, `PlaybackPlanner`, `Destination`, `SendspinPlaybackSink`), `race_protocol.py` (wire-format parsing and the admission/clock state machine), `race_schedule.py` (scheduled-countdown timers), `speech.py` (`SpeechEngine`), `lap_callouts.py`, `cache_commands.py`, `telemetry.py`.
+- `synthesis/`: `piper.py` (`PiperSynthesizer`), `synthesis.py`/`synthesis_worker.py` (the bounded synthesis subprocess supervisor and its child protocol).
+- `playback/`: `sendspin.py` (`SendSpinServer`, the `aiosendspin` adapter), `audio_queue.py`, `audio_cache.py`, `player.py` (optional static browser-player routes for Docker).
+
+Cross-subpackage imports are absolute (`sendspin_service.playback.audio_queue`, not `..playback.audio_queue`) — ruff (`TID252`) forbids parent-relative imports in this repo. Same-subpackage imports stay relative.
 
 ## Runtime Behavior
 

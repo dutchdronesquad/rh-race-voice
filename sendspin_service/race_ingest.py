@@ -1,7 +1,8 @@
-"""Opt-in HTTP receiver for one race source and one local Sendspin output."""
+"""Opt-in HTTP receiver for one race source and its independent playback outputs."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -107,9 +108,12 @@ class RaceIngest:
     """Own admission and cancellation on the HTTP loop; never wait for inference."""
 
     def __init__(
-        self, worker: SynthesisWorker, sink: PlaybackSink, assets: dict[str, bytes]
+        self,
+        worker: SynthesisWorker,
+        destinations: dict[str, PlaybackSink],
+        assets: dict[str, bytes],
     ) -> None:
-        """Wire the existing worker and planners into one local output."""
+        """Wire the existing worker and planners into every named output."""
         self._worker = worker
         self._boot_id = uuid.uuid4().hex
         self._owner_revision = 0
@@ -123,7 +127,10 @@ class RaceIngest:
         self._changing = False
         self._blocked = True
         self._schedule = RaceSchedule(self._scheduled_callout)
-        self._output = PlaybackPlanner(sink, is_current=self._current)
+        self._outputs: dict[str, PlaybackPlanner] = {
+            name: PlaybackPlanner(sink, is_current=self._current, destination=name)
+            for name, sink in destinations.items()
+        }
         speech = SpeechEngine(worker)
         self._cache = CacheCommands(speech, self._clear)
         self._preparation = PreparationPlanner(
@@ -137,11 +144,18 @@ class RaceIngest:
         return not self._blocked and self._gate.is_current(event)
 
     def _ready(self, plan: CalloutPlan) -> None:
-        if self._output.submit(plan):
-            telemetry.record(plan.event.event_id, "output_scheduled")
-        else:
-            # PlaybackPlanner.submit() already recorded the real drop reason.
-            logger.info("Race Voice dropped prepared audio: %s", plan.event.event_id)
+        for name, output in self._outputs.items():
+            if output.submit(plan):
+                telemetry.record(
+                    plan.event.event_id, "output_scheduled", destination=name
+                )
+            else:
+                # PlaybackPlanner.submit() already recorded the real drop reason.
+                logger.info(
+                    "Race Voice dropped prepared audio for %s: %s",
+                    name,
+                    plan.event.event_id,
+                )
 
     def owner(self) -> dict:
         """Expose ownership and retry recovery under the configured API token policy."""
@@ -253,7 +267,7 @@ class RaceIngest:
         self._schedule.cancel()
         self._preparation.invalidate()
         try:
-            await self._output.flush()
+            await asyncio.gather(*(output.flush() for output in self._outputs.values()))
             self._blocked = False
         finally:
             self._changing = False
@@ -403,7 +417,7 @@ class RaceIngest:
         try:
             await self._cache.close()
             await self._preparation.close()
-            await self._output.close()
+            await asyncio.gather(*(output.close() for output in self._outputs.values()))
         finally:
             await self._worker.close()
 

@@ -111,7 +111,7 @@ For both local and cloud playback, the service keeps recently uploaded WAVs in a
 
 Older services continue to receive ordinary uploads and do not gain this optimization until updated. Local output continues independently with no added waiting. Cloud playback still includes network and player buffering delays; this does not promise exact synchronization between servers.
 
-For a public deployment, set `SENDSPIN_API_TOKEN`; producers must send `Authorization: Bearer <token>` for the `/v2/*` race-event routes. Keep the token unset only for local testing on a trusted machine.
+`SENDSPIN_API_TOKEN` is required for any Docker deployment, local or public: the service always binds `0.0.0.0` internally so Docker's port publishing can reach it, and it refuses to start without a token once bound to a non-loopback address. Producers must send it as `Authorization: Bearer <token>` for the `/v2/*` race-event routes. The `.env.example` quick start already generates one; there is no supported way to run the container without it.
 
 The container includes its own player; install the RotorHazard plugin separately. Local and cloud servers on separate machines can use the same ports. If testing Docker on the Pi, avoid [port conflicts](#port-conflicts) with the `.deb` service.
 

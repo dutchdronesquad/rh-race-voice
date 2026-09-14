@@ -25,6 +25,7 @@ from .race_protocol import (
     ProtocolError,
     RaceEvent,
 )
+from .race_schedule import RaceSchedule
 from .speech import SpeechEngine
 
 if TYPE_CHECKING:
@@ -43,10 +44,15 @@ def _text(value: object, limit: int, *, empty: bool = False) -> bool:
     )
 
 
-def _snapshot(data: dict) -> tuple[Context, str]:
+def _snapshot(data: dict) -> tuple[Context, str]:  # noqa: C901
     """Validate captured settings/roster before changing any live state."""
     if data.get("version") != VERSION:
         raise ProtocolError("Unsupported snapshot version")
+    target = data.get("scheduled_start")
+    if target is not None and (
+        type(target) not in (int, float) or not math.isfinite(target) or target < 0
+    ):
+        raise ProtocolError("Scheduled start must be a finite monotonic timestamp")
     context = Context.parse(data.get("context"))
     if not _text(data.get("heat_name"), 256, empty=True):
         raise ProtocolError("Invalid heat name")
@@ -106,6 +112,7 @@ class RaceIngest:
         self._worker = worker
         self._boot_id = uuid.uuid4().hex
         self._owner_revision = 0
+        self._order = 0
         self._epoch = self._nonce = ""
         self._gate = ContextGate(uuid.uuid4().hex)
         self._state: dict | None = None
@@ -114,6 +121,7 @@ class RaceIngest:
         self._probe: dict | None = None
         self._changing = False
         self._blocked = True
+        self._schedule = RaceSchedule(self._scheduled_callout)
         self._output = PlaybackPlanner(sink, is_current=self._current)
         speech = SpeechEngine(worker)
         self._cache = CacheCommands(speech, self._clear)
@@ -199,10 +207,15 @@ class RaceIngest:
         if (
             old is not None
             and self._state is not None
-            and data["voice"] != self._state["voice"]
+            and (
+                data["voice"] != self._state["voice"]
+                or data.get("scheduled_start") != self._state.get("scheduled_start")
+            )
             and context.generation <= old.generation
         ):
-            raise web.HTTPConflict(reason="Voice change requires a new generation")
+            raise web.HTTPConflict(
+                reason="Voice or schedule change requires a new generation"
+            )
         outcome = self._gate.snapshot(data["session_id"], context)
         if outcome not in (Admission.ACCEPTED, Admission.DUPLICATE):
             raise web.HTTPConflict(reason=outcome.value)
@@ -217,6 +230,7 @@ class RaceIngest:
             self._cache.clear_temporary(old_state["voice"])
         if old is None or old.generation != context.generation or self._blocked:
             await self._clear()
+        self._arm_schedule()
         return {"outcome": outcome.value}
 
     def command(self, data: dict) -> dict:
@@ -232,6 +246,7 @@ class RaceIngest:
 
     async def _clear(self) -> None:
         self._changing = self._blocked = True
+        self._schedule.cancel()
         self._preparation.invalidate()
         try:
             await self._output.flush()
@@ -268,7 +283,59 @@ class RaceIngest:
             probe["sent_remote"],
             data.get("received"),
         )
+        self._arm_schedule()
         return {"offset": self._clock.offset, "uncertainty": self._clock.uncertainty}
+
+    def _arm_schedule(self) -> None:
+        if self._state is None or self._clock is None or self._blocked:
+            return
+        start = self._state.get("scheduled_start")
+        voice = self._state["voice"]
+        if (
+            start is None
+            or not voice["enabled"]
+            or not voice["callout_flags"].get("countdown", True)
+        ):
+            self._schedule.cancel()
+            return
+        try:
+            self._clock.bounds(start, time.monotonic())
+        except ProtocolError:
+            return
+        self._schedule.update(
+            (self._gate.session_id, self._gate.context.generation, start),
+            start,
+            self._clock.offset,
+        )
+
+    def _scheduled_callout(self, seconds: int, target: float) -> None:
+        if self._blocked or self._cache.clearing or self._clock is None:
+            return
+        now = time.monotonic()
+        try:
+            deadline = self._clock.expiry(target + 8, now)
+        except ProtocolError:
+            return
+        context = self._gate.context
+        session = self._gate.session_id
+        voice = self._state["voice"]
+        event = RaceEvent(
+            session_id=session,
+            event_id=f"{session}:schedule:{context.generation}:{seconds}",
+            sequence=0,
+            context=context,
+            kind=EventKind.COUNTDOWN,
+            occurred_at=target,
+            expires_at=target + 8,
+            play_at=None,
+            pilot_id=None,
+            text=SpeechEngine.schedule_phrase(seconds, voice["model"]),
+            lap=None,
+            pilot_name=None,
+            asset=None,
+            winner=False,
+        )
+        self._submit(event, deadline, None, voice)
 
     def event(self, data: dict) -> dict:
         """Admit bounded work immediately; final expiry is checked again at playback."""
@@ -301,15 +368,24 @@ class RaceIngest:
             return {"outcome": "disabled"}
         if self._cache.clearing and event.kind != EventKind.TONE:
             raise web.HTTPTooManyRequests(reason="TTS cache is being cleared")
-        if not self._preparation.submit(CalloutPlan(event, deadline, target), voice):
+        if not self._submit(event, deadline, target, voice):
             raise web.HTTPTooManyRequests(
                 reason="Audio preparation is full", headers={"Retry-After": "1"}
             )
         return {"outcome": "accepted"}
 
+    def _submit(
+        self, event: RaceEvent, deadline: float, target: float | None, voice: dict
+    ) -> bool:
+        self._order += 1
+        return self._preparation.submit(
+            CalloutPlan(event, deadline, target, order=self._order), voice
+        )
+
     async def close(self) -> None:
         """Cancel preparation and playback before reaping the synthesis child."""
         self._blocked = True
+        self._schedule.cancel()
         try:
             await self._cache.close()
             await self._preparation.close()

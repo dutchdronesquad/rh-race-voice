@@ -17,7 +17,6 @@ from gevent import monkey
 from . import const
 from .event_output import EventPublisher
 from .services.clock_callouts import ClockCallouts
-from .services.schedule import ScheduleCalloutManager
 from .ui import register_ui
 
 _LOCALES = json.loads((Path(__file__).parent / "locales.json").read_text())
@@ -53,12 +52,7 @@ class RaceEventAdapter:
         self._competition = ""
         self._revision = self._generation = 0
         self._clock = ClockCallouts(locale_for_model=_locale)
-        self._schedule = ScheduleCalloutManager(
-            enqueue_callout=self._scheduled_phrase,
-            phrase_for=lambda seconds, state: _locale(state["voice"]["model"])[
-                "race_schedule"
-            ].get(str(seconds), f"Race begins in {seconds} seconds"),
-        )
+        self._scheduled_start: float | None = None
         register_ui(
             rhapi,
             self.generate_test_phrase,
@@ -162,7 +156,13 @@ class RaceEventAdapter:
             raise ValueError("Too many pilots in the current heat")
         return list(pilots.values())
 
-    def _refresh(self, _args: dict | None = None, *, invalidate: bool = False) -> None:
+    def _refresh(
+        self,
+        _args: dict | None = None,
+        *,
+        invalidate: bool = False,
+        scheduled_start: float | None = None,
+    ) -> None:
         if not self._competition:
             self._competition = (
                 self._option(_COMPETITION_OPTION, "") or uuid.uuid4().hex
@@ -184,7 +184,7 @@ class RaceEventAdapter:
         )
         if invalidate or sound_changed:
             self._generation += 1
-            self._schedule.cancel()
+            self._scheduled_start = scheduled_start
         self._revision += 1
         state["context"] = {
             "competition_id": self._competition,
@@ -192,6 +192,7 @@ class RaceEventAdapter:
             "generation": self._generation,
             "heat_id": heat_id,
         }
+        state["scheduled_start"] = self._scheduled_start
         self._snapshot = state
         url = str(
             self._option(
@@ -295,19 +296,12 @@ class RaceEventAdapter:
             self._emit("countdown", {"text": text}, ttl=8, target=target)
 
     def _race_schedule(self, args: dict) -> None:
-        if (
-            self._snapshot is not None
-            and self._snapshot["voice"]["enabled"]
-            and args.get("scheduled_at") is not None
-        ):
-            self._schedule.schedule(args["scheduled_at"], self._snapshot)
-
-    def _scheduled_phrase(self, text: str, state: dict) -> None:
-        if (
-            self._snapshot is not None
-            and state["context"]["generation"] == self._generation
-        ):
-            self._emit("countdown", {"text": text}, ttl=8)
+        target = args.get("scheduled_at")
+        if type(target) not in (int, float) or not math.isfinite(target) or target < 0:
+            return
+        if target == self._scheduled_start:
+            return
+        self._refresh(invalidate=True, scheduled_start=target)
 
     def stop_audio(self, _args: dict | None = None) -> None:
         """Cancel local pending work and publish a new stop generation."""
@@ -378,6 +372,5 @@ class RaceEventAdapter:
         )
 
     def close(self, _args: dict | None = None) -> None:
-        """Discard timers and transport work on RH shutdown."""
-        self._schedule.cancel()
+        """Discard transport work on RH shutdown."""
         self._publisher.close()

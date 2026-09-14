@@ -15,7 +15,8 @@ from unittest.mock import Mock, patch
 from aiohttp.test_utils import TestClient, TestServer
 
 from sendspin_service.race_ingest import logger
-from sendspin_service.race_planner import SendspinPlaybackSink
+from sendspin_service.race_planner import PreparationPlanner, SendspinPlaybackSink
+from sendspin_service.race_protocol import ClockMapping, ProtocolError
 from sendspin_service.server import SendspinService, ServiceConfig, _create_app
 
 ASSET = (
@@ -548,6 +549,89 @@ class RaceIngestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             (await self.client.post("/v2/commands", json=changed)).status, 409
         )
+
+    async def test_scheduled_countdown_uses_service_speech_and_prepared_cache(
+        self,
+    ) -> None:
+        """An RH snapshot schedules localized speech without a later audio event."""
+        self.snapshot["context"].update(revision=2, generation=1)
+        self.snapshot["scheduled_start"] = time.monotonic() + 5.4
+        self.assertEqual(
+            (await self.client.put("/v2/state", json=self.snapshot)).status, 200
+        )
+        await until(lambda: self.backend.play.called)
+        self.assertEqual(len(self.worker.calls), 1)
+        self.assertEqual(self.worker.calls[0]["subdir"], "precache/clock")
+        self.assertEqual(self.worker.calls[0]["text"], "Next race begins in 5 seconds")
+        self.assertEqual(
+            (await self.client.put("/v2/state", json=self.snapshot)).status, 200
+        )
+        await self.synchronize()
+        self.assertEqual(len(self.worker.calls), 1)
+
+    async def test_internal_and_external_signals_share_admission_order(self) -> None:
+        """Service order spans timer callbacks without consuming publisher sequences."""
+        self.snapshot["context"].update(revision=2, generation=1)
+        self.snapshot["scheduled_start"] = time.monotonic() + 5.6
+        with patch.object(PreparationPlanner, "submit", return_value=True) as submit:
+            await self.client.put("/v2/state", json=self.snapshot)
+            self.assertEqual(
+                (
+                    await self.client.post("/v2/events", json=self.event(kind="tone"))
+                ).status,
+                202,
+            )
+            await until(lambda: submit.call_count == 2)
+            self.assertEqual(
+                (
+                    await self.client.post(
+                        "/v2/events", json=self.event(2, kind="tone")
+                    )
+                ).status,
+                202,
+            )
+        plans = [call.args[0] for call in submit.call_args_list]
+        self.assertEqual([p.order for p in plans], [1, 2, 3])
+        self.assertEqual([p.event.sequence for p in plans], [1, 0, 2])
+
+    async def test_schedule_drops_callout_when_clock_mapping_is_stale(self) -> None:
+        """A timer cannot grant fresh lifetime after the RH clock exchange expires."""
+        self.snapshot["context"].update(revision=2, generation=1)
+        self.snapshot["scheduled_start"] = time.monotonic() + 5.4
+        await self.client.put("/v2/state", json=self.snapshot)
+        attempted = asyncio.Event()
+
+        def stale(*_args) -> float:  # noqa: ANN002
+            attempted.set()
+            raise ProtocolError("Clock mapping needs refreshing")
+
+        with patch.object(ClockMapping, "expiry", stale):
+            await asyncio.wait_for(attempted.wait(), 2)
+        self.assertEqual(self.worker.calls, [])
+        self.backend.play.assert_not_called()
+
+    async def test_schedule_validation_and_stop_fence_pending_countdown(self) -> None:
+        """Reject malformed targets and clear pending timers on stop."""
+        for value in (True, -1, "later", float("inf")):
+            self.snapshot["scheduled_start"] = value
+            self.assertEqual(
+                (await self.client.put("/v2/state", json=self.snapshot)).status, 400
+            )
+        self.snapshot["scheduled_start"] = time.monotonic() + 60
+        self.snapshot["context"]["revision"] = 2
+        self.assertEqual(
+            (await self.client.put("/v2/state", json=self.snapshot)).status, 409
+        )
+        self.snapshot["context"]["generation"] = 1
+        self.assertEqual(
+            (await self.client.put("/v2/state", json=self.snapshot)).status, 200
+        )
+        self.snapshot["context"].update(revision=3, generation=2)
+        self.snapshot["scheduled_start"] = None
+        self.assertEqual(
+            (await self.client.put("/v2/state", json=self.snapshot)).status, 200
+        )
+        self.assertEqual(self.worker.calls, [])
 
     async def test_cleanup_reaps_worker(self) -> None:
         """Application shutdown owns the isolated worker lifecycle."""

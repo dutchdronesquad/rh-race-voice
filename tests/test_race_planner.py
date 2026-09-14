@@ -24,12 +24,13 @@ from tests.test_race_protocol import event_payload
 def plan(sequence: int, kind: EventKind = EventKind.LAP, pilot: int = 1) -> CalloutPlan:
     """Use monotonic host deadlines, separate from source clock values."""
     event = replace(
-        RaceEvent.parse(event_payload(sequence)),
+        RaceEvent.parse(event_payload(max(1, sequence))),
+        sequence=sequence,
         kind=kind,
         pilot_id=pilot,
         asset="stage" if kind == EventKind.TONE else None,
     )
-    return CalloutPlan(event, time.monotonic() + 5, audio=(b"wav",))
+    return CalloutPlan(event, time.monotonic() + 5, audio=(b"wav",), order=sequence)
 
 
 async def until(predicate) -> None:  # noqa: ANN001
@@ -66,6 +67,28 @@ class PreparationPlannerTests(unittest.IsolatedAsyncioTestCase):
             [c.args[0].event.sequence for c in self.ready.call_args_list],
             [96, 97, 98, 99],
         )
+
+    async def test_internal_countdown_keeps_service_order_through_preparation(
+        self,
+    ) -> None:
+        """Sequence zero must not move internal speech ahead of an earlier signal."""
+        self.planner.submit(replace(plan(20, EventKind.COUNTDOWN), order=1), {})
+        self.planner.submit(
+            replace(
+                plan(0, EventKind.COUNTDOWN),
+                order=2,
+            ),
+            {},
+        )
+        await until(lambda: self.ready.call_count == 2)
+        self.assertEqual(
+            [call.args[0].event.sequence for call in self.ready.call_args_list], [20, 0]
+        )
+        self.assertEqual(
+            [call.args[0].order for call in self.ready.call_args_list], [1, 2]
+        )
+        self.planner.submit(replace(plan(21, EventKind.TONE), order=3), {})
+        self.assertEqual(self.ready.call_args.args[0].order, 3)
 
     async def test_beep_bypasses_active_speech_and_drops_obsolete_laps(self) -> None:
         """Ignoring task cancellation cannot revive interrupted audio."""
@@ -173,6 +196,24 @@ class PlaybackPlannerTests(unittest.IsolatedAsyncioTestCase):
         self.current = True
         self.planner = PlaybackPlanner(self.sink, is_current=lambda _: self.current)
         self.addAsyncCleanup(self.planner.close)
+
+    async def test_ready_signals_use_service_order_instead_of_source_sequence(
+        self,
+    ) -> None:
+        """Ready stage tones remain ahead of later internal countdowns."""
+        self.sink.release.set()
+        self.planner.submit(replace(plan(20, EventKind.TONE), order=1))
+        self.planner.submit(
+            replace(
+                plan(0, EventKind.COUNTDOWN),
+                order=2,
+            )
+        )
+        self.planner.submit(replace(plan(21, EventKind.TONE), order=3))
+        await until(lambda: len(self.sink.played) == 3)
+        self.assertEqual(
+            [item.event.sequence for item in self.sink.played], [20, 0, 21]
+        )
 
     async def test_countdown_cancels_lap_and_waits_for_stop(self) -> None:
         """Do not send the fresh signal until old buffered audio has been cleared."""

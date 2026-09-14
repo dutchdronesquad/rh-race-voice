@@ -53,6 +53,11 @@ class SpeechEngine:
         subdir = "precache/clock" if event.kind == EventKind.COUNTDOWN else ""
         return (CalloutSegment(event.text or "", subdir),)
 
+    @staticmethod
+    def schedule_phrase(seconds: int, model: str) -> str:
+        """Use the same localized phrases as manual countdown preparation."""
+        return _locale(model)["race_schedule"][str(seconds)]
+
     async def synthesize(
         self,
         event: RaceEvent,

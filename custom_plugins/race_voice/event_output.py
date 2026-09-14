@@ -299,9 +299,8 @@ class EventPublisher:
         return _checked(status, result)
 
     def _connect(self, url: str) -> str:
-        health = self._request(url, "GET", "/health")
-        if health.get("race_event_preview") is not True:
-            raise ValueError("Enable race-event preview on the connected service")
+        """Probe reachability before session negotiation; any healthy service is v2."""
+        self._request(url, "GET", "/health")
         owner = self._request(url, "GET", "/v2/session")
         if owner.get("epoch") != self._epoch:
             owner = self._request(

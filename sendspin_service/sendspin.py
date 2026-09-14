@@ -98,7 +98,7 @@ class SendSpinServer:
 
     RotorHazard plugin callbacks are synchronous, while aiosendspin is asyncio
     native. This class owns a background event loop and exposes blocking
-    ``play()`` / ``stop()`` methods for the existing ``AudioQueue`` worker.
+    ``play()`` / ``stop()`` methods used by the race-event playback planner.
     Normal ``play()`` calls append to the active stream instead of stopping it,
     so queued lap callouts can be scheduled back-to-back without audible resets.
     """

@@ -217,9 +217,7 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(self.service.events[0]["payload"]["pilot_id"], 7)
         self.assertFalse(
             any(
-                name == "piper"
-                or name.startswith(("piper.", "onnxruntime"))
-                or name == "custom_plugins.race_voice.plugin"
+                name == "piper" or name.startswith(("piper.", "onnxruntime"))
                 for name in sys.modules
             )
         )

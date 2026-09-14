@@ -19,8 +19,6 @@ from .const import (
     NOISE_SCALE_OPTION,
     NOISE_W_SCALE_OPTION,
     PANEL_ID,
-    SENDSPIN_CLOUD_TOKEN_OPTION,
-    SENDSPIN_CLOUD_URL_OPTION,
     SENDSPIN_SERVICE_URL_OPTION,
     SPEECH_SPEED_OPTION,
     TEST_PHRASE_OPTION,
@@ -38,8 +36,6 @@ def register_ui(  # noqa: PLR0913
     stop_audio_callback: Any,
     clear_cache_callback: Any,
     rebuild_precache_callback: Any,
-    *,
-    event_mode: bool = False,
 ) -> None:
     """Register the Race Voice settings panel, options, and quick buttons."""
     _register_player_blueprint(rhapi)
@@ -65,27 +61,6 @@ def register_ui(  # noqa: PLR0913
         ),
         panel=PANEL_ID,
     )
-    if not event_mode:
-        rhapi.fields.register_option(
-            UIField(
-                SENDSPIN_CLOUD_URL_OPTION,
-                "Cloud Sendspin service URL",
-                UIFieldType.TEXT,
-                value="",
-                desc="Additional cloud API URL. Empty disables cloud output.",
-            ),
-            panel=PANEL_ID,
-        )
-        rhapi.fields.register_option(
-            UIField(
-                SENDSPIN_CLOUD_TOKEN_OPTION,
-                "Cloud Sendspin API token",
-                UIFieldType.PASSWORD,
-                value="",
-                desc="Cloud service API token.",
-            ),
-            panel=PANEL_ID,
-        )
     rhapi.fields.register_option(
         UIField(
             VOICE_MODEL_OPTION,
@@ -96,11 +71,7 @@ def register_ui(  # noqa: PLR0913
                 UIFieldSelectOption(model_name, model["label"])
                 for model_name, model in VOICE_MODELS.items()
             ],
-            desc=(
-                "Downloaded by the connected voice service."
-                if event_mode
-                else "Downloaded once into the local RotorHazard data cache."
-            ),
+            desc="Downloaded by the connected voice service.",
         ),
         panel=PANEL_ID,
     )
@@ -145,13 +116,7 @@ def register_ui(  # noqa: PLR0913
         '<a href="/player" target="_blank" rel="noopener noreferrer">'
         "Open browser player in a new tab</a>\n\n"
         "⚠ Set Voice Volume and Tone Volume to 0 on all browser clients.\n\n"
-        + (
-            "Voice runs in the connected service. Enable plugin audio before testing."
-            if event_mode
-            else "After first setup or voice model/settings changes, "
-            "use Prepare pre-cache to "
-            "prepare race-clock, schedule, and current-heat WAV files."
-        ),
+        "Voice runs in the connected service. Enable plugin audio before testing.",
     )
 
     # Test phrase

@@ -112,6 +112,7 @@ class RaceIngest:
         self._worker = worker
         self._boot_id = uuid.uuid4().hex
         self._owner_revision = 0
+        self._order = 0
         self._epoch = self._nonce = ""
         self._gate = ContextGate(uuid.uuid4().hex)
         self._state: dict | None = None
@@ -334,7 +335,7 @@ class RaceIngest:
             asset=None,
             winner=False,
         )
-        self._preparation.submit(CalloutPlan(event, deadline), voice)
+        self._submit(event, deadline, None, voice)
 
     def event(self, data: dict) -> dict:
         """Admit bounded work immediately; final expiry is checked again at playback."""
@@ -367,11 +368,19 @@ class RaceIngest:
             return {"outcome": "disabled"}
         if self._cache.clearing and event.kind != EventKind.TONE:
             raise web.HTTPTooManyRequests(reason="TTS cache is being cleared")
-        if not self._preparation.submit(CalloutPlan(event, deadline, target), voice):
+        if not self._submit(event, deadline, target, voice):
             raise web.HTTPTooManyRequests(
                 reason="Audio preparation is full", headers={"Retry-After": "1"}
             )
         return {"outcome": "accepted"}
+
+    def _submit(
+        self, event: RaceEvent, deadline: float, target: float | None, voice: dict
+    ) -> bool:
+        self._order += 1
+        return self._preparation.submit(
+            CalloutPlan(event, deadline, target, order=self._order), voice
+        )
 
     async def close(self) -> None:
         """Cancel preparation and playback before reaping the synthesis child."""

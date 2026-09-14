@@ -299,6 +299,8 @@ class RaceEventAdapter:
         target = args.get("scheduled_at")
         if type(target) not in (int, float) or not math.isfinite(target) or target < 0:
             return
+        if target == self._scheduled_start:
+            return
         self._refresh(invalidate=True, scheduled_start=target)
 
     def stop_audio(self, _args: dict | None = None) -> None:

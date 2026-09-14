@@ -11,7 +11,7 @@ import contextlib
 import logging
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Protocol
 
 from .audio_queue import Priority, WavItem
@@ -52,6 +52,7 @@ class CalloutPlan:
     target: float | None = None
     volume: float = 1.0
     audio: tuple[bytes, ...] = ()
+    order: int = field(kw_only=True)
 
     @property
     def priority(self) -> Priority:
@@ -112,15 +113,7 @@ class PreparationPlanner:
             if self._inference is not None:
                 self._inference.cancel()
         if plan.event.kind == EventKind.TONE:
-            self._ready(
-                CalloutPlan(
-                    plan.event,
-                    plan.deadline,
-                    plan.target,
-                    plan.volume,
-                    (self._assets[plan.event.asset],),
-                )
-            )
+            self._ready(replace(plan, audio=(self._assets[plan.event.asset],)))
             return True
         self._pending.append(_Preparation(plan, dict(settings)))
         if self._runner is None:
@@ -167,7 +160,7 @@ class PreparationPlanner:
             if not lower:
                 return False
             self._pending.remove(
-                min(lower, key=lambda p: (-p.plan.priority, p.plan.event.sequence))
+                min(lower, key=lambda p: (-p.plan.priority, p.plan.order))
             )
             return True
         replacement = next(
@@ -180,7 +173,7 @@ class PreparationPlanner:
             None,
         )
         if replacement is None and len(same_class) >= self._max_laps:
-            replacement = min(same_class, key=lambda p: p.plan.event.sequence)
+            replacement = min(same_class, key=lambda p: p.plan.order)
         if replacement is not None:
             self._pending.remove(replacement)
         return True
@@ -192,7 +185,7 @@ class PreparationPlanner:
             while self._pending:
                 item = min(
                     self._pending,
-                    key=lambda p: (p.plan.priority, p.plan.event.sequence),
+                    key=lambda p: (p.plan.priority, p.plan.order),
                 )
                 self._pending.remove(item)
                 if not self._usable(item.plan):
@@ -222,9 +215,7 @@ class PreparationPlanner:
             is_current=lambda: not item.cancelled and self._usable(plan),
         )
         if audio and not item.cancelled and self._usable(plan):
-            self._ready(
-                CalloutPlan(plan.event, plan.deadline, plan.target, plan.volume, audio)
-            )
+            self._ready(replace(plan, audio=audio))
 
 
 class PlaybackSink(Protocol):
@@ -357,9 +348,7 @@ class PlaybackPlanner:
             if not replaceable:
                 return None
             pending.remove(
-                min(
-                    replaceable, key=lambda p: (-p.plan.priority, p.plan.event.sequence)
-                )
+                min(replaceable, key=lambda p: (-p.plan.priority, p.plan.order))
             )
 
     def invalidate(self) -> None:
@@ -414,7 +403,7 @@ class PlaybackPlanner:
                     break
                 item = min(
                     self._pending,
-                    key=lambda p: (p.plan.priority, p.plan.event.sequence),
+                    key=lambda p: (p.plan.priority, p.plan.order),
                 )
                 self._pending.remove(item)
                 if not self._usable(item.plan):

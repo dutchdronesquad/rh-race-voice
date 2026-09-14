@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch
 from aiohttp.test_utils import TestClient, TestServer
 
 from sendspin_service.race_ingest import logger
-from sendspin_service.race_planner import SendspinPlaybackSink
+from sendspin_service.race_planner import PreparationPlanner, SendspinPlaybackSink
 from sendspin_service.race_protocol import ClockMapping, ProtocolError
 from sendspin_service.server import SendspinService, ServiceConfig, _create_app
 
@@ -568,6 +568,31 @@ class RaceIngestTests(unittest.IsolatedAsyncioTestCase):
         )
         await self.synchronize()
         self.assertEqual(len(self.worker.calls), 1)
+
+    async def test_internal_and_external_signals_share_admission_order(self) -> None:
+        """Service order spans timer callbacks without consuming publisher sequences."""
+        self.snapshot["context"].update(revision=2, generation=1)
+        self.snapshot["scheduled_start"] = time.monotonic() + 5.6
+        with patch.object(PreparationPlanner, "submit", return_value=True) as submit:
+            await self.client.put("/v2/state", json=self.snapshot)
+            self.assertEqual(
+                (
+                    await self.client.post("/v2/events", json=self.event(kind="tone"))
+                ).status,
+                202,
+            )
+            await until(lambda: submit.call_count == 2)
+            self.assertEqual(
+                (
+                    await self.client.post(
+                        "/v2/events", json=self.event(2, kind="tone")
+                    )
+                ).status,
+                202,
+            )
+        plans = [call.args[0] for call in submit.call_args_list]
+        self.assertEqual([p.order for p in plans], [1, 2, 3])
+        self.assertEqual([p.event.sequence for p in plans], [1, 0, 2])
 
     async def test_schedule_drops_callout_when_clock_mapping_is_stale(self) -> None:
         """A timer cannot grant fresh lifetime after the RH clock exchange expires."""

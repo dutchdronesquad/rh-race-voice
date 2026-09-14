@@ -451,6 +451,12 @@ class AdapterTests(unittest.TestCase):
         wait_for(self.adapter._publisher._ready)
         self.assertEqual(self.service.state["scheduled_start"], target)
         self.assertGreater(self.adapter._generation, generation)
+        snapshot = self.adapter._snapshot
+        request_count = len(self.service.requests)
+        self.adapter._race_schedule({"scheduled_at": target})
+        self.assertIs(self.adapter._snapshot, snapshot)
+        self.assertTrue(self.adapter._publisher._ready())
+        self.assertEqual(len(self.service.requests), request_count)
         self.assertFalse(hasattr(self.adapter, "_schedule"))
         self.adapter._refresh()
         wait_for(self.adapter._publisher._ready)

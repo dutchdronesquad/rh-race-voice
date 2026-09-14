@@ -126,12 +126,14 @@ class RaceIngest:
         self._changing = False
         self._blocked = True
         self._schedule = RaceSchedule(self._scheduled_callout)
-        self._destinations = destinations
+        # Copied so a caller mutating its own dict later cannot desync it from
+        # self._outputs (built from the same snapshot) and cause a KeyError.
+        self._destinations = dict(destinations)
         self._outputs: dict[str, PlaybackPlanner] = {
             name: PlaybackPlanner(
                 destination.sink, is_current=self._current, destination=name
             )
-            for name, destination in destinations.items()
+            for name, destination in self._destinations.items()
         }
         speech = SpeechEngine(worker)
         self._cache = CacheCommands(speech, self._clear)
@@ -147,7 +149,18 @@ class RaceIngest:
 
     def _ready(self, plan: CalloutPlan) -> None:
         for name, output in self._outputs.items():
-            if not self._destinations[name].accepts(plan):
+            try:
+                accepted = self._destinations[name].accepts(plan)
+            except Exception:
+                # A bad filter must only cost this one destination, not the
+                # rest of the fan-out or the whole preparation pipeline task.
+                logger.exception(
+                    "Race Voice destination filter failed for %s: %s",
+                    name,
+                    plan.event.event_id,
+                )
+                continue
+            if not accepted:
                 continue
             if output.submit(plan):
                 telemetry.record(

@@ -911,6 +911,35 @@ class RaceIngestFanOutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(sink_pilot_one.played), 1)
         self.assertEqual(sink_pilot_one.played[0].event.pilot_id, 1)
 
+    async def test_raising_filter_does_not_block_other_destinations(self) -> None:
+        """A destination's broken predicate must not cost delivery to the rest."""
+
+        def broken_predicate(_plan) -> bool:  # noqa: ANN001
+            raise RuntimeError("boom")
+
+        sink_ok = FakeSink()
+        ingest, _worker, session_id, snapshot = await self._new_ingest(
+            {
+                "broken": Destination(FakeSink(), accepts=broken_predicate),
+                "ok": Destination(sink_ok),
+            }
+        )
+        now = time.monotonic()
+        event = {
+            "version": "race-events/1",
+            "session_id": session_id,
+            "event_id": f"{session_id}:1",
+            "sequence": 1,
+            "context": dict(snapshot["context"]),
+            "kind": "voice",
+            "occurred_at": now,
+            "expires_at": now + 10,
+            "payload": {"text": "hello"},
+        }
+        with self.assertLogs("sendspin_service.race_ingest", level="ERROR"):
+            self.assertEqual(ingest.event(event)["outcome"], "accepted")
+            await until(lambda: len(sink_ok.played) == 1)
+
 
 class RaceModeConfigTests(unittest.TestCase):
     """Require credentials outside the local host and enable v2 by default."""

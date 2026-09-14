@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Protocol
 
+from . import telemetry
 from .audio_queue import Priority, WavItem
 from .race_protocol import EventKind, RaceEvent
 
@@ -99,10 +100,28 @@ class PreparationPlanner:
     def submit(self, plan: CalloutPlan, settings: dict) -> bool:
         """Admit fresh work without waiting for synthesis, audio or networking."""
         if not self._usable(plan):
+            telemetry.record(
+                plan.event.event_id,
+                "output_dropped",
+                reason="not_usable",
+                planner="preparation",
+            )
             return False
         if plan.event.kind == EventKind.TONE and plan.event.asset not in self._assets:
+            telemetry.record(
+                plan.event.event_id,
+                "output_dropped",
+                reason="missing_asset",
+                planner="preparation",
+            )
             return False
         if plan.event.kind != EventKind.TONE and not self._make_room(plan):
+            telemetry.record(
+                plan.event.event_id,
+                "output_dropped",
+                reason="no_room",
+                planner="preparation",
+            )
             return False
         if plan.priority == Priority.SIGNAL:
             self._pending = [
@@ -159,8 +178,13 @@ class PreparationPlanner:
             lower = [p for p in same_class if p.plan.priority > plan.priority]
             if not lower:
                 return False
-            self._pending.remove(
-                min(lower, key=lambda p: (-p.plan.priority, p.plan.order))
+            evicted = min(lower, key=lambda p: (-p.plan.priority, p.plan.order))
+            self._pending.remove(evicted)
+            telemetry.record(
+                evicted.plan.event.event_id,
+                "output_dropped",
+                reason="preparation_evicted",
+                planner="preparation",
             )
             return True
         replacement = next(
@@ -172,10 +196,18 @@ class PreparationPlanner:
             ),
             None,
         )
+        reason = "preparation_superseded"
         if replacement is None and len(same_class) >= self._max_laps:
             replacement = min(same_class, key=lambda p: p.plan.order)
+            reason = "preparation_evicted"
         if replacement is not None:
             self._pending.remove(replacement)
+            telemetry.record(
+                replacement.plan.event.event_id,
+                "output_dropped",
+                reason=reason,
+                planner="preparation",
+            )
         return True
 
     async def _run(self) -> None:
@@ -207,15 +239,35 @@ class PreparationPlanner:
 
     async def _prepare(self, item: _Preparation) -> None:
         plan = item.plan
+        telemetry.record(plan.event.event_id, "synthesis_start")
         audio = await self._speech.synthesize(
             plan.event,
             item.settings,
             deadline=plan.deadline,
             priority=plan.priority,
             is_current=lambda: not item.cancelled and self._usable(plan),
+            on_segment=lambda result: telemetry.record(
+                plan.event.event_id,
+                "segment",
+                cache_hit=result.get("cache_hit"),
+                duration_ms=result.get("duration_ms"),
+            ),
         )
+        telemetry.record(plan.event.event_id, "synthesis_end", empty=not audio)
         if audio and not item.cancelled and self._usable(plan):
             self._ready(replace(plan, audio=audio))
+        else:
+            reason = (
+                "synthesis_empty"
+                if not audio
+                else ("cancelled" if item.cancelled else "expired")
+            )
+            telemetry.record(
+                plan.event.event_id,
+                "output_dropped",
+                reason=reason,
+                planner="preparation",
+            )
 
 
 class PlaybackSink(Protocol):
@@ -244,6 +296,12 @@ class SendspinPlaybackSink:
             lateness = 1.0 if plan.event.asset == "buzzer" else 0.25
             deadline = min(deadline, plan.target + lateness)
         if cancelled.is_set() or deadline <= time.monotonic():
+            telemetry.record(
+                plan.event.event_id,
+                "output_dropped",
+                reason="cancelled" if cancelled.is_set() else "expired",
+                planner="sink",
+            )
             return
         clips = [
             WavItem(name=f"{plan.event.event_id}-{index}.wav", data=data)
@@ -257,6 +315,7 @@ class SendspinPlaybackSink:
             plan.volume,
             cancelled=cancelled,
         )
+        telemetry.record(plan.event.event_id, "output_played")
 
     async def stop(self) -> None:
         """Wait for the actual stream clear before the next plan can play."""
@@ -298,10 +357,22 @@ class PlaybackPlanner:
     def submit(self, plan: CalloutPlan) -> bool:
         """Accept prepared audio; source synthesis is never repeated per listener."""
         if not plan.audio or not self._usable(plan):
+            telemetry.record(
+                plan.event.event_id,
+                "output_dropped",
+                reason="not_usable",
+                planner="playback",
+            )
             return False
         self._pending = [p for p in self._pending if self._usable(p.plan)]
         pending = self._admit_audio(plan)
         if pending is None:
+            telemetry.record(
+                plan.event.event_id,
+                "output_dropped",
+                reason="no_room",
+                planner="playback",
+            )
             return False
         self._pending = pending
         if _preempts(plan.priority, self._last_priority):
@@ -315,8 +386,16 @@ class PlaybackPlanner:
     def _admit_audio(self, plan: CalloutPlan) -> list[_Playback] | None:
         pending = list(self._pending)
         if plan.priority == Priority.SIGNAL:
+            superseded = [p for p in pending if p.plan.priority == Priority.LAP]
             pending = [p for p in pending if p.plan.priority != Priority.LAP]
+            self._record_superseded(superseded, "signal_preempted")
         elif plan.priority == Priority.LAP and plan.event.pilot_id is not None:
+            superseded = [
+                p
+                for p in pending
+                if p.plan.priority == Priority.LAP
+                and p.plan.event.pilot_id == plan.event.pilot_id
+            ]
             pending = [
                 p
                 for p in pending
@@ -325,6 +404,7 @@ class PlaybackPlanner:
                     and p.plan.event.pilot_id == plan.event.pilot_id
                 )
             ]
+            self._record_superseded(superseded, "lap_superseded")
         # Reserve some memory for a signal while ordinary speech is still buffered.
         limit = self._max_bytes
         if plan.priority != Priority.SIGNAL:
@@ -347,8 +427,23 @@ class PlaybackPlanner:
             ]
             if not replaceable:
                 return None
-            pending.remove(
-                min(replaceable, key=lambda p: (-p.plan.priority, p.plan.order))
+            evicted = min(replaceable, key=lambda p: (-p.plan.priority, p.plan.order))
+            pending.remove(evicted)
+            telemetry.record(
+                evicted.plan.event.event_id,
+                "output_dropped",
+                reason="playback_evicted",
+                planner="playback",
+            )
+
+    @staticmethod
+    def _record_superseded(superseded: list[_Playback], reason: str) -> None:
+        for item in superseded:
+            telemetry.record(
+                item.plan.event.event_id,
+                "output_dropped",
+                reason=reason,
+                planner="playback",
             )
 
     def invalidate(self) -> None:

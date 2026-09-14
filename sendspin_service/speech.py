@@ -58,7 +58,7 @@ class SpeechEngine:
         """Use the same localized phrases as manual countdown preparation."""
         return _locale(model)["race_schedule"][str(seconds)]
 
-    async def synthesize(
+    async def synthesize(  # noqa: PLR0913
         self,
         event: RaceEvent,
         settings: dict,
@@ -66,6 +66,7 @@ class SpeechEngine:
         deadline: float,
         priority: int,
         is_current: Callable[[], bool],
+        on_segment: Callable[[dict], None] | None = None,
     ) -> tuple[bytes, ...]:
         """Do not return partial/obsolete speech after expiry, stop or heat changes."""
         audio = []
@@ -77,6 +78,8 @@ class SpeechEngine:
                 deadline=deadline,
                 priority=priority,
             )
+            if on_segment is not None:
+                on_segment(result)
             if not is_current() or time.monotonic() >= deadline:
                 return ()
             audio.append(result["audio"])

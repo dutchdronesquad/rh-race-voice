@@ -13,6 +13,7 @@ from aiohttp import web
 
 from custom_plugins.race_voice.const import VOICE_MODELS
 
+from . import telemetry
 from .cache_commands import CacheCommands
 from .race_planner import CalloutPlan, PlaybackPlanner, PreparationPlanner
 from .race_protocol import (
@@ -136,7 +137,12 @@ class RaceIngest:
         return not self._blocked and self._gate.is_current(event)
 
     def _ready(self, plan: CalloutPlan) -> None:
-        if not self._output.submit(plan):
+        if self._output.submit(plan):
+            telemetry.record(plan.event.event_id, "output_scheduled")
+        else:
+            telemetry.record(
+                plan.event.event_id, "output_dropped", reason="output_queue_full"
+            )
             logger.info("Race Voice dropped prepared audio: %s", plan.event.event_id)
 
     def owner(self) -> dict:
@@ -335,12 +341,18 @@ class RaceIngest:
             asset=None,
             winner=False,
         )
+        telemetry.record(
+            event.event_id, "received", kind=event.kind.value, origin="schedule"
+        )
         self._submit(event, deadline, None, voice)
 
     def event(self, data: dict) -> dict:
         """Admit bounded work immediately; final expiry is checked again at playback."""
         self._require_session(data)
         event = RaceEvent.parse(data)
+        telemetry.record(
+            event.event_id, "received", kind=event.kind.value, origin="event"
+        )
         if self._blocked:
             raise web.HTTPConflict(reason="Output clear failed; retry state update")
         if self._clock is None:
@@ -359,16 +371,20 @@ class RaceIngest:
         except ProtocolError as err:
             raise web.HTTPConflict(reason=str(err)) from err
         outcome = self._gate.admit(event, deadline, now)
+        telemetry.record(event.event_id, "admission", outcome=outcome.value)
         if outcome != Admission.ACCEPTED:
             return {"outcome": outcome.value}
         voice = self._state["voice"]
         if not voice["enabled"] or not voice["callout_flags"].get(
             event.kind.value, True
         ):
+            telemetry.record(event.event_id, "disabled")
             return {"outcome": "disabled"}
         if self._cache.clearing and event.kind != EventKind.TONE:
+            telemetry.record(event.event_id, "dropped", reason="cache_clearing")
             raise web.HTTPTooManyRequests(reason="TTS cache is being cleared")
         if not self._submit(event, deadline, target, voice):
+            telemetry.record(event.event_id, "dropped", reason="preparation_full")
             raise web.HTTPTooManyRequests(
                 reason="Audio preparation is full", headers={"Retry-After": "1"}
             )

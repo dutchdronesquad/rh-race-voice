@@ -6,18 +6,17 @@ Race Voice is a RotorHazard RHAPI plugin that generates voice callouts server-si
 
 Important modules:
 
-- `plugin.py`: RotorHazard event/filter integration, synthesis scheduling, event cache cleanup, and UI button callbacks.
-- `piper.py`: Piper model download/loading, ONNX Runtime session setup, synthesis, text normalization, WAV validation, and cache-key generation.
-- `audio_queue.py`: single-worker priority queue with expiry handling and optional scheduled playback timestamps for stale/time-sensitive audio.
+- `piper.py`: Piper model download/loading, ONNX Runtime session setup, synthesis, text normalization, WAV validation, and cache-key generation; reused by the standalone service's isolated synthesis worker, not run in-process by RotorHazard.
 - `sendspin.py`: synchronous adapter around `aiosendspin`, owns the background asyncio loop and active Sendspin stream.
 - `ui.py`: RotorHazard settings panel, quick buttons, and `/player` blueprint.
 - `const.py`: option names, defaults, voice model list, and Sendspin port.
-- `services/`: small stateful helpers extracted from `plugin.py`.
+- `services/`: small stateful helpers shared between the plugin's event adapter and the standalone service.
   - `services/clock_callouts.py`: race-clock callout phrase planning and reusable pre-cache phrase lists.
   - `services/lap_callouts.py`: lap callout segment planning and reusable segment lists for pre-cache.
-  - `services/precache.py`: manual pre-cache rebuild orchestration, stale-job cancellation, cleanup, and completion notifications.
   - `services/schedule.py`: scheduled-race countdown timers.
 - `sendspin_player/`: Vite/React/shadcn source for the browser player; production output is written to `custom_plugins/race_voice/player/`.
+
+This module list and `docs/architecture.md` still have some staleness predating the v2 event-adapter cutover; treat both as directionally correct but not exhaustive.
 
 ## Runtime Behavior
 

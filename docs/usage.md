@@ -111,7 +111,7 @@ For both local and cloud playback, the service keeps recently uploaded WAVs in a
 
 Older services continue to receive ordinary uploads and do not gain this optimization until updated. Local output continues independently with no added waiting. Cloud playback still includes network and player buffering delays; this does not promise exact synchronization between servers.
 
-For a public deployment, set `SENDSPIN_API_TOKEN`; producers must send `Authorization: Bearer <token>` for `/v1/play` and `/v1/stop`. Keep the token unset only for local testing on a trusted machine.
+For a public deployment, set `SENDSPIN_API_TOKEN`; producers must send `Authorization: Bearer <token>` for the `/v2/*` race-event routes. Keep the token unset only for local testing on a trusted machine.
 
 The container includes its own player; install the RotorHazard plugin separately. Local and cloud servers on separate machines can use the same ports. If testing Docker on the Pi, avoid [port conflicts](#port-conflicts) with the `.deb` service.
 
@@ -301,7 +301,7 @@ Running both on the same host requires separate host ports for each deployment. 
 
 [Cloudflare error 1010](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1010/) means Cloudflare rejected the client's browser signature before the request reached Sendspin. Changing the API token or timeout does not resolve this block.
 
-The plugin identifies its requests with a `RaceVoice/1.0` User-Agent. This does not guarantee admission through Cloudflare. If the block persists, configure a [Browser Integrity Check exception](https://developers.cloudflare.com/waf/tools/browser-integrity-check/#disable-selectively) limited to your cloud API hostname and the `/health`, `/v1/play` and `/v1/stop` paths. Keep the service's API token enabled. Then retry **Play audio check**.
+The plugin identifies its requests with a `RaceVoice/1.0` User-Agent. This does not guarantee admission through Cloudflare. If the block persists, configure a [Browser Integrity Check exception](https://developers.cloudflare.com/waf/tools/browser-integrity-check/#disable-selectively) limited to your cloud API hostname and the `/health` and `/v2/*` paths. Keep the service's API token enabled. Then retry **Play audio check**.
 
 ### Other issues
 

@@ -1,15 +1,18 @@
 """Protect complete scheduled clips and client-aware playback timestamps."""
 
-# ruff: noqa: PT009
+# ruff: noqa: PT009, SLF001
 
 from __future__ import annotations
 
+import asyncio
+import threading
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from aiosendspin.server import AudioFormat
 
 from sendspin_service.sendspin import (
+    SendSpinServer,
     _scheduled_play_start_us,
     _stream_wav,
     _StreamOptions,
@@ -59,3 +62,46 @@ class ScheduledAudioTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(
                     _scheduled_play_start_us(10.0, 20_000_000, 300_000), 20_300_000
                 )
+
+
+class CancelledStreamingTests(unittest.IsolatedAsyncioTestCase):
+    """Cancellation survives time spent waiting for locks or buffer space."""
+
+    async def test_cancel_during_buffer_wait_prevents_more_pcm(self) -> None:
+        """Never commit another speech chunk after a signal cancelled it."""
+        cancelled = threading.Event()
+        stream = Mock(is_stopped=False)
+        stream.sleep_to_limit_buffer = AsyncMock(
+            side_effect=lambda **_: cancelled.set()
+        )
+        stream.commit_audio = AsyncMock()
+        clip = _WavClip("lap", AudioFormat(24000, 16, 1), bytes(4800), 0.1)
+        await _stream_wav(
+            stream,
+            clip,
+            play_start_us=100,
+            sync_clients=AsyncMock(return_value=1),
+            options=_StreamOptions(max_buffer_us=500_000, cancelled=cancelled),
+        )
+        stream.commit_audio.assert_not_awaited()
+
+    async def test_cancel_before_stream_lock_prevents_restarting_speech(self) -> None:
+        """An obsolete job cannot create a new stream after interruption."""
+        backend = SendSpinServer(advertise=False)
+        backend._stream_lock = asyncio.Lock()
+        backend._append_to_stream_locked = AsyncMock()
+        cancelled = threading.Event()
+        async with backend._stream_lock:
+            task = asyncio.create_task(
+                backend._append_to_stream(
+                    [],
+                    None,
+                    None,
+                    0.0,
+                    1.0,
+                    cancelled,
+                )
+            )
+            cancelled.set()
+        await task
+        backend._append_to_stream_locked.assert_not_awaited()

@@ -60,7 +60,6 @@ class RaceEventAdapter:
             self.stop_audio,
             self.clear_cache,
             self.prepare_cache,
-            event_mode=True,
         )
         for name, label, function in (
             ("race_voice_connect", "Connect / take over service", self.connect),

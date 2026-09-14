@@ -1,6 +1,6 @@
-"""Exercise the opt-in HTTP path through real admission and audio planning."""
+"""Exercise the race-event HTTP path through real admission and audio planning."""
 
-# ruff: noqa: PT009, PT027, SLF001
+# ruff: noqa: PT009, PT027
 
 from __future__ import annotations
 
@@ -17,7 +17,12 @@ from aiohttp.test_utils import TestClient, TestServer
 from sendspin_service.race_ingest import logger
 from sendspin_service.race_planner import PreparationPlanner, SendspinPlaybackSink
 from sendspin_service.race_protocol import ClockMapping, ProtocolError
-from sendspin_service.server import SendspinService, ServiceConfig, _create_app
+from sendspin_service.server import (
+    DEFAULT_RACE_CACHE_DIR,
+    SendspinService,
+    ServiceConfig,
+    _create_app,
+)
 
 ASSET = (
     Path(__file__).resolve().parents[1] / "custom_plugins/race_voice/assets/stage.wav"
@@ -272,8 +277,8 @@ class RaceIngestTests(unittest.IsolatedAsyncioTestCase):
             (await self.client.post("/v2/events", json=self.event())).status, 409
         )
 
-    async def test_auth_limits_and_legacy_playback_exclusion(self) -> None:
-        """Protect control routes and keep v1 queues out of the new audio path."""
+    async def test_auth_limits_control_routes(self) -> None:
+        """Protect every control route behind the configured API token."""
         for method, path in (
             ("get", "/v2/session"),
             ("post", "/v2/events"),
@@ -287,15 +292,12 @@ class RaceIngestTests(unittest.IsolatedAsyncioTestCase):
                     path, headers={"Authorization": "Bearer wrong"}
                 )
                 self.assertEqual(response.status, 401)
-        for path in ("/v1/play", "/v1/stop"):
-            self.assertEqual((await self.client.post(path, json={})).status, 409)
-        self.assertIsNone(self.service._queue)
         self.assertEqual(
             (await self.client.post("/v2/events", data=b" " * 65_537)).status, 413
         )
         health = await (await self.client.get("/health")).json()
-        self.assertTrue(health["race_event_preview"])
-        self.assertNotIn("race-events/1", health.get("capabilities", []))
+        self.assertNotIn("race_event_preview", health)
+        self.assertNotIn("capabilities", health)
 
     async def test_invalid_snapshot_does_not_mutate_state(self) -> None:
         """Malformed rosters, tuning and flags fail before any generation change."""
@@ -640,7 +642,7 @@ class RaceIngestTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RaceModeConfigTests(unittest.TestCase):
-    """Require explicit activation and credentials outside the local host."""
+    """Require credentials outside the local host and enable v2 by default."""
 
     def test_network_primary_requires_a_token(self) -> None:
         """Catch an exposed unauthenticated primary before constructing the backend."""
@@ -649,16 +651,16 @@ class RaceModeConfigTests(unittest.TestCase):
                 ServiceConfig(api_host="0.0.0.0", race_cache_dir=Path("cache"))  # noqa: S104
             )
 
-    def test_default_service_keeps_legacy_mode(self) -> None:
-        """Do not register or load primary routes in ordinary playback deployments."""
-        with (
-            patch("sendspin_service.server.SendSpinServer"),
-            patch("sendspin_service.server.AudioQueue"),
-        ):
+    def test_default_service_enables_race_routes_without_extra_config(self) -> None:
+        """v2 is the only mode; a bare ServiceConfig() must register race routes."""
+        self.assertEqual(ServiceConfig().race_cache_dir, DEFAULT_RACE_CACHE_DIR)
+        with patch("sendspin_service.server.SendSpinServer"):
             service = SendspinService(ServiceConfig())
             app = _create_app(service)
-        self.assertFalse(service.health()["race_event_preview"])
-        self.assertTrue(service.health()["supports_audio_references"])
-        self.assertNotIn(
+        health = service.health()
+        self.assertNotIn("race_event_preview", health)
+        self.assertNotIn("supports_multipart_play", health)
+        self.assertNotIn("supports_audio_references", health)
+        self.assertIn(
             "/v2/events", [resource.canonical for resource in app.router.resources()]
         )

@@ -9,3 +9,8 @@ SENDSPIN_ADVERTISE=true
 
 # Maximum JSON request body size in MiB.
 SENDSPIN_MAX_BODY_MB=50
+
+# Piper synthesis cache directory for the race-event ingest routes.
+# Defaults to race-voice-cache under this service's systemd state
+# directory (/var/lib/sendspin-service); override only to relocate it.
+# SENDSPIN_RACE_CACHE_DIR=/var/lib/sendspin-service/race-voice-cache

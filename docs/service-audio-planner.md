@@ -1,6 +1,6 @@
 # Race-aware service planning
 
-Implementation for #300, with an opt-in local HTTP receiver for the #299 adapter work. Default deployments keep `/v1/play`. The preview connects source admission, the isolated Piper worker and one Sendspin output; the v2 RH adapter now publishes into this local path.
+Implementation for #300, with a local HTTP receiver for the #299 adapter work. The service always registers these race-event routes; there is no v1 mode to opt out into. This connects source admission, the isolated Piper worker and one Sendspin output; the v2 RH adapter publishes into this path.
 
 `PreparationPlanner` receives already-admitted, immutable events with their times mapped into the service clock. It keeps four pending laps plus one active speech job, supersedes pending laps for the same pilot, and bounds other announcements separately. Higher-priority speech can displace lower-priority pending work. Ready bundled tones bypass the synthesis worker entirely. Preempted inference results cannot reappear even if a dependency catches task cancellation.
 
@@ -14,11 +14,11 @@ Output admission is bounded by count and retained audio bytes. Ordinary work lea
 
 Fourteen deterministic tests cover lap admission/replacement, ready tones during blocked inference, stop/state fencing, priority, byte/count limits, independent outputs, and the direct backend adapter's latest-start constraint. This is not an end-to-end cloud, client synchronization or WindowsSpin audio-quality measurement.
 
-## Local HTTP preview
+## Local HTTP service
 
-From a source checkout with the Python dependencies and Sendspin extra installed, run `python -m sendspin_service --experimental-race-cache-dir /path/to/race_voice_cache`. The directory contains `models/` and `tts/`. This explicitly selects event mode for the whole service: `/v1/play` and `/v1/stop` return 409, so an old producer cannot bypass the new scheduler. The v2 RH plugin requires this event service. The service flag is a development setup step while #303 completes packaging; v2 will not offer users a v1 compatibility mode.
+From a source checkout with the Python dependencies and Sendspin extra installed, run `python -m sendspin_service`. It uses a built-in default Piper cache directory (`/var/lib/sendspin-service/race-voice-cache`, matching the systemd `StateDirectory`/Docker volume both already use); pass `--race-cache-dir /path/to/race_voice_cache` or set `SENDSPIN_RACE_CACHE_DIR` to use a different one. The directory contains `models/` and `tts/`. There is no v1 HTTP surface to fall back to: the v2 RH plugin requires this event service, and an old, pre-cutover service without the `/v2/*` routes is not supported.
 
-The preview registers `/v2/session`, `/v2/state`, `/v2/clock`, `/v2/events` and `/v2/commands` endpoints. When an API token is configured, every `/v2` request requires that bearer token. A localhost preview without a configured token accepts requests without authentication. It reports `race_event_preview: true` in health, rather than advertising the complete `race-events/1` capability. Requests are limited to 64 KiB, including chunked bodies. Binding the ingest API beyond localhost requires an API token; use TLS at the reverse proxy for remote access. The existing browser player and Sendspin client connection remain available.
+The service registers `/v2/session`, `/v2/state`, `/v2/clock`, `/v2/events` and `/v2/commands` endpoints. When an API token is configured, every `/v2` request requires that bearer token. A localhost service without a configured token accepts requests without authentication. Requests are limited to 64 KiB, including chunked bodies. Binding the ingest API beyond localhost requires an API token; use TLS at the reverse proxy for remote access. The existing browser player and Sendspin client connection remain available.
 
 A test producer follows this sequence:
 
@@ -32,7 +32,7 @@ Application cleanup stops both planners and reaps the child process. The worker 
 
 ## RotorHazard v2 development setup
 
-Start the service in the local preview mode above and run the v2 RH plugin. The plugin always uses the event adapter; no opt-in environment variable is needed. If the service requires a bearer token, set the matching `RACE_VOICE_SERVICE_TOKEN` in RotorHazard's environment. Configure the existing **Sendspin service URL** field for this service. This path loads no Piper or ONNX in RH. Release dependency removal and primary packaging remain part of #303.
+Start the service as described above and run the v2 RH plugin. The plugin always uses the event adapter; no opt-in environment variable is needed. If the service requires a bearer token, set the matching `RACE_VOICE_SERVICE_TOKEN` in RotorHazard's environment. Configure the existing **Sendspin service URL** field for this service. This path loads no Piper or ONNX in RH. Release dependency removal and primary packaging remain part of #303.
 
 On startup the adapter captures the current heat, assigned pilots and voice settings, then connects in the background. **Service status** reports the last connection/state-delivery result without making an HTTP request. After an RH process restart, an existing publisher session may require the explicit **Connect / take over service** button. This is an operator action; unavailable services never trigger automatic takeover or a fallback to plugin-side synthesis. Enable plugin audio before using either audio test button.
 

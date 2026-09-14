@@ -20,20 +20,19 @@ Staging tones from `Evt.RACE_STAGE_TONE` and the race-start buzzer from `Evt.RAC
 
 ## Plugin Package
 
-- `plugin.py`: RotorHazard event/filter integration, synthesis orchestration, queueing, and UI callbacks.
-- `piper.py`: Piper model download, model loading, synthesis, and WAV cache writes.
-- `audio_queue.py`: plugin-side priority queue that keeps RotorHazard callbacks fast.
-- `output.py`: HTTP output client for `sendspin-service`.
-- `services/lap_callouts.py`: segment planning for reusable pilot/lap/time callouts.
-- `services/precache.py`: manual pre-cache rebuild orchestration.
-- `services/schedule.py`: scheduled race callout timers.
+- `piper.py`: Piper model download, model loading, synthesis, and WAV cache writes; reused by the service's isolated synthesis worker, not run in-process by RotorHazard.
+- `event_adapter.py`: RotorHazard event/filter integration and UI registration; publishes race events to `sendspin-service` instead of synthesizing audio itself.
+- `event_output.py`: bounded HTTP event delivery to the service's `/v2/*` race-event routes.
+- `services/lap_callouts.py`: segment planning for reusable pilot/lap/time callouts, shared with the service.
+- `services/schedule.py`: scheduled-race countdown timer mapping, shared with the service.
+- `services/clock_callouts.py`: race-clock callout phrase planning, shared with the service.
 
-The plugin sends `/v1/play` requests with inline `wav_files` payloads. The service API does not depend on reading plugin cache files from disk.
+The plugin no longer performs local synthesis, queueing, or direct HTTP playback uploads. The [Runtime Flow](#runtime-flow) diagram above still shows the pre-v2 in-process path and needs a follow-up update.
 
 ## Service Package
 
-- `sendspin_service/server.py`: `aiohttp.web` service for the HTTP ingest API, health endpoint, config/env parsing, play, and stop endpoints.
-- `sendspin_service/audio_queue.py`: service-side priority queue.
+- `sendspin_service/server.py`: `aiohttp.web` service for the HTTP ingest API, health endpoint, config/env parsing, and the race-event routes.
+- `sendspin_service/audio_queue.py`: shared `Priority` and `WavItem` types used by the race-event planners.
 - `sendspin_service/sendspin.py`: synchronous adapter around `aiosendspin`.
 
 The same service code is packaged in two deployment formats:
@@ -44,22 +43,11 @@ The same service code is packaged in two deployment formats:
 Service endpoints:
 
 - `GET /health`: service status, package `version`, Sendspin listen port, and connected player count.
-- `POST /v1/play`
-- `POST /v1/stop`
-
-`POST /v1/play` accepts `wav_files` entries with base64 WAV data plus optional `text`, `priority`, `expiry_sec`, `play_at_delay_sec`, and `volume`.
-
-Services advertising `supports_multipart_play: true` in `/health` also accept `multipart/form-data` on the same endpoint. A `metadata` part contains the JSON playback options; one or more `wav_files` parts contain raw WAV bytes in playback order, with percent-encoded filenames. The body limit applies to raw uploads as well, including uploads without a content length. The plugin uses this format for at least 1 MiB of audio, streaming files in 64 KiB chunks. Smaller requests and servers without the capability retain the existing JSON API.
+- `GET/POST /v2/session`, `PUT /v2/state`, `POST /v2/clock`, `POST /v2/events`, `POST /v2/commands`, `GET /v2/commands/{command_id}`: race-event ingest, described in [service-audio-planner.md](service-audio-planner.md) and [race-event-contract.md](race-event-contract.md).
 
 ## Plugin and Service Compatibility
 
-Compatibility is defined by the HTTP API contract, currently `/v1/play` and `/v1/stop`, including the payload fields and playback behavior the plugin relies on. Package release numbers do not need to match. The service `version` in `/health` is diagnostic metadata, not an API version. Health checks report backend compatibility, and large uploads negotiate multipart support through an explicit capability rather than a release number.
-
-Keep changes to the existing API backward compatible where possible. A new optional field is only safe for an older service when the plugin can operate correctly without its effect. Do not infer compatibility solely from the `/v1` path if required behavior changes.
-
-When a future change requires a different API contract or a new capability, introduce explicit compatibility metadata and plugin handling as part of that change. Existing services without that metadata must retain support for the existing v1 behavior; a missing field alone must not force an upgrade. Any new required capability needs a documented legacy fallback or an actionable warning explaining the affected feature and the required service update. Release notes must describe the requirement and upgrade path.
-
-Plugin and service artifacts may continue to share a release tag. Publishing them together does not require operators to update both components.
+The plugin only speaks the `/v2/*` race-event API; the service registers those routes unconditionally. Per the project's hard-cutover policy (see `AGENTS.md`), there is no v1 compatibility mode: an old, pre-cutover service without the `/v2/*` routes is not supported, and the plugin surfaces the resulting connection failure rather than falling back to a legacy path. Package release numbers do not need to match; the service `version` in `/health` is diagnostic metadata, not an API version.
 
 ## Playback Behavior
 
@@ -75,7 +63,7 @@ Important behavior:
 
 ## Audio Queue and Priority
 
-Both the plugin and the service use a single worker queue to keep event callbacks and HTTP requests short. Jobs carry a priority and expiry deadline.
+The service's race-event planners (`sendspin_service/race_planner.py`) admit and schedule jobs with a priority and expiry deadline, using the shared `Priority` enum from `sendspin_service/audio_queue.py`.
 
 | Priority | Used for |
 |----------|----------|
@@ -128,6 +116,6 @@ This avoids pre-generating every pilot/lap combination while still keeping commo
 
 Race-clock callout phrase planning lives in `services/clock_callouts.py`, using the same localized phrase logic for live event playback and manual pre-cache rebuilds.
 
-Manual pre-cache rebuilds are handled by `services/precache.py`. The manager owns stale-generation tracking, directory cleanup, race-clock phrase generation, schedule phrase generation, lap segment generation, pilot-name generation, and completion notifications.
+The **Prepare pre-cache** button sends a `prepare` command to the service over `/v2/commands`; the service owns stale-generation tracking, directory cleanup, race-clock phrase generation, schedule phrase generation, lap segment generation, pilot-name generation, and completion reporting back to the plugin.
 
 Operators should run **Prepare pre-cache** after first setup or voice model/settings changes when they want predictable phrases prepared before racing.

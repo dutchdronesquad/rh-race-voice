@@ -16,6 +16,7 @@ assertion over the captured telemetry trail rather than internal state.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import unittest
 from pathlib import Path
@@ -25,7 +26,6 @@ from unittest.mock import Mock, patch
 from aiohttp.test_utils import TestClient, TestServer
 
 from sendspin_service.server import SendspinService, ServiceConfig, _create_app
-from tools.latency_report import parse_line
 
 VOICE = {
     "model": "en_GB-alan-medium",
@@ -179,11 +179,7 @@ class DenseLapBurstScenarioTests(unittest.IsolatedAsyncioTestCase):
             self.worker.release.set()
             await until(lambda: self.backend.play.call_count == 5)
 
-        records = [
-            record
-            for record in (parse_line(entry.getMessage()) for entry in captured.records)
-            if record is not None
-        ]
+        records = [json.loads(entry.getMessage()) for entry in captured.records]
         by_event: dict[str, list[dict]] = {}
         for record in records:
             by_event.setdefault(record["event_id"], []).append(record)

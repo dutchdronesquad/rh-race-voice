@@ -100,28 +100,15 @@ class PreparationPlanner:
     def submit(self, plan: CalloutPlan, settings: dict) -> bool:
         """Admit fresh work without waiting for synthesis, audio or networking."""
         if not self._usable(plan):
-            telemetry.record(
-                plan.event.event_id,
-                "output_dropped",
-                reason="not_usable",
-                planner="preparation",
-            )
+            telemetry.record(plan.event.event_id, "output_dropped", reason="expired")
             return False
         if plan.event.kind == EventKind.TONE and plan.event.asset not in self._assets:
             telemetry.record(
-                plan.event.event_id,
-                "output_dropped",
-                reason="missing_asset",
-                planner="preparation",
+                plan.event.event_id, "output_dropped", reason="missing_asset"
             )
             return False
         if plan.event.kind != EventKind.TONE and not self._make_room(plan):
-            telemetry.record(
-                plan.event.event_id,
-                "output_dropped",
-                reason="no_room",
-                planner="preparation",
-            )
+            telemetry.record(plan.event.event_id, "output_dropped", reason="no_room")
             return False
         if plan.priority == Priority.SIGNAL:
             self._pending = [
@@ -181,10 +168,7 @@ class PreparationPlanner:
             evicted = min(lower, key=lambda p: (-p.plan.priority, p.plan.order))
             self._pending.remove(evicted)
             telemetry.record(
-                evicted.plan.event.event_id,
-                "output_dropped",
-                reason="preparation_evicted",
-                planner="preparation",
+                evicted.plan.event.event_id, "output_dropped", reason="evicted"
             )
             return True
         replacement = next(
@@ -196,17 +180,12 @@ class PreparationPlanner:
             ),
             None,
         )
-        reason = "preparation_superseded"
         if replacement is None and len(same_class) >= self._max_laps:
             replacement = min(same_class, key=lambda p: p.plan.order)
-            reason = "preparation_evicted"
         if replacement is not None:
             self._pending.remove(replacement)
             telemetry.record(
-                replacement.plan.event.event_id,
-                "output_dropped",
-                reason=reason,
-                planner="preparation",
+                replacement.plan.event.event_id, "output_dropped", reason="evicted"
             )
         return True
 
@@ -262,12 +241,7 @@ class PreparationPlanner:
                 if not audio
                 else ("cancelled" if item.cancelled else "expired")
             )
-            telemetry.record(
-                plan.event.event_id,
-                "output_dropped",
-                reason=reason,
-                planner="preparation",
-            )
+            telemetry.record(plan.event.event_id, "output_dropped", reason=reason)
 
 
 class PlaybackSink(Protocol):
@@ -300,7 +274,6 @@ class SendspinPlaybackSink:
                 plan.event.event_id,
                 "output_dropped",
                 reason="cancelled" if cancelled.is_set() else "expired",
-                planner="sink",
             )
             return
         clips = [
@@ -357,22 +330,12 @@ class PlaybackPlanner:
     def submit(self, plan: CalloutPlan) -> bool:
         """Accept prepared audio; source synthesis is never repeated per listener."""
         if not plan.audio or not self._usable(plan):
-            telemetry.record(
-                plan.event.event_id,
-                "output_dropped",
-                reason="not_usable",
-                planner="playback",
-            )
+            telemetry.record(plan.event.event_id, "output_dropped", reason="expired")
             return False
         self._pending = [p for p in self._pending if self._usable(p.plan)]
         pending = self._admit_audio(plan)
         if pending is None:
-            telemetry.record(
-                plan.event.event_id,
-                "output_dropped",
-                reason="no_room",
-                planner="playback",
-            )
+            telemetry.record(plan.event.event_id, "output_dropped", reason="no_room")
             return False
         self._pending = pending
         if _preempts(plan.priority, self._last_priority):
@@ -388,7 +351,7 @@ class PlaybackPlanner:
         if plan.priority == Priority.SIGNAL:
             superseded = [p for p in pending if p.plan.priority == Priority.LAP]
             pending = [p for p in pending if p.plan.priority != Priority.LAP]
-            self._record_superseded(superseded, "signal_preempted")
+            self._record_superseded(superseded)
         elif plan.priority == Priority.LAP and plan.event.pilot_id is not None:
             superseded = [
                 p
@@ -404,7 +367,7 @@ class PlaybackPlanner:
                     and p.plan.event.pilot_id == plan.event.pilot_id
                 )
             ]
-            self._record_superseded(superseded, "lap_superseded")
+            self._record_superseded(superseded)
         # Reserve some memory for a signal while ordinary speech is still buffered.
         limit = self._max_bytes
         if plan.priority != Priority.SIGNAL:
@@ -430,20 +393,14 @@ class PlaybackPlanner:
             evicted = min(replaceable, key=lambda p: (-p.plan.priority, p.plan.order))
             pending.remove(evicted)
             telemetry.record(
-                evicted.plan.event.event_id,
-                "output_dropped",
-                reason="playback_evicted",
-                planner="playback",
+                evicted.plan.event.event_id, "output_dropped", reason="evicted"
             )
 
     @staticmethod
-    def _record_superseded(superseded: list[_Playback], reason: str) -> None:
+    def _record_superseded(superseded: list[_Playback]) -> None:
         for item in superseded:
             telemetry.record(
-                item.plan.event.event_id,
-                "output_dropped",
-                reason=reason,
-                planner="playback",
+                item.plan.event.event_id, "output_dropped", reason="superseded"
             )
 
     def invalidate(self) -> None:

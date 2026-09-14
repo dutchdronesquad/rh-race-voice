@@ -120,7 +120,10 @@ class SendspinService:
         self._sendspin.close()
 
     def add_race_routes(self, app: web.Application) -> None:
-        """Load and register the race-event ingest routes and their dependencies."""
+        """Register the race-event ingest routes and their dependencies."""
+        # Local on purpose: tests patch these classes at their defining
+        # module, and a module-level import would bind the real class
+        # before any patch() runs.
         from .race.race_ingest import RaceIngest, add_routes  # noqa: PLC0415
         from .race.race_planner import (  # noqa: PLC0415
             Destination,

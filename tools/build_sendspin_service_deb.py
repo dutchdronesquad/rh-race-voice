@@ -178,10 +178,12 @@ def _build_app(runtime_python: Path) -> None:
     # on locales.json, well before any request), not just at packaging time.
     # "player" is the RH plugin's own built browser player (a few MiB) -- the
     # service has its own, built separately; excluded here to avoid bundling it.
+    # "assets" is copied separately below, straight to its expected runtime
+    # path, so it's excluded here too rather than bundled twice.
     shutil.copytree(
         PROJECT_ROOT / "custom_plugins",
         APP_BUILD_ROOT / "custom_plugins",
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "player"),
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "player", "assets"),
         dirs_exist_ok=True,
     )
     shutil.copytree(

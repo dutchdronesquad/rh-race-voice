@@ -9,11 +9,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from custom_plugins.race_voice.services.clock_callouts import ClockCallouts
-from custom_plugins.race_voice.services.lap_callouts import (
-    CalloutSegment,
-    LapCalloutSegments,
-)
 
+from .lap_callouts import CalloutSegment, LapCalloutSegments
 from .race_protocol import EventKind, RaceEvent
 
 if TYPE_CHECKING:

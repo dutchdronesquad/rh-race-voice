@@ -19,10 +19,11 @@ from unittest.mock import Mock, patch
 
 import gevent
 
+_repo_root = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_repo_root))  # piper.py imports custom_plugins.race_voice.const
+
 package = ModuleType("race_voice_gevent_probe")
-package.__path__ = [
-    str(Path(__file__).resolve().parents[2] / "custom_plugins/race_voice")
-]
+package.__path__ = [str(_repo_root / "sendspin_service")]
 sys.modules[package.__name__] = package
 module = importlib.import_module(f"{package.__name__}.piper")
 original_sleep = monkey.get_original("time", "sleep")

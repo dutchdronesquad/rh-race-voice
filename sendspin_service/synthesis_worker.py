@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from custom_plugins.race_voice.const import VOICE_MODELS
-from custom_plugins.race_voice.piper import PiperSynthesizer, SynthesisParams
+
+from .piper import PiperSynthesizer, SynthesisParams
 
 if TYPE_CHECKING:
     from collections.abc import Callable

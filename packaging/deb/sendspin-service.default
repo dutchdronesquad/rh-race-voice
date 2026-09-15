@@ -14,3 +14,12 @@ SENDSPIN_MAX_BODY_MB=50
 # Defaults to race-voice-cache under this service's systemd state
 # directory (/var/lib/sendspin-service); override only to relocate it.
 # SENDSPIN_RACE_CACHE_DIR=/var/lib/sendspin-service/race-voice-cache
+
+# Optional cloud relay for a local+cloud deployment. Leave both unset on an
+# ordinary local-only installation. On the local primary, set SENDSPIN_RELAY_URL
+# to the cloud instance's address to also relay audio+context there. On the
+# cloud instance, set SENDSPIN_RELAY_RECEIVER_ENABLED=true to accept it. Both
+# sides share the same SENDSPIN_RELAY_TOKEN, separate from SENDSPIN_API_TOKEN.
+# SENDSPIN_RELAY_URL=
+# SENDSPIN_RELAY_TOKEN=
+# SENDSPIN_RELAY_RECEIVER_ENABLED=false

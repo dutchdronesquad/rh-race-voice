@@ -57,6 +57,7 @@ class ServiceConfig:
     relay_token: str = ""
     relay_timeout_s: float = DEFAULT_RELAY_TIMEOUT_S
     local_enabled: bool = True
+    relay_receiver_enabled: bool = False
 
 
 class SendspinService:
@@ -79,6 +80,14 @@ class SendspinService:
                 raise ValueError(
                     "Relay destination outside localhost requires --relay-token"
                 )
+        if (
+            config.relay_receiver_enabled
+            and config.api_host not in {"127.0.0.1", "::1", "localhost"}
+            and not config.relay_token
+        ):
+            raise ValueError(
+                "Relay receiver on a network interface requires --relay-token"
+            )
         asset_dir = Path(__file__).parent / "assets"
         if not asset_dir.is_dir():
             asset_dir = (
@@ -129,6 +138,11 @@ class SendspinService:
     def api_token(self) -> str:
         """Return the optional API bearer token."""
         return self._config.api_token
+
+    @property
+    def relay_token(self) -> str:
+        """Return the optional relay bearer token, shared by send and receive."""
+        return self._config.relay_token
 
     def shutdown(self) -> None:
         """Close the underlying Sendspin server."""
@@ -182,6 +196,27 @@ class SendspinService:
 
         app.on_cleanup.append(cleanup)
 
+    def add_relay_receiver_routes(self, app: web.Application) -> None:
+        """Register /v2/relay/* routes; a no-op unless explicitly enabled."""
+        if not self._config.relay_receiver_enabled:
+            return
+        from .race.race_planner import SendspinPlaybackSink  # noqa: PLC0415
+        from .race.race_relay_receiver import (  # noqa: PLC0415
+            RaceRelayReceiver,
+            add_routes,
+        )
+
+        receiver = RaceRelayReceiver(
+            self._audio_cache,
+            SendspinPlaybackSink(self._sendspin, destination="relay-in"),
+        )
+        add_routes(app, receiver)
+
+        async def cleanup(_app: web.Application) -> None:
+            await receiver.close()
+
+        app.on_cleanup.append(cleanup)
+
 
 def _create_app(service: SendspinService) -> web.Application:
     """Create the HTTP ingest application."""
@@ -192,6 +227,7 @@ def _create_app(service: SendspinService) -> web.Application:
     app["service"] = service
     app.router.add_get("/health", _health)
     service.add_race_routes(app)
+    service.add_relay_receiver_routes(app)
     add_player_routes(app, service.player_dir)
     return app
 
@@ -206,13 +242,14 @@ async def _api_token_middleware(
     request: web.Request,
     handler: web.RequestHandler,
 ) -> web.StreamResponse:
-    if request.path.startswith("/v2/"):
-        _require_api_token(request)
+    if request.path.startswith("/v2/relay/"):
+        _require_token(request, _service(request).relay_token)
+    elif request.path.startswith("/v2/"):
+        _require_token(request, _service(request).api_token)
     return await handler(request)
 
 
-def _require_api_token(request: web.Request) -> None:
-    token = _service(request).api_token
+def _require_token(request: web.Request, token: str) -> None:
     if not token:
         return
     scheme, _, actual_token = (
@@ -345,7 +382,8 @@ def _parse_args(argv: Sequence[str] | None = None) -> ServiceConfig:
     parser.add_argument(
         "--relay-token",
         default=_env_str("SENDSPIN_RELAY_TOKEN", ""),
-        help="Bearer token for the relay destination, separate from --api-token",
+        help="Shared bearer token for the relay hop (both --relay-url and"
+        " --relay-receiver-enabled), separate from --api-token",
     )
     parser.add_argument(
         "--relay-timeout-s",
@@ -360,6 +398,13 @@ def _parse_args(argv: Sequence[str] | None = None) -> ServiceConfig:
         default=_env_bool("SENDSPIN_LOCAL_OUTPUT_ENABLED", default=True),
         dest="local_enabled",
         help="Disable the local Sendspin destination (relay-only primary)",
+    )
+    parser.add_argument(
+        "--relay-receiver-enabled",
+        action="store_true",
+        default=_env_bool("SENDSPIN_RELAY_RECEIVER_ENABLED", default=False),
+        help="Accept relayed audio+context from another instance's --relay-url,"
+        " authenticated with the same --relay-token",
     )
     args = parser.parse_args(argv)
     max_body_mb = _body_limit_mb(args.max_body_mb)
@@ -377,6 +422,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> ServiceConfig:
         relay_token=args.relay_token.strip(),
         relay_timeout_s=args.relay_timeout_s,
         local_enabled=args.local_enabled,
+        relay_receiver_enabled=args.relay_receiver_enabled,
     )
 
 

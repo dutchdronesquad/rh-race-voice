@@ -89,7 +89,13 @@ sendspin-service relay status
 sendspin-service relay disable
 ```
 
-`relay enable` restarts the service for you and prints the token to copy into the cloud instance's `.env` as `SENDSPIN_RELAY_TOKEN`.
+| Command | Action |
+|---|---|
+| `sendspin-service relay enable --url <url>` | Turn the relay on, or point an already-enabled one at a new URL. The URL must include `http://` or `https://`. Reuses the existing token unless `--token <value>` sets one explicitly or `--rotate-token` generates a fresh one — either way, the token is printed so you can copy it into the cloud instance's `.env` as `SENDSPIN_RELAY_TOKEN`. |
+| `sendspin-service relay status` | Show whether the relay is enabled, its URL, and a masked token. |
+| `sendspin-service relay disable` | Turn the relay off. The token is kept, so a later `enable` doesn't require re-pairing both sides again. |
+
+Add `--no-restart` to `enable`/`disable` to write the config without restarting the service — apply it yourself later with `sudo systemctl restart sendspin-service`. Add `--env-file <path>` to any subcommand to edit a different env file, for testing or a non-standard install location; defaults to `/etc/default/sendspin-service`.
 
 ## Docker Image
 

@@ -76,7 +76,7 @@ elif name == 'curl':
             target.write_bytes(b'package')
 ''')
     mock.chmod(0o755)
-    for name in ['curl', 'dpkg', 'dpkg-query', 'apt', 'systemctl', 'sudo', 'uv', 'nfpm']:
+    for name in ['curl', 'dpkg', 'dpkg-query', 'apt', 'systemctl', 'sudo', 'uv', 'nfpm', 'sendspin-service']:
         (root / name).symlink_to(mock)
 
     def run(label, args, overrides=None, answer=None, expected=0, action=None):
@@ -113,11 +113,18 @@ elif name == 'curl':
     run('upgrade keeps config', ['--latest', '--yes'], {'INSTALLED_VERSION': '1.2.2'}, action='Update')
     run('explicit downgrade', ['v1.2.2', '--yes'], {'INSTALLED_VERSION': '1.2.3'}, action='Downgrade')
     run('same version is unchanged', ['v1.2.3', '--yes'], {'INSTALLED_VERSION': '1.2.3'})
-    stdout, stderr, calls = run('menu selects available stable version', [], answer='2\ny\n', action='Install')
+    stdout, stderr, calls = run('menu selects available stable version', [], answer='2\ny\nn\n', action='Install')
     assert any('/download/v1.2.2/sendspin-service_1.2.2_arm64.deb' in arg for call in calls if call[0] == 'curl' for arg in call)
     assert 'v2.0.0-beta' not in stderr and 'v1.2.4' not in stderr
     run('menu cancel', [], answer='3\n')
     run('decline existing installation update', ['--latest'], {'INSTALLED_VERSION': '1.2.2'}, answer='n\n')
+    stdout, _, calls = run('fresh install offers relay setup', ['--latest'], answer='y\ny\nhttps://cloud.example.com\n', action='Install')
+    assert [c for c in calls if c[0] == 'sendspin-service'] == [['sendspin-service', 'relay', 'enable', '--url', 'https://cloud.example.com']], calls
+    assert 'Set up or change a relay to a cloud instance any time' in stdout
+    _, _, calls = run('fresh install declines relay setup', ['--latest'], answer='y\nn\n', action='Install')
+    assert not any(call[0] == 'sendspin-service' for call in calls), calls
+    _, _, calls = run('update never prompts for relay', ['--latest'], {'INSTALLED_VERSION': '1.2.2'}, answer='y\n', action='Update')
+    assert not any(call[0] == 'sendspin-service' for call in calls), calls
     run('unattended needs version', ['--yes'], expected=1)
     run('unattended needs confirmation', ['--latest'], expected=1)
     run('unsupported architecture', ['--latest', '--yes'], {'TEST_ARCH': 'armhf'}, expected=1)

@@ -183,7 +183,20 @@ fi
 systemctl is-active --quiet sendspin-service \
     || fail 'Service did not start. Check: journalctl -u sendspin-service -n 80 --no-pager'
 
+if [[ -z "$installed_version" && "$assume_yes" != true && -t 0 ]]; then
+    read -r -p 'Set up a relay to a cloud instance now? [y/N]: ' relay_answer || relay_answer=
+    case "$relay_answer" in
+        y|Y|yes|YES)
+            read -r -p 'Cloud instance URL (e.g. https://audio.example.com): ' relay_url || relay_url=
+            [[ -n "$relay_url" ]] && "${privilege[@]}" sendspin-service relay enable --url "$relay_url"
+            ;;
+        *) ;;
+    esac
+fi
+
 printf '\nSendspin service %s is installed and running.\n' "$version"
 printf 'Plugin and service release numbers do not need to match.\n'
 printf 'On the same RotorHazard host, keep Sendspin service URL: http://127.0.0.1:8766\n'
 printf 'Open the RotorHazard /player page, connect, then click Play audio check.\n'
+printf 'Set up or change a relay to a cloud instance any time: sendspin-service relay enable --url <cloud-url>\n'
+printf '(also: sendspin-service relay status, sendspin-service relay disable)\n'

@@ -8,6 +8,7 @@ import hmac
 import json
 import logging
 import os
+import sys
 from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
@@ -427,7 +428,12 @@ def _parse_args(argv: Sequence[str] | None = None) -> ServiceConfig:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the Sendspin service until interrupted."""
+    """Run the Sendspin service until interrupted, or dispatch a subcommand."""
+    argv = list(argv) if argv is not None else sys.argv[1:]
+    if argv[:1] == ["relay"]:
+        from .relay_cli import main as relay_main  # noqa: PLC0415
+
+        return relay_main(argv[1:])
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",

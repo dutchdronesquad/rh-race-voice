@@ -1,11 +1,12 @@
 # Usage Guide
 
-Race Voice can send the same RotorHazard audio to local and cloud Sendspin servers simultaneously:
+Race Voice runs `sendspin-service` in one of three ways:
 
-- **Recommended:** the `.deb` service on the same Raspberry Pi OS machine as RotorHazard. Listen through the plugin's `/player` page or WindowsSpin on another LAN device.
-- **Optional:** [Docker Compose in the cloud](#docker-image), with its own browser player. Fill in **Cloud Sendspin service URL** and **Cloud Sendspin API token** in RotorHazard to add it alongside local playback.
+- **Local-only (recommended default):** the `.deb` service on the same Raspberry Pi OS machine as RotorHazard. Listen through the plugin's `/player` page or WindowsSpin on another LAN device.
+- **Local + relay:** the same local primary, plus a [Docker Compose cloud instance](#docker-image) it relays audio to, so the same callouts also reach remote listeners. Each destination has its own queue: a slow or unavailable relay never blocks local playback.
+- **Cloud-direct:** no local service at all — RotorHazard's own **Sendspin service URL** points straight at a [Docker Compose cloud instance](#docker-image) acting as an ordinary primary.
 
-Each output has its own queue: a slow or unavailable cloud server does not block local uploads. The plugin and services can be updated independently while each service supports the API required by the plugin.
+The plugin and services can be updated independently while each service supports the API required by the plugin.
 
 ## Setup
 
@@ -80,9 +81,19 @@ journalctl -u sendspin-service -n 80 --no-pager
 
 Expect `active (running)` and a JSON health response containing the service version.
 
+To set up or change a [relay](#docker-image) to a cloud instance, use the CLI instead of editing the file directly:
+
+```shell
+sendspin-service relay enable --url https://cloud.example.com   # generates and prints a token
+sendspin-service relay status
+sendspin-service relay disable
+```
+
+`relay enable` restarts the service for you and prints the token to copy into the cloud instance's `.env` as `SENDSPIN_RELAY_TOKEN`.
+
 ## Docker Image
 
-Use Docker Compose for optional cloud hosting. Run these commands on the cloud server from a checkout of this repository:
+Use Docker Compose to run `sendspin-service` in the cloud. Run these commands on the cloud server from a checkout of this repository:
 
 ```shell
 cp .env.example .env
@@ -92,24 +103,29 @@ docker compose up -d
 
 The Compose file builds from source. To use the published image, replace its `build:` block with `image: ghcr.io/dutchdronesquad/sendspin-service:latest`. Runtime settings are in `.env`.
 
-To add cloud playback alongside the local service, keep **Sendspin service URL** at `http://127.0.0.1:8766`:
+This same image supports two different roles — pick one.
 
-1. Set RotorHazard's **Cloud Sendspin service URL** to the cloud HTTP(S) API base URL, for example `https://audio.example.com` when using an HTTPS reverse proxy (direct HTTP uses port `8766` by default). This must be the Race Voice `sendspin-service` API, not a player WebSocket URL or an arbitrary Sendspin server.
-2. Set **Cloud Sendspin API token** to the same value as `SENDSPIN_API_TOKEN` in the cloud service's `.env`. Enter only the token, without the `Bearer` prefix. Use HTTPS for public cloud API connections.
-3. Open the cloud player and connect it to that server's Sendspin endpoint (port `8927` by default).
-4. Run **Play audio check** in RotorHazard.
+#### Cloud-direct (no local primary, no relay)
 
-Callouts, staging tones, test phrases and the audio check now go to both servers. **Stop audio** clears both queues and requests a stop on both services. Each queue retains audio priorities, expiry and scheduled playback. The two servers synchronize their own players; exact synchronization between local and cloud listeners is not guaranteed.
+1. Deploy the cloud instance as above (`cp .env.example .env`, generate a token, `docker compose up -d`).
+2. In RotorHazard, set **Sendspin service URL** to the cloud instance's HTTP(S) API base URL, for example `https://audio.example.com` behind an HTTPS reverse proxy (direct HTTP uses port `8766` by default). This must be the Race Voice `sendspin-service` API, not a player WebSocket URL or an arbitrary Sendspin server.
+3. Enter the cloud instance's `SENDSPIN_API_TOKEN` wherever a token field is required, without the `Bearer` prefix.
+4. Open the cloud player (`/`) or connect WindowsSpin to that server's Sendspin endpoint (port `8927` by default).
+5. Run **Play audio check** in RotorHazard.
 
-URL and token changes apply to subsequent requests without restarting RotorHazard. Clear **Cloud Sendspin service URL** to return to local-only playback. Stop audio before changing a destination so the old service does not retain scheduled audio. An identical primary and cloud URL is sent to only once.
+#### Local + relay (keep the local primary, also stream to the cloud)
 
-### Faster cloud playback
+1. Deploy the cloud instance as above, with `SENDSPIN_RELAY_RECEIVER_ENABLED=true` set in its `.env`.
+2. On the local primary, run `sendspin-service relay enable --url <cloud-url>`.
+3. Copy the printed token into the cloud instance's `.env` as `SENDSPIN_RELAY_TOKEN`, then restart it (`docker compose up -d` again).
+4. Keep RotorHazard's **Sendspin service URL** pointed at the local primary (`http://127.0.0.1:8766`) — the relay hop happens entirely between the two services, the plugin is unaware of it.
+5. Run **Play audio check** in RotorHazard; audio should now reach both the local and cloud players.
 
-Update both the plugin and cloud service to use audio reuse. The service image and `.deb` include the full audio-check track and race tones. The plugin identifies matching files by content and sends a small playback request instead of uploading them, including on the first audio check. The full track remains unchanged.
+**Stop audio** clears every destination's queue, local and relayed. Each queue retains its own audio priorities, expiry and scheduled playback; a slow or unreachable relay target never blocks local playback. The two players synchronize independently; exact synchronization between local and relayed listeners is not guaranteed.
 
-For both local and cloud playback, the service keeps recently uploaded WAVs in a bounded memory cache (up to 64 MiB and 2,048 entries). Subsequent callouts upload only new segments, such as a new lap time; cached pilot names and lap numbers are referenced directly. Cache eviction or a service restart triggers re-upload only after an explicit cache-miss response, before any audio was queued. A timeout never automatically retries playback.
+### Content-hash reuse over the relay
 
-Older services continue to receive ordinary uploads and do not gain this optimization until updated. Local output continues independently with no added waiting. Cloud playback still includes network and player buffering delays; this does not promise exact synchronization between servers.
+The relay only uploads a WAV segment once per content hash — `sendspin-service relay enable` and the cloud instance both keep a bounded memory cache (up to 64 MiB and 2,048 entries) keyed by SHA-256, plus the bundled audio-check track and race tones shipped in every image and `.deb`. Repeated segments (cached pilot names, lap numbers, the audio check) are referenced by hash instead of re-uploaded. Cache eviction or a restart on either side triggers re-upload only after an explicit cache-miss response, before any audio was queued. A relay timeout never automatically retries.
 
 `SENDSPIN_API_TOKEN` is required for any Docker deployment, local or public: the service always binds `0.0.0.0` internally so Docker's port publishing can reach it, and it refuses to start without a token once bound to a non-loopback address. Producers must send it as `Authorization: Bearer <token>` for the `/v2/*` race-event routes. The `.env.example` quick start already generates one; there is no supported way to run the container without it.
 
@@ -225,9 +241,7 @@ Use **Sync** for most race-day setups. Switch to **Quality** if playback resets 
 ### Options
 
 - **Enable plugin audio**: Turns Race Voice callout generation on or off.
-- **Sendspin service URL**: Local HTTP API endpoint for `sendspin-service`; no API token is sent. Default: `http://127.0.0.1:8766` when the plugin and service run on the same host.
-- **Cloud Sendspin service URL**: Additional HTTP(S) API endpoint for simultaneous cloud playback. Empty by default; leave empty to disable the additional output.
-- **Cloud Sendspin API token**: Token matching `SENDSPIN_API_TOKEN` on the cloud service. The local service does not need a token.
+- **Sendspin service URL**: HTTP API endpoint for `sendspin-service` — the local primary by default (`http://127.0.0.1:8766`), or a cloud instance's address for a [cloud-direct](#docker-image) deployment. A [relay](#docker-image) to a second, cloud destination is configured on the service itself, not here.
 - **Voice model**: Piper voice model. Models are downloaded once and reused.
 - **Speech speed**: Speaking rate. `1.0` is Piper default. Range: `0.5`–`2.0`.
 - **Noise scale**: Voice variation. `0.0` is monotone, `1.0` is expressive. Default: `0.667`.
@@ -286,7 +300,7 @@ Cache behavior:
 
 The `.deb` service and Docker variant both use TCP ports `8766` (HTTP API) and `8927` (Sendspin) by default. If you start both on the same machine, the second deployment can fail with `Address already in use` or `port is already allocated`.
 
-This conflict applies only to overlapping ports on the same host. A `.deb` service on the RotorHazard Pi and a Docker service on a separate cloud host can both run. Configure the primary and cloud URLs in RotorHazard to send audio to both.
+This conflict applies only to overlapping ports on the same host. A `.deb` service on the RotorHazard Pi and a Docker service on a separate cloud host can both run — the primary's relay URL and the cloud instance's own address are independent, so neither needs to share a port with the other.
 
 If both deployments occupy the same host, choose which one should use the default ports:
 
@@ -295,7 +309,7 @@ If both deployments occupy the same host, choose which one should use the defaul
 
 Check `systemctl status sendspin-service --no-pager` and `docker ps` to confirm which deployment is running. If a port is still occupied, `sudo ss -ltnp '( sport = :8766 or sport = :8927 )'` shows the listeners. Verify the retained service with **Play audio check**.
 
-Running both on the same host requires separate host ports for each deployment. Set the primary and cloud URLs to the respective API ports and connect each player to its intended service.
+Running both on the same host requires separate host ports for each deployment. Point the relay URL and RotorHazard's own service URL at the respective API ports, and connect each player to its intended service.
 
 ### Cloudflare blocks uploads (403 / error code 1010)
 

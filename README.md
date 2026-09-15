@@ -51,7 +51,7 @@ Server-side voice callouts for the [RotorHazard] timing platform, powered by [Pi
 - 🎙️ **Local TTS**: Generates voice callouts with [Piper TTS] on the RotorHazard server.
 - 📡 **Sendspin service playback**: Sends generated WAV files to a service that streams PCM audio to connected Sendspin clients over WebSocket, including [WindowsSpin].
 - 🌐 **Browser player**: A built-in RotorHazard plugin player at `/player` that connects to the Sendspin service.
-- 🐳 **Optional cloud deployment**: Docker Compose is available as an extra for cloud hosting, including the browser player at `/`.
+- 🐳 **Optional cloud hosting**: Docker Compose runs the same service in the cloud, either as the primary's own audio destination or as an extra relay target alongside it, including the browser player at `/`.
 - 🔊 **Race sounds**: Plays staging tones and the race-start buzzer through the same Sendspin output path.
 - 🎛️ **Configurable voice**: Adjustable speech speed, noise scale, and phoneme width from the RotorHazard settings panel.
 - ⚡ **Smart caching**: Reusable pilot-name and lap-number segments are cached separately; use **Rebuild pre-cache** after first setup or voice model/settings changes to prepare them ahead of racing.
@@ -84,7 +84,7 @@ Server-side voice callouts for the [RotorHazard] timing platform, powered by [Pi
 
 Set RotorHazard browser **Voice Volume** and **Tone Volume** to `0` to prevent duplicate audio. The first use of a voice downloads its model.
 
-[Docker Compose](docs/usage.md#docker-image) is an optional cloud setup with its own player. Keep the local service URL and add **Cloud Sendspin service URL** plus **Cloud Sendspin API token** to stream the same audio locally and to the cloud simultaneously.
+[Docker Compose](docs/usage.md#docker-image) is an optional cloud setup with its own player. Point RotorHazard's **Sendspin service URL** straight at it to skip the local service entirely, or keep the local primary and add a relay so the same audio also reaches the cloud instance — see [cloud deployment](docs/usage.md#docker-image) for both.
 
 ## Documentation
 

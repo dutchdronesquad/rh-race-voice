@@ -6,7 +6,23 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 ## [Unreleased]
 
-Piper speech generation and model loading now run outside RotorHazard's event-loop thread, addressing pauses in live node/RSSI chart updates while TTS is busy. Synthesis remains bounded; this change does not remove the time needed to generate and buffer speech.
+Race Voice v2 moves the entire race-audio pipeline into the standalone Sendspin service. The RotorHazard plugin is now a thin adapter that only forwards race events and state; synthesis, scheduling, caching, and playback are owned end to end by the service. This is a hard cutover — update the plugin and service together, there is no mixed-mode fallback.
+
+### Cloud relay redesigned
+
+Cloud playback no longer means a second upload from the plugin. The primary service now relays already-synthesized audio to a separate cloud instance by content hash, so nothing is generated twice. Set up a cloud instance either way: pointed at directly from RotorHazard's own **Sendspin service URL**, or added as a relay alongside a local primary. Stopping a race or changing heats now reaches the cloud side too — previously it did not, and stale audio could keep playing there. A failed delivery retries automatically instead of silently dropping. Set the relay up with `sendspin-service relay enable --url <cloud-url>` instead of hand-editing the service's config file; see the [Usage Guide](docs/usage.md#docker-image) for both setups.
+
+### Hard cutover from v1
+
+The in-process synthesis path and the old **Cloud Sendspin service URL** / **Cloud Sendspin API token** plugin fields are gone. Update the plugin and service together — there is no legacy execution mode and no v1 compatibility path. See the [Usage Guide](docs/usage.md) for the three supported deployment shapes (local-only, local+relay, cloud-direct).
+
+### Race-day reliability
+
+- Scheduled stage tones and the race-start buzzer now stream in chunks with client-aware lead time, fixing tones that played closer together than scheduled on slower connections.
+- A stop or heat change discards any synthesis still in flight instead of letting it play late.
+- Announcements are prioritized over lap speech, with scheduled countdowns first.
+- Lap synthesis load is bounded so a busy gate crossing cannot back up the rest of the pipeline.
+- Piper and ONNX work is fully isolated from RotorHazard's gevent-patched event loop, keeping live node/RSSI chart updates responsive while TTS is busy.
 
 ## [1.2.0] - 2026-09-13
 

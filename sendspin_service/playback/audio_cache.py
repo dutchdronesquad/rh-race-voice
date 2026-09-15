@@ -46,6 +46,38 @@ class AudioCache:
         """Advertise immutable assets already present on the service."""
         return list(self._assets)
 
+    def missing(self, hashes: list[str]) -> list[str]:
+        """Report which content hashes are absent from bundled assets and uploads."""
+        with self._lock:
+            return [
+                h for h in hashes if h not in self._assets and h not in self._uploads
+            ]
+
+    def store(self, sha256: str, data: bytes) -> None:
+        """Retain one already hash-verified blob so a following get() can resolve it."""
+        with self._lock:
+            if sha256 in self._assets or sha256 in self._uploads:
+                if sha256 in self._uploads:
+                    self._uploads.move_to_end(sha256)
+                return
+            while self._uploads and (
+                self._size + len(data) > self._max_bytes
+                or len(self._uploads) >= _MAX_UPLOADS
+            ):
+                _, evicted = self._uploads.popitem(last=False)
+                self._size -= len(evicted)
+            self._uploads[sha256] = data
+            self._size += len(data)
+
+    def get(self, sha256: str) -> bytes | None:
+        """Return bytes for a bundled or uploaded reference, reading files lazily."""
+        with self._lock:
+            if sha256 in self._uploads:
+                self._uploads.move_to_end(sha256)
+                return self._uploads[sha256]
+            path = self._assets.get(sha256)
+        return path.read_bytes() if path is not None else None
+
     def resolve(
         self, references: Any, uploads: list[WavItem]
     ) -> tuple[list[WavItem], list[str]]:

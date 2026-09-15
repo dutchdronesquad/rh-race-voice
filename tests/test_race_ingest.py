@@ -1014,6 +1014,17 @@ class RaceModeConfigTests(unittest.TestCase):
                 )
             )
 
+    def test_relay_url_requires_a_scheme(self) -> None:
+        """A bare host:port is rejected instead of failing later at request time."""
+        with self.assertRaisesRegex(ValueError, "must start with http"):
+            SendspinService(
+                ServiceConfig(
+                    race_cache_dir=Path("cache"),
+                    relay_url="cloud.example.invalid",
+                    relay_token="relay-secret",  # noqa: S106
+                )
+            )
+
     def test_relay_destination_registered_when_configured(self) -> None:
         """A configured relay URL adds a "relay" destination alongside "local"."""
         with (

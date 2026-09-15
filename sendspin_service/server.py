@@ -73,9 +73,11 @@ class SendspinService:
         ):
             raise ValueError("Race ingest on a network interface requires an API token")
         if config.relay_url:
-            relay_host = urlsplit(config.relay_url).hostname
+            relay_parts = urlsplit(config.relay_url)
+            if relay_parts.scheme not in {"http", "https"}:
+                raise ValueError("--relay-url must start with http:// or https://")
             if (
-                relay_host not in {"127.0.0.1", "::1", "localhost"}
+                relay_parts.hostname not in {"127.0.0.1", "::1", "localhost"}
                 and not config.relay_token
             ):
                 raise ValueError(

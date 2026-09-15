@@ -63,7 +63,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     _add_env_file_arg(status)
 
     enable = subparsers.add_parser("enable", help="Turn the relay on")
-    enable.add_argument("--url", required=True, help="Cloud instance base URL")
+    enable.add_argument(
+        "--url",
+        required=True,
+        type=_url_type,
+        help="Cloud instance base URL, including http:// or https://",
+    )
     enable.add_argument("--token", help="Relay token; generated if omitted")
     enable.add_argument(
         "--rotate-token",
@@ -78,6 +83,13 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     _add_no_restart_arg(disable)
 
     return parser.parse_args(argv)
+
+
+def _url_type(value: str) -> str:
+    if not value.startswith(("http://", "https://")):
+        message = "must start with http:// or https://"
+        raise argparse.ArgumentTypeError(message)
+    return value
 
 
 def _add_env_file_arg(parser: argparse.ArgumentParser) -> None:

@@ -1,6 +1,6 @@
 """Verify relay_cli's env-file editing, token resolution, and dispatch."""
 
-# ruff: noqa: PT009
+# ruff: noqa: PT009, PT027
 
 from __future__ import annotations
 
@@ -73,6 +73,15 @@ class RelayCommandTests(unittest.TestCase):
         token = _existing_value(content.splitlines(), "SENDSPIN_RELAY_TOKEN")
         self.assertEqual(len(token), 64)
         self.assertIn(token, output)
+
+    def test_enable_rejects_a_url_without_a_scheme(self) -> None:
+        """A bare host:port is rejected instead of failing later at request time."""
+        env_file = str(self.env_file)
+        argv = ["enable", "--url", "cloud.example.com", "--env-file", env_file]
+        with self.assertRaises(SystemExit) as raised:
+            relay_cli.main(argv)
+        self.assertEqual(raised.exception.code, 2)
+        self.assertFalse(self.env_file.exists())
 
     def test_enable_reuses_an_existing_token(self) -> None:
         """A second enable call keeps the previously stored token."""

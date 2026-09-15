@@ -118,9 +118,10 @@ class RaceRelayReceiver:
         self._cache.store(sha256, data)
 
     def state(self, data: dict) -> dict:
-        """Install the primary's current context, gating staleness from here on."""
+        """Install the primary's current context, cutting stale audio here too."""
         _check_version(data)
         self._context = Context.parse(data.get("context"))
+        self._planner.invalidate()
         return {"outcome": "accepted"}
 
     def clock(self, data: dict) -> dict:

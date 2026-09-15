@@ -660,6 +660,16 @@ class AdapterTests(unittest.TestCase):
             channel.request(self.service.url, "GET", "/huge")
         self.assertEqual(channel.request(self.service.url, "GET", "/health")[0], 200)
 
+    def test_idle_connection_is_recycled_before_it_can_go_stale(self) -> None:
+        """A connection left idle past the limit is replaced, not reused as-is."""
+        channel = JsonChannel("")
+        self.addCleanup(channel.close)
+        self.assertEqual(channel.request(self.service.url, "GET", "/health")[0], 200)
+        first_connection = channel._connection
+        channel._last_used -= JsonChannel._IDLE_LIMIT_S + 1
+        self.assertEqual(channel.request(self.service.url, "GET", "/health")[0], 200)
+        self.assertIsNot(channel._connection, first_connection)
+
     def test_state_update_does_not_postpone_due_clock_refresh(self) -> None:
         """Frequent settings/roster updates must not age the service clock out."""
         self.connect()

@@ -380,7 +380,8 @@ class RaceEventAdapter:
         message = (
             "Audio test queued"
             if queued
-            else "Enable plugin audio and check service status before testing"
+            else "Enable plugin audio, or the Sendspin service could not be "
+            "reached -- check its URL and that it is running"
         )
         self._rhapi.ui.message_notify(message)
 
@@ -395,15 +396,14 @@ class RaceEventAdapter:
     def _cache_command(self, operation: str) -> None:
         if not self._publisher.can_command():
             self._rhapi.ui.message_alert(
-                "Check service status: disconnected or a cache command is still running"
+                "Not connected to the Sendspin service yet, or a cache "
+                "command is still running -- try again shortly"
             )
             return
         if operation == "clear_cache":
             self.stop_audio()
         self._publisher.command(operation)
-        self._rhapi.ui.message_notify(
-            "Cache command queued; use Service status to check progress"
-        )
+        self._rhapi.ui.message_notify("Cache command queued")
 
     def close(self, _args: dict | None = None) -> None:
         """Discard transport work on RH shutdown."""

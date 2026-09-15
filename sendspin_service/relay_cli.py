@@ -1,7 +1,5 @@
 """Configure this installation's relay without hand-editing its env file."""
 
-# ruff: noqa: T201
-
 from __future__ import annotations
 
 import argparse
@@ -10,11 +8,16 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from rich.console import Console
+from rich.table import Table
+
 DEFAULT_ENV_FILE = Path("/etc/default/sendspin-service")
 SERVICE_NAME = "sendspin-service"
 _URL_KEY = "SENDSPIN_RELAY_URL"
 _TOKEN_KEY = "SENDSPIN_RELAY_TOKEN"  # noqa: S105 -- env var name, not a secret
 _TOKEN_MASK_CHARS = 6
+
+console = Console()
 
 
 def main(argv: list[str]) -> int:
@@ -29,7 +32,7 @@ def main(argv: list[str]) -> int:
 
     if args.action == "disable":
         _write_lines(env_file, _apply(lines, {_URL_KEY: ""}))
-        print("Relay disabled.")
+        console.print("[green]✓[/green] Relay disabled")
     else:
         token = (
             args.token
@@ -37,11 +40,12 @@ def main(argv: list[str]) -> int:
             or secrets.token_hex(32)
         )
         _write_lines(env_file, _apply(lines, {_URL_KEY: args.url, _TOKEN_KEY: token}))
-        print(f"Relay enabled: {args.url}")
-        print(
-            "Relay token (copy into the cloud instance's .env as "
-            f"SENDSPIN_RELAY_TOKEN): {token}"
+        console.print(f"[green]✓[/green] Relay enabled: [bold]{args.url}[/bold]")
+        console.print(
+            "  Copy into the cloud instance's .env as "
+            "[bold]SENDSPIN_RELAY_TOKEN[/bold]:"
         )
+        console.print(f"  [yellow]{token}[/yellow]")
 
     if not args.no_restart:
         _restart_service()
@@ -131,16 +135,16 @@ def _apply(lines: list[str], updates: dict[str, str]) -> list[str]:
 def _print_status(lines: list[str]) -> None:
     url = _existing_value(lines, _URL_KEY)
     token = _existing_value(lines, _TOKEN_KEY)
-    if url:
-        print(f"Relay: enabled, {url}")
-    else:
-        print("Relay: disabled")
-    print(f"Token: {_mask(token)}")
+    table = Table(show_header=False, box=None, padding=(0, 1, 0, 0))
+    relay = f"[green]enabled[/green], {url}" if url else "[dim]disabled[/dim]"
+    table.add_row("Relay", relay)
+    table.add_row("Token", _mask(token))
+    console.print(table)
 
 
 def _mask(token: str | None) -> str:
     if not token:
-        return "(not set)"
+        return "[dim](not set)[/dim]"
     return f"{token[:_TOKEN_MASK_CHARS]}…"
 
 
@@ -159,6 +163,9 @@ def _write_lines(env_file: Path, lines: list[str]) -> None:
 
 def _restart_service() -> None:
     if shutil.which("systemctl") is None:
-        print(f"systemctl not found; restart {SERVICE_NAME} manually to apply.")
+        console.print(
+            f"[yellow]![/yellow] systemctl not found; "
+            f"restart {SERVICE_NAME} manually to apply."
+        )
         return
     subprocess.run(["systemctl", "restart", SERVICE_NAME], check=True)  # noqa: S603, S607

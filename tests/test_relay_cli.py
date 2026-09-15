@@ -113,14 +113,14 @@ class RelayCommandTests(unittest.TestCase):
     def test_status_reports_disabled_with_no_file(self) -> None:
         """Status against a nonexistent env file reports disabled, no token."""
         output = self._run("status")
-        self.assertIn("Relay: disabled", output)
+        self.assertIn("disabled", output)
         self.assertIn("(not set)", output)
 
     def test_status_masks_the_token(self) -> None:
         """Status never prints the full token."""
         self._run("enable", "--url", "https://a.example.com", "--token", "0123456789ab")
         output = self._run("status")
-        self.assertIn("Relay: enabled, https://a.example.com", output)
+        self.assertIn("enabled, https://a.example.com", output)
         self.assertIn("012345…", output)
         self.assertNotIn("0123456789ab", output)
 

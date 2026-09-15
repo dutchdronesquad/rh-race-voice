@@ -15,6 +15,7 @@ sendspin-service = [
     "numpy>=2.4.5",
     "pillow>=12.2.0",
     "piper-tts>=1.8.0",
+    "rich>=14.0.0",
 ]
 
 [dependency-groups]

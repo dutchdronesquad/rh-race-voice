@@ -186,7 +186,12 @@ class SendspinService:
             )
             destinations["relay"] = Destination(relay_sink)
         ingest = RaceIngest(
-            SynthesisWorker(self._config.race_cache_dir), destinations, assets
+            SynthesisWorker(self._config.race_cache_dir),
+            destinations,
+            assets,
+            on_context_change=(
+                relay_sink.push_context if relay_sink is not None else None
+            ),
         )
         add_routes(app, ingest)
 

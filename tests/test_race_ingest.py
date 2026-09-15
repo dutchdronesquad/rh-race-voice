@@ -805,6 +805,37 @@ class RaceIngestFanOutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.sink_a.stops, base_a + 2)
         self.assertEqual(self.sink_b.stops, base_b + 2)
 
+    async def test_on_context_change_fires_with_the_current_context(self) -> None:
+        """A configured hook receives the context on every generation bump."""
+        contexts = []
+
+        async def capture(context: object) -> None:
+            contexts.append(context)
+
+        _ingest, _worker, _session_id, snapshot = await self._new_ingest(
+            {}, on_context_change=capture
+        )
+        self.assertEqual(len(contexts), 1)
+        self.assertEqual(contexts[0].generation, 0)
+        snapshot["context"].update(revision=2, generation=1)
+        self.assertEqual((await _ingest.state(snapshot))["outcome"], "accepted")
+        self.assertEqual(len(contexts), 2)
+        self.assertEqual(contexts[1].generation, 1)
+
+    async def test_on_context_change_is_skipped_without_a_context_yet(self) -> None:
+        """No callback fires before any state snapshot has ever been admitted."""
+        contexts = []
+
+        async def capture(context: object) -> None:
+            contexts.append(context)
+
+        worker = Worker()
+        ingest = RaceIngest(worker, {}, {}, on_context_change=capture)
+        self.addAsyncCleanup(ingest.close)
+        owner = ingest.owner()
+        await ingest.session({**owner, "epoch": "rh-process", "nonce": "request-1"})
+        self.assertEqual(contexts, [])
+
     async def test_telemetry_destination_field_distinguishes_outcomes(self) -> None:
         """Two destinations' terminal records for one event_id stay attributable."""
         event_id = f"{self.session_id}:1"
@@ -822,10 +853,17 @@ class RaceIngestFanOutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({record["destination"] for record in scheduled}, {"a", "b"})
         self.assertEqual(len(scheduled), 2)
 
-    async def _new_ingest(self, destinations: dict[str, Destination]) -> tuple:
+    async def _new_ingest(
+        self,
+        destinations: dict[str, Destination],
+        *,
+        on_context_change: object = None,
+    ) -> tuple:
         """Build, admit and clock-sync a standalone ingest for a one-off test."""
         worker = Worker()
-        ingest = RaceIngest(worker, destinations, {})
+        ingest = RaceIngest(
+            worker, destinations, {}, on_context_change=on_context_change
+        )
         self.addAsyncCleanup(ingest.close)
         owner = ingest.owner()
         opened = await ingest.session(

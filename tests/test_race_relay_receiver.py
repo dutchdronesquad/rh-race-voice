@@ -21,8 +21,8 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from sendspin_service.playback.audio_cache import AudioCache
-from sendspin_service.race.race_protocol import EventKind
-from sendspin_service.race.race_relay import RaceRelaySink
+from sendspin_service.race.race_protocol import ClockMapping, EventKind
+from sendspin_service.race.race_relay import RELAY_VERSION, RaceRelaySink
 from sendspin_service.race.race_relay_receiver import (
     RaceRelayReceiver,
     _parse_plan,
@@ -31,6 +31,18 @@ from sendspin_service.race.race_relay_receiver import (
 from sendspin_service.server import SendspinService, ServiceConfig, _create_app
 from tests.test_race_ingest import FakeSink
 from tests.test_race_relay import _plan
+
+
+def _prime_clock(receiver: RaceRelayReceiver) -> None:
+    """Complete a same-process clock exchange so _parse_plan has a mapping."""
+    probe = receiver.clock({"version": RELAY_VERSION, "sent": time.monotonic()})
+    receiver.clock(
+        {
+            "version": RELAY_VERSION,
+            "probe_id": probe["probe_id"],
+            "received": time.monotonic(),
+        }
+    )
 
 
 class RaceRelayReceiverTests(unittest.IsolatedAsyncioTestCase):
@@ -43,6 +55,7 @@ class RaceRelayReceiverTests(unittest.IsolatedAsyncioTestCase):
         self.sink = FakeSink()
         self.receiver = RaceRelayReceiver(self.cache, self.sink)
         self.addAsyncCleanup(self.receiver.close)
+        _prime_clock(self.receiver)
 
     def test_announce_reports_missing_then_not_missing_after_upload(self) -> None:
         """A freshly-announced hash is missing until uploaded."""
@@ -70,8 +83,8 @@ class RaceRelayReceiverTests(unittest.IsolatedAsyncioTestCase):
                 "heat_id": None,
             },
             "kind": "tone",
-            "deadline_wall": time.time() + 5,
-            "target_wall": None,
+            "deadline": time.monotonic() + 5,
+            "target": None,
             "volume": 1.0,
             "pilot_id": None,
             "text": None,
@@ -88,18 +101,20 @@ class RaceRelayReceiverTests(unittest.IsolatedAsyncioTestCase):
         """A fully resolvable event is submitted to this host's own planner."""
         digest = hashlib.sha256(b"beep").hexdigest()
         self.receiver.upload(digest, b"beep")
+        context = {
+            "competition_id": "c",
+            "revision": 1,
+            "generation": 0,
+            "heat_id": 3,
+        }
+        self.receiver.state({"version": RELAY_VERSION, "context": context})
         body = {
             "version": "race-relay/1",
             "origin_event_id": "s:1",
-            "context": {
-                "competition_id": "c",
-                "revision": 1,
-                "generation": 0,
-                "heat_id": 3,
-            },
+            "context": context,
             "kind": "lap",
-            "deadline_wall": time.time() + 5,
-            "target_wall": None,
+            "deadline": time.monotonic() + 5,
+            "target": None,
             "volume": 0.5,
             "pilot_id": 7,
             "text": "twenty seconds",
@@ -117,12 +132,118 @@ class RaceRelayReceiverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.sink.played[0].event.pilot_id, 7)
         self.assertEqual(self.sink.played[0].volume, 0.5)
 
+    async def test_stale_context_is_dropped_not_played(self) -> None:
+        """An event for a superseded context is rejected, never reaches the sink."""
+        digest = hashlib.sha256(b"beep").hexdigest()
+        self.receiver.upload(digest, b"beep")
+        self.receiver.state(
+            {
+                "version": RELAY_VERSION,
+                "context": {
+                    "competition_id": "c",
+                    "revision": 2,
+                    "generation": 1,
+                    "heat_id": None,
+                },
+            }
+        )
+        body = {
+            "version": "race-relay/1",
+            "origin_event_id": "s:1",
+            "context": {
+                "competition_id": "c",
+                "revision": 1,
+                "generation": 0,
+                "heat_id": None,
+            },
+            "kind": "tone",
+            "deadline": time.monotonic() + 5,
+            "target": None,
+            "volume": 1.0,
+            "pilot_id": None,
+            "text": None,
+            "lap": None,
+            "pilot_name": None,
+            "asset": "stage",
+            "winner": False,
+            "audio_refs": [digest],
+        }
+        result = self.receiver.event(body)
+        self.assertEqual(result["outcome"], "dropped")
+        self.assertEqual(self.sink.played, [])
+
+    async def test_duplicate_origin_event_id_is_not_replayed(self) -> None:
+        """A retried POST with the same origin_event_id returns the cached result."""
+        digest = hashlib.sha256(b"beep").hexdigest()
+        self.receiver.upload(digest, b"beep")
+        self.receiver.state(
+            {
+                "version": RELAY_VERSION,
+                "context": {
+                    "competition_id": "c",
+                    "revision": 1,
+                    "generation": 0,
+                    "heat_id": None,
+                },
+            }
+        )
+        body = {
+            "version": "race-relay/1",
+            "origin_event_id": "s:1",
+            "context": {
+                "competition_id": "c",
+                "revision": 1,
+                "generation": 0,
+                "heat_id": None,
+            },
+            "kind": "tone",
+            "deadline": time.monotonic() + 5,
+            "target": None,
+            "volume": 1.0,
+            "pilot_id": None,
+            "text": None,
+            "lap": None,
+            "pilot_name": None,
+            "asset": "stage",
+            "winner": False,
+            "audio_refs": [digest],
+        }
+        first = self.receiver.event(body)
+        second = self.receiver.event(body)
+        self.assertEqual(first, second)
+        await self.sink.entered.wait()
+        self.assertEqual(len(self.sink.played), 1)
+
 
 class ParsePlanTests(unittest.TestCase):
-    """Verify the wall-clock-to-monotonic conversion and its horizon bound."""
+    """Verify the clock-mapping deadline conversion and its horizon bound."""
 
-    def test_deadline_wall_converts_to_a_monotonic_deadline_near_now(self) -> None:
-        """A 3-second-out wall-clock deadline lands ~3 seconds out on this clock."""
+    def test_deadline_converts_using_the_clock_mapping(self) -> None:
+        """A 3-second-out deadline lands ~3 seconds out after clock translation."""
+        directory = self.enterContext(TemporaryDirectory())
+        cache = AudioCache(Path(directory))
+        digest = hashlib.sha256(b"x").hexdigest()
+        cache.store(digest, b"x")
+        clock = ClockMapping(offset=0.0, uncertainty=0.01, measured_at=time.monotonic())
+        body = {
+            "version": "race-relay/1",
+            "origin_event_id": "s:1",
+            "context": {
+                "competition_id": "c",
+                "revision": 1,
+                "generation": 0,
+                "heat_id": None,
+            },
+            "kind": "tone",
+            "deadline": time.monotonic() + 3,
+            "target": None,
+            "audio_refs": [digest],
+        }
+        plan = _parse_plan(body, cache, 1, clock)
+        self.assertAlmostEqual(plan.deadline - time.monotonic(), 3, delta=0.5)
+
+    def test_missing_clock_mapping_is_rejected(self) -> None:
+        """An event before any clock exchange is rejected, not guessed at."""
         directory = self.enterContext(TemporaryDirectory())
         cache = AudioCache(Path(directory))
         digest = hashlib.sha256(b"x").hexdigest()
@@ -137,12 +258,12 @@ class ParsePlanTests(unittest.TestCase):
                 "heat_id": None,
             },
             "kind": "tone",
-            "deadline_wall": time.time() + 3,
-            "target_wall": None,
+            "deadline": time.monotonic() + 3,
+            "target": None,
             "audio_refs": [digest],
         }
-        plan = _parse_plan(body, cache, 1)
-        self.assertAlmostEqual(plan.deadline - time.monotonic(), 3, delta=0.5)
+        with self.assertRaises(ValueError):
+            _parse_plan(body, cache, 1, None)
 
 
 class RelayRoundTripTests(unittest.IsolatedAsyncioTestCase):
@@ -166,6 +287,7 @@ class RelayRoundTripTests(unittest.IsolatedAsyncioTestCase):
     async def test_relayed_plan_plays_through_the_receiving_local_sink(self) -> None:
         """A real RaceRelaySink.play() call reaches the receiver's local output."""
         plan = _plan(1, audio=(b"stage-tone",))
+        await self.relay_sink.push_context(plan.event.context)
         await self.relay_sink.play(plan, threading.Event())
         await self.sink.entered.wait()
         received = self.sink.played[0]

@@ -58,7 +58,6 @@ class ServiceConfig:
     relay_timeout_s: float = DEFAULT_RELAY_TIMEOUT_S
     local_enabled: bool = True
     relay_receiver_enabled: bool = False
-    relay_receiver_token: str = ""
 
 
 class SendspinService:
@@ -84,10 +83,10 @@ class SendspinService:
         if (
             config.relay_receiver_enabled
             and config.api_host not in {"127.0.0.1", "::1", "localhost"}
-            and not config.relay_receiver_token
+            and not config.relay_token
         ):
             raise ValueError(
-                "Relay receiver on a network interface requires --relay-receiver-token"
+                "Relay receiver on a network interface requires --relay-token"
             )
         asset_dir = Path(__file__).parent / "assets"
         if not asset_dir.is_dir():
@@ -141,9 +140,9 @@ class SendspinService:
         return self._config.api_token
 
     @property
-    def relay_receiver_token(self) -> str:
-        """Return the optional relay-receiver bearer token."""
-        return self._config.relay_receiver_token
+    def relay_token(self) -> str:
+        """Return the optional relay bearer token, shared by send and receive."""
+        return self._config.relay_token
 
     def shutdown(self) -> None:
         """Close the underlying Sendspin server."""
@@ -244,7 +243,7 @@ async def _api_token_middleware(
     handler: web.RequestHandler,
 ) -> web.StreamResponse:
     if request.path.startswith("/v2/relay/"):
-        _require_token(request, _service(request).relay_receiver_token)
+        _require_token(request, _service(request).relay_token)
     elif request.path.startswith("/v2/"):
         _require_token(request, _service(request).api_token)
     return await handler(request)
@@ -383,7 +382,8 @@ def _parse_args(argv: Sequence[str] | None = None) -> ServiceConfig:
     parser.add_argument(
         "--relay-token",
         default=_env_str("SENDSPIN_RELAY_TOKEN", ""),
-        help="Bearer token for the relay destination, separate from --api-token",
+        help="Shared bearer token for the relay hop (both --relay-url and"
+        " --relay-receiver-enabled), separate from --api-token",
     )
     parser.add_argument(
         "--relay-timeout-s",
@@ -403,12 +403,8 @@ def _parse_args(argv: Sequence[str] | None = None) -> ServiceConfig:
         "--relay-receiver-enabled",
         action="store_true",
         default=_env_bool("SENDSPIN_RELAY_RECEIVER_ENABLED", default=False),
-        help="Accept relayed audio+context from another instance's --relay-url",
-    )
-    parser.add_argument(
-        "--relay-receiver-token",
-        default=_env_str("SENDSPIN_RELAY_RECEIVER_TOKEN", ""),
-        help="Bearer token for /v2/relay/*, separate from --api-token/--relay-token",
+        help="Accept relayed audio+context from another instance's --relay-url,"
+        " authenticated with the same --relay-token",
     )
     args = parser.parse_args(argv)
     max_body_mb = _body_limit_mb(args.max_body_mb)
@@ -427,7 +423,6 @@ def _parse_args(argv: Sequence[str] | None = None) -> ServiceConfig:
         relay_timeout_s=args.relay_timeout_s,
         local_enabled=args.local_enabled,
         relay_receiver_enabled=args.relay_receiver_enabled,
-        relay_receiver_token=args.relay_receiver_token.strip(),
     )
 
 

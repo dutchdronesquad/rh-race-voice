@@ -180,7 +180,7 @@ def _config(**overrides: object) -> ServiceConfig:
 
 
 class RelayReceiverConfigTests(unittest.TestCase):
-    """Require opt-in and a distinct token before serving relay routes."""
+    """Require opt-in and a relay token before serving relay routes."""
 
     def test_receiver_routes_are_absent_by_default(self) -> None:
         """A bare ServiceConfig() registers no /v2/relay/* routes."""
@@ -191,8 +191,8 @@ class RelayReceiverConfigTests(unittest.TestCase):
         self.assertNotIn("/v2/relay/events", paths)
 
     def test_receiver_requires_token_off_loopback(self) -> None:
-        """An exposed, enabled receiver without a token fails fast."""
-        with self.assertRaisesRegex(ValueError, "requires --relay-receiver-token"):
+        """An exposed, enabled receiver without a relay token fails fast."""
+        with self.assertRaisesRegex(ValueError, "requires --relay-token"):
             SendspinService(
                 _config(
                     api_host="0.0.0.0",  # noqa: S104
@@ -202,12 +202,12 @@ class RelayReceiverConfigTests(unittest.TestCase):
             )
 
     def test_receiver_routes_registered_when_enabled(self) -> None:
-        """An enabled receiver with a token registers the relay routes."""
+        """An enabled receiver with a relay token registers the relay routes."""
         with patch("sendspin_service.server.SendSpinServer"):
             service = SendspinService(
                 _config(
                     relay_receiver_enabled=True,
-                    relay_receiver_token="secret",  # noqa: S106
+                    relay_token="secret",  # noqa: S106
                 )
             )
             app = _create_app(service)

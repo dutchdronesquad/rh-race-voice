@@ -965,3 +965,52 @@ class RaceModeConfigTests(unittest.TestCase):
         self.assertIn(
             "/v2/events", [resource.canonical for resource in app.router.resources()]
         )
+
+    def test_relay_requires_token_off_loopback(self) -> None:
+        """Catch an exposed unauthenticated relay before constructing the backend."""
+        with self.assertRaisesRegex(ValueError, "requires --relay-token"):
+            SendspinService(
+                ServiceConfig(
+                    race_cache_dir=Path("cache"),
+                    relay_url="http://cloud.example.invalid",
+                )
+            )
+
+    def test_relay_destination_registered_when_configured(self) -> None:
+        """A configured relay URL adds a "relay" destination alongside "local"."""
+        with (
+            patch("sendspin_service.server.SendSpinServer"),
+            patch("sendspin_service.race.race_relay.RaceRelaySink") as relay_sink,
+        ):
+            service = SendspinService(
+                ServiceConfig(
+                    race_cache_dir=Path("cache"),
+                    relay_url="http://127.0.0.1:9000",
+                    relay_token="relay-secret",  # noqa: S106
+                )
+            )
+            _create_app(service)
+        relay_sink.assert_called_once_with(
+            "http://127.0.0.1:9000",
+            token="relay-secret",  # noqa: S106
+            timeout_s=5.0,
+            destination="relay",
+        )
+
+    def test_local_output_can_be_disabled_with_relay_only(self) -> None:
+        """A relay-only primary registers no local Sendspin destination."""
+        with (
+            patch("sendspin_service.server.SendSpinServer"),
+            patch("sendspin_service.race.race_planner.SendspinPlaybackSink") as local,
+            patch("sendspin_service.race.race_relay.RaceRelaySink"),
+        ):
+            service = SendspinService(
+                ServiceConfig(
+                    race_cache_dir=Path("cache"),
+                    relay_url="http://127.0.0.1:9000",
+                    relay_token="relay-secret",  # noqa: S106
+                    local_enabled=False,
+                )
+            )
+            _create_app(service)
+        local.assert_not_called()

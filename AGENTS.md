@@ -115,6 +115,10 @@ Write PR descriptions as a short explanation of the change, not as a raw change 
 
 Avoid PR bodies made entirely of bullet lists. Do not enumerate every touched file or internal refactor unless it changes behavior, deployment, packaging, or the operator workflow. The reader should understand why the branch exists before they see the checklist.
 
+## PR Labels
+
+Apply exactly one category label to every PR when creating it, matching the repo's existing label set: `new-feature` for new capability, `bugfix` for bug fixes, `documentation` for docs-only changes, `refactor` for structural changes with no behavior change, `cleanup` for removing dead code or unused dependencies, `enhancement` for improving existing behavior without adding new capability, `breaking-change` for anything that changes existing defaults or behavior for current users. `gh pr edit`/`gh issue edit --add-label` sometimes fails with a GraphQL "Projects (classic) deprecated" error unrelated to the label itself; work around it with the REST API directly: `gh api repos/<owner>/<repo>/issues/<number>/labels -f "labels[]=<label>"`.
+
 ## Changelog Style
 
 Write changelog entries for end users and race operators, not as an internal implementation log.

@@ -81,19 +81,19 @@ journalctl -u sendspin-service -n 80 --no-pager
 
 Expect `active (running)` and a JSON health response containing the service version.
 
-To set up or change a [relay](#docker-image) to a cloud instance, use the CLI instead of editing the file directly:
+To set up or change a [relay](#docker-image) to a cloud instance, use the CLI instead of editing the file directly. `enable` and `disable` write to the service's env file, which is root-owned, so run those two with `sudo`; `status` only reads it and needs no elevated privileges:
 
 ```shell
-sendspin-service relay enable --url https://cloud.example.com   # generates and prints a token
+sudo sendspin-service relay enable --url https://cloud.example.com   # generates and prints a token
 sendspin-service relay status
-sendspin-service relay disable
+sudo sendspin-service relay disable
 ```
 
 | Command | Action |
 |---|---|
-| `sendspin-service relay enable --url <url>` | Turn the relay on, or point an already-enabled one at a new URL. The URL must include `http://` or `https://`. Reuses the existing token unless `--token <value>` sets one explicitly or `--rotate-token` generates a fresh one — either way, the token is printed so you can copy it into the cloud instance's `.env` as `SENDSPIN_RELAY_TOKEN`. |
+| `sudo sendspin-service relay enable --url <url>` | Turn the relay on, or point an already-enabled one at a new URL. The URL must include `http://` or `https://`. Reuses the existing token unless `--token <value>` sets one explicitly or `--rotate-token` generates a fresh one — either way, the token is printed so you can copy it into the cloud instance's `.env` as `SENDSPIN_RELAY_TOKEN`. |
 | `sendspin-service relay status` | Show whether the relay is enabled, its URL, and a masked token. |
-| `sendspin-service relay disable` | Turn the relay off. The token is kept, so a later `enable` doesn't require re-pairing both sides again. |
+| `sudo sendspin-service relay disable` | Turn the relay off. The token is kept, so a later `enable` doesn't require re-pairing both sides again. |
 
 Add `--no-restart` to `enable`/`disable` to write the config without restarting the service — apply it yourself later with `sudo systemctl restart sendspin-service`. Add `--env-file <path>` to any subcommand to edit a different env file, for testing or a non-standard install location; defaults to `/etc/default/sendspin-service`.
 
@@ -122,7 +122,7 @@ This same image supports two different roles — pick one.
 #### Local + relay (keep the local primary, also stream to the cloud)
 
 1. Deploy the cloud instance as above, with `SENDSPIN_RELAY_RECEIVER_ENABLED=true` set in its `.env`.
-2. On the local primary, run `sendspin-service relay enable --url <cloud-url>`.
+2. On the local primary, run `sudo sendspin-service relay enable --url <cloud-url>`.
 3. Copy the printed token into the cloud instance's `.env` as `SENDSPIN_RELAY_TOKEN`, then restart it (`docker compose up -d` again).
 4. Keep RotorHazard's **Sendspin service URL** pointed at the local primary (`http://127.0.0.1:8766`) — the relay hop happens entirely between the two services, the plugin is unaware of it.
 5. Run **Play audio check** in RotorHazard; audio should now reach both the local and cloud players.

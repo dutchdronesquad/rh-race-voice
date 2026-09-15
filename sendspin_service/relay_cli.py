@@ -30,22 +30,30 @@ def main(argv: list[str]) -> int:
         _print_status(lines)
         return 0
 
-    if args.action == "disable":
-        _write_lines(env_file, _apply(lines, {_URL_KEY: ""}))
-        console.print("[green]✓[/green] Relay disabled")
-    else:
-        token = (
-            args.token
-            or (None if args.rotate_token else _existing_value(lines, _TOKEN_KEY))
-            or secrets.token_hex(32)
-        )
-        _write_lines(env_file, _apply(lines, {_URL_KEY: args.url, _TOKEN_KEY: token}))
-        console.print(f"[green]✓[/green] Relay enabled: [bold]{args.url}[/bold]")
+    try:
+        if args.action == "disable":
+            _write_lines(env_file, _apply(lines, {_URL_KEY: ""}))
+            console.print("[green]✓[/green] Relay disabled")
+        else:
+            token = (
+                args.token
+                or (None if args.rotate_token else _existing_value(lines, _TOKEN_KEY))
+                or secrets.token_hex(32)
+            )
+            _write_lines(
+                env_file, _apply(lines, {_URL_KEY: args.url, _TOKEN_KEY: token})
+            )
+            console.print(f"[green]✓[/green] Relay enabled: [bold]{args.url}[/bold]")
+            console.print(
+                "  Copy into the cloud instance's .env as "
+                "[bold]SENDSPIN_RELAY_TOKEN[/bold]:"
+            )
+            console.print(f"  [yellow]{token}[/yellow]")
+    except PermissionError:
         console.print(
-            "  Copy into the cloud instance's .env as "
-            "[bold]SENDSPIN_RELAY_TOKEN[/bold]:"
+            f"[red]✗[/red] No permission to write {env_file}; rerun with sudo."
         )
-        console.print(f"  [yellow]{token}[/yellow]")
+        return 1
 
     if not args.no_restart:
         _restart_service()
@@ -180,4 +188,10 @@ def _restart_service() -> None:
             f"restart {SERVICE_NAME} manually to apply."
         )
         return
-    subprocess.run(["systemctl", "restart", SERVICE_NAME], check=True)  # noqa: S603, S607
+    try:
+        subprocess.run(["systemctl", "restart", SERVICE_NAME], check=True)  # noqa: S603, S607
+    except subprocess.CalledProcessError:
+        console.print(
+            f"[yellow]![/yellow] Could not restart {SERVICE_NAME}; "
+            f"rerun with sudo or restart it manually."
+        )

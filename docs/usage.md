@@ -103,11 +103,23 @@ docker compose up -d
 
 The Compose file builds from source. To use the published image, replace its `build:` block with `image: ghcr.io/dutchdronesquad/sendspin-service:latest`. Runtime settings are in `.env`.
 
-This same image supports two different roles — pick one:
+This same image supports two different roles — pick one.
 
-**Cloud-direct** (no local primary, no relay): point RotorHazard's own **Sendspin service URL** straight at the cloud instance's HTTP(S) API, for example `https://audio.example.com` when using an HTTPS reverse proxy (direct HTTP uses port `8766` by default). This must be the Race Voice `sendspin-service` API, not a player WebSocket URL or an arbitrary Sendspin server. Set `SENDSPIN_API_TOKEN` in the cloud `.env` and enter the same value, without the `Bearer` prefix, wherever a token field is required. Open the cloud player and connect it to that server's Sendspin endpoint (port `8927` by default), then run **Play audio check** in RotorHazard.
+#### Cloud-direct (no local primary, no relay)
 
-**Local + relay** (keep the local primary, also stream to the cloud): set `SENDSPIN_RELAY_RECEIVER_ENABLED=true` in the cloud `.env`, then on the local primary run `sendspin-service relay enable --url <cloud-url>` and paste the printed token into the cloud's `.env` as `SENDSPIN_RELAY_TOKEN` (restart the cloud container to pick it up). Keep RotorHazard's **Sendspin service URL** pointed at the local primary — the relay hop happens entirely between the two services, the plugin is unaware of it.
+1. Deploy the cloud instance as above (`cp .env.example .env`, generate a token, `docker compose up -d`).
+2. In RotorHazard, set **Sendspin service URL** to the cloud instance's HTTP(S) API base URL, for example `https://audio.example.com` behind an HTTPS reverse proxy (direct HTTP uses port `8766` by default). This must be the Race Voice `sendspin-service` API, not a player WebSocket URL or an arbitrary Sendspin server.
+3. Enter the cloud instance's `SENDSPIN_API_TOKEN` wherever a token field is required, without the `Bearer` prefix.
+4. Open the cloud player (`/`) or connect WindowsSpin to that server's Sendspin endpoint (port `8927` by default).
+5. Run **Play audio check** in RotorHazard.
+
+#### Local + relay (keep the local primary, also stream to the cloud)
+
+1. Deploy the cloud instance as above, with `SENDSPIN_RELAY_RECEIVER_ENABLED=true` set in its `.env`.
+2. On the local primary, run `sendspin-service relay enable --url <cloud-url>`.
+3. Copy the printed token into the cloud instance's `.env` as `SENDSPIN_RELAY_TOKEN`, then restart it (`docker compose up -d` again).
+4. Keep RotorHazard's **Sendspin service URL** pointed at the local primary (`http://127.0.0.1:8766`) — the relay hop happens entirely between the two services, the plugin is unaware of it.
+5. Run **Play audio check** in RotorHazard; audio should now reach both the local and cloud players.
 
 **Stop audio** clears every destination's queue, local and relayed. Each queue retains its own audio priorities, expiry and scheduled playback; a slow or unreachable relay target never blocks local playback. The two players synchronize independently; exact synchronization between local and relayed listeners is not guaranteed.
 

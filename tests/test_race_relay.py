@@ -16,6 +16,7 @@ import hashlib
 import threading
 import time
 import unittest
+import uuid
 from dataclasses import replace
 
 from aiohttp import web
@@ -53,19 +54,43 @@ class FakeRelayServer:
         self.assets_requests: list[dict] = []
         self.uploads: list[str] = []
         self.events: list[dict] = []
+        self.contexts: list[dict] = []
         self.headers: list[str] = []
         self.content: dict[str, bytes] = {}
         self.fail_events = False
+        self.fail_events_times = 0
         self.upload_gate: asyncio.Event | None = None
         self.upload_entered = asyncio.Event()
+        self._probe: dict | None = None
 
     def app(self) -> web.Application:
-        """Build the aiohttp app implementing the three relay routes."""
+        """Build the aiohttp app implementing the race-relay/1 routes."""
         app = web.Application()
         app.router.add_post("/v2/relay/assets", self._assets)
         app.router.add_put("/v2/relay/assets/{content_id}", self._upload)
+        app.router.add_post("/v2/relay/state", self._state)
+        app.router.add_post("/v2/relay/clock", self._clock)
         app.router.add_post("/v2/relay/events", self._events)
         return app
+
+    async def _state(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        self.contexts.append(body)
+        return web.json_response({"outcome": "accepted"})
+
+    async def _clock(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        now = time.monotonic()
+        if "probe_id" not in body:
+            self._probe = {
+                "probe_id": uuid.uuid4().hex,
+                "sent": body["sent"],
+                "received_remote": now,
+                "sent_remote": time.monotonic(),
+            }
+            return web.json_response(self._probe)
+        self._probe = None
+        return web.json_response({"offset": 0.0, "uncertainty": 0.01})
 
     async def _assets(self, request: web.Request) -> web.Response:
         self.headers.append(request.headers.get("Authorization", ""))
@@ -86,7 +111,8 @@ class FakeRelayServer:
         return web.json_response({})
 
     async def _events(self, request: web.Request) -> web.Response:
-        if self.fail_events:
+        if self.fail_events or self.fail_events_times > 0:
+            self.fail_events_times = max(0, self.fail_events_times - 1)
             return web.json_response({"error": "unavailable"}, status=503)
         self.events.append(await request.json())
         return web.json_response({})
@@ -163,6 +189,34 @@ class RaceRelaySinkTests(unittest.IsolatedAsyncioTestCase):
     async def test_stop_is_a_safe_no_op(self) -> None:
         """Stop does nothing yet; propagating it to a real remote is a follow-up."""
         await self.sink.stop()
+
+    async def test_retry_recovers_from_a_transient_failure(self) -> None:
+        """Two failures followed by a success still deliver the event."""
+        self.server.fail_events_times = 2
+        await self.sink.play(_plan(1), threading.Event())
+        self.assertEqual(len(self.server.events), 1)
+
+    async def test_retry_exhausted_never_raises(self) -> None:
+        """A permanently failing remote drops the event after all attempts."""
+        self.server.fail_events = True
+        with self.assertLogs("sendspin_service.race.race_relay", level="WARNING"):
+            await self.sink.play(_plan(1), threading.Event())
+        self.assertEqual(self.server.events, [])
+
+    async def test_push_context_sends_the_current_context(self) -> None:
+        """push_context reaches the remote's state route."""
+        context = _plan(1).event.context
+        await self.sink.push_context(context)
+        self.assertEqual(len(self.server.contexts), 1)
+        sent = self.server.contexts[0]["context"]
+        self.assertEqual(sent["competition_id"], context.competition_id)
+
+    async def test_push_context_failure_does_not_raise(self) -> None:
+        """A failing remote never breaks the caller's stop/generation-bump flow."""
+        sink = RaceRelaySink("http://127.0.0.1:1", timeout_s=0.2)
+        self.addAsyncCleanup(sink.aclose)
+        with self.assertLogs("sendspin_service.race.race_relay", level="WARNING"):
+            await sink.push_context(_plan(1).event.context)
 
 
 class RaceRelayFanOutTests(unittest.IsolatedAsyncioTestCase):

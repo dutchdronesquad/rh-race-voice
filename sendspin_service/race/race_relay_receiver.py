@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import re
 import time
+import uuid
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -15,6 +17,7 @@ from . import telemetry
 from .race_planner import CalloutPlan, PlaybackPlanner
 from .race_protocol import (
     MAX_EVENT_HORIZON,
+    ClockMapping,
     Context,
     EventKind,
     ProtocolError,
@@ -31,8 +34,11 @@ logger = logging.getLogger(__name__)
 
 ASSETS_PATH = "/v2/relay/assets"
 EVENTS_PATH = "/v2/relay/events"
+STATE_PATH = "/v2/relay/state"
+CLOCK_PATH = "/v2/relay/clock"
 MAX_BODY_BYTES = 65_536
 MAX_ASSET_BYTES = 8 * 1024 * 1024
+MAX_SEEN_EVENTS = 32
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
@@ -65,6 +71,11 @@ def _optional_text(value: object, name: str, limit: int = 4096) -> str | None:
     return _text(value, name, limit)
 
 
+def _check_version(data: dict) -> None:
+    if data.get("version") != RELAY_VERSION:
+        raise ProtocolError("Unsupported relay version")
+
+
 class RaceRelayReceiver:
     """Accept pre-synthesized relay audio and play it through this host's own output."""
 
@@ -74,14 +85,26 @@ class RaceRelayReceiver:
         """Own a planner independent of any RH-facing ingest on this same host."""
         self._cache = cache
         self._planner = PlaybackPlanner(
-            sink, is_current=lambda _event: True, destination=destination
+            sink, is_current=self._is_current, destination=destination
         )
         self._order = 0
+        self._context: Context | None = None
+        self._clock: ClockMapping | None = None
+        self._probe: dict | None = None
+        self._seen: dict[str, dict] = {}
+
+    def _is_current(self, event: RaceEvent) -> bool:
+        current = self._context
+        return (
+            current is not None
+            and event.context.competition_id == current.competition_id
+            and event.context.generation == current.generation
+            and event.context.heat_id == current.heat_id
+        )
 
     def assets(self, data: dict) -> dict:
         """Report which announced content hashes still need uploading."""
-        if data.get("version") != RELAY_VERSION:
-            raise ProtocolError("Unsupported relay version")
+        _check_version(data)
         refs = data.get("refs")
         if not isinstance(refs, list) or not refs:
             raise ProtocolError("refs must be a non-empty list")
@@ -94,14 +117,59 @@ class RaceRelayReceiver:
             raise ProtocolError("Uploaded content does not match its hash")
         self._cache.store(sha256, data)
 
+    def state(self, data: dict) -> dict:
+        """Install the primary's current context, gating staleness from here on."""
+        _check_version(data)
+        self._context = Context.parse(data.get("context"))
+        return {"outcome": "accepted"}
+
+    def clock(self, data: dict) -> dict:
+        """Keep one short-lived clock probe per relay, mirroring RaceIngest.clock."""
+        _check_version(data)
+        now = time.monotonic()
+        if "probe_id" not in data:
+            sent = data.get("sent")
+            if type(sent) not in (int, float) or not math.isfinite(sent):
+                raise ProtocolError("Clock probe requires a finite sent timestamp")
+            self._probe = {
+                "probe_id": uuid.uuid4().hex,
+                "sent": sent,
+                "received_remote": now,
+                "sent_remote": time.monotonic(),
+            }
+            return dict(self._probe)
+        probe = self._probe
+        if (
+            probe is None
+            or data["probe_id"] != probe["probe_id"]
+            or now - probe["sent_remote"] > 5
+        ):
+            raise web.HTTPConflict(reason="Clock probe expired or replaced")
+        self._probe = None
+        self._clock = ClockMapping.from_exchange(
+            probe["sent"],
+            probe["received_remote"],
+            probe["sent_remote"],
+            data.get("received"),
+        )
+        return {"offset": self._clock.offset, "uncertainty": self._clock.uncertainty}
+
     def event(self, data: dict) -> dict:
         """Reconstruct a CalloutPlan from a relayed event and queue it for playback."""
+        origin_event_id = _text(data.get("origin_event_id"), "origin_event_id", 256)
+        seen = self._seen.get(origin_event_id)
+        if seen is not None:
+            return seen
         self._order += 1
-        plan = _parse_plan(data, self._cache, self._order)
+        plan = _parse_plan(data, self._cache, self._order, self._clock)
         telemetry.record(
             plan.event.event_id, "received", kind=plan.event.kind.value, origin="relay"
         )
-        return {"outcome": "accepted" if self._planner.submit(plan) else "dropped"}
+        result = {"outcome": "accepted" if self._planner.submit(plan) else "dropped"}
+        self._seen[origin_event_id] = result
+        if len(self._seen) > MAX_SEEN_EVENTS:
+            del self._seen[next(iter(self._seen))]
+        return result
 
     async def close(self) -> None:
         """Stop accepting and finish this destination's own planner."""
@@ -114,24 +182,25 @@ def _content_hash(ref: object) -> str:
     return ref["sha256"]
 
 
-def _parse_plan(data: dict, cache: AudioCache, order: int) -> CalloutPlan:
+def _parse_plan(
+    data: dict, cache: AudioCache, order: int, clock: ClockMapping | None
+) -> CalloutPlan:
     """Reconstruct a CalloutPlan from a race-relay/1 event body."""
-    if data.get("version") != RELAY_VERSION:
-        raise ProtocolError("Unsupported relay version")
+    _check_version(data)
+    if clock is None:
+        raise ProtocolError("No relay clock mapping established yet")
     event_id = _text(data.get("origin_event_id"), "origin_event_id", 256)
     context = Context.parse(data.get("context"))
     try:
         kind = EventKind(data.get("kind"))
     except (ValueError, TypeError) as err:
         raise ProtocolError("Unsupported event kind") from err
-    deadline = _from_wall_clock(_number(data.get("deadline_wall"), "deadline_wall"))
     now = time.monotonic()
+    deadline = clock.bounds(_number(data.get("deadline"), "deadline"), now)[1]
     if not 0 < deadline - now <= MAX_EVENT_HORIZON:
         raise ProtocolError("Invalid event lifetime")
-    target_wall = data.get("target_wall")
-    target = (
-        _from_wall_clock(_number(target_wall, "target_wall")) if target_wall else None
-    )
+    raw_target = data.get("target")
+    target = clock.bounds(_number(raw_target, "target"), now)[1] if raw_target else None
     volume = _number(data.get("volume", 1.0), "volume")
     audio_refs = data.get("audio_refs")
     if not isinstance(audio_refs, list) or not audio_refs:
@@ -164,11 +233,6 @@ def _parse_plan(data: dict, cache: AudioCache, order: int) -> CalloutPlan:
     return CalloutPlan(event, deadline, target, volume, tuple(audio), order=order)
 
 
-def _from_wall_clock(wall_time: float) -> float:
-    """Invert race_relay._wall_clock(): approximate wall-clock to monotonic."""
-    return time.monotonic() + (wall_time - time.time())
-
-
 async def _read_json_body(request: web.Request, limit: int) -> dict:
     body = await _read_raw_body(request, limit)
     data = json.loads(body)
@@ -193,7 +257,12 @@ def _validate_sha256(value: str) -> str:
 
 
 def add_routes(app: web.Application, receiver: RaceRelayReceiver) -> None:
-    """Register the three race-relay/1 receiver routes."""
+    """Register the race-relay/1 receiver routes."""
+    handlers = {
+        ASSETS_PATH: receiver.assets,
+        STATE_PATH: receiver.state,
+        CLOCK_PATH: receiver.clock,
+    }
 
     async def handle(request: web.Request) -> web.Response:
         try:
@@ -203,8 +272,9 @@ def add_routes(app: web.Application, receiver: RaceRelayReceiver) -> None:
                 receiver.upload(sha256, body)
                 return web.json_response({})
             data = await _read_json_body(request, MAX_BODY_BYTES)
-            if request.path == ASSETS_PATH:
-                return web.json_response(receiver.assets(data))
+            json_handler = handlers.get(request.path)
+            if json_handler is not None:
+                return web.json_response(json_handler(data))
             result = receiver.event(data)
             status = 202 if result["outcome"] == "accepted" else 200
             return web.json_response(result, status=status)
@@ -218,4 +288,6 @@ def add_routes(app: web.Application, receiver: RaceRelayReceiver) -> None:
 
     app.router.add_post(ASSETS_PATH, handle)
     app.router.add_put(f"{ASSETS_PATH}/{{sha256}}", handle)
+    app.router.add_post(STATE_PATH, handle)
+    app.router.add_post(CLOCK_PATH, handle)
     app.router.add_post(EVENTS_PATH, handle)

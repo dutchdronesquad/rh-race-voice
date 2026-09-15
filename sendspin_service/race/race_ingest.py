@@ -31,6 +31,8 @@ from .race_schedule import RaceSchedule
 from .speech import SpeechEngine
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from sendspin_service.synthesis.synthesis import SynthesisWorker
 
 logger = logging.getLogger(__name__)
@@ -111,9 +113,12 @@ class RaceIngest:
         worker: SynthesisWorker,
         destinations: dict[str, Destination],
         assets: dict[str, bytes],
+        *,
+        on_context_change: Callable[[Context], Awaitable[None]] | None = None,
     ) -> None:
         """Wire the existing worker and planners into every named output."""
         self._worker = worker
+        self._on_context_change = on_context_change
         self._boot_id = uuid.uuid4().hex
         self._owner_revision = 0
         self._order = 0
@@ -285,6 +290,8 @@ class RaceIngest:
         self._preparation.invalidate()
         try:
             await asyncio.gather(*(output.flush() for output in self._outputs.values()))
+            if self._on_context_change is not None and self._gate.context is not None:
+                await self._on_context_change(self._gate.context)
             self._blocked = False
         finally:
             self._changing = False

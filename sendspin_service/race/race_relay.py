@@ -1,12 +1,4 @@
-"""Forward synthesized audio and race context to a remote relay by content hash.
-
-First increment of #301: the sending side only. There is no real receiver
-yet, so the wire contract (race-relay/1) is new and interim, and
-CalloutPlan.deadline/target (this process's own monotonic clock) are sent as
-approximate wall-clock timestamps rather than through a real cross-machine
-ClockMapping exchange -- there is no receiver yet to exchange clocks with.
-See docs/race-event-contract.md.
-"""
+"""Forward synthesized audio and race context to a remote relay by content hash."""
 
 from __future__ import annotations
 
@@ -32,11 +24,7 @@ _EVENTS_PATH = "/v2/relay/events"
 
 
 def _wall_clock(monotonic_time: float) -> float:
-    """Convert a monotonic timestamp to an approximate wall-clock one.
-
-    Interim only: good enough to order events on the same host clock family,
-    not a bounded-uncertainty cross-machine mapping. See the module docstring.
-    """
+    """Convert a monotonic timestamp to an approximate wall-clock one."""
     return time.time() + (monotonic_time - time.monotonic())
 
 

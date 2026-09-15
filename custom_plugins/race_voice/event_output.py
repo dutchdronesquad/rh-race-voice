@@ -17,6 +17,11 @@ logger = logging.getLogger(__name__)
 _LIMIT = 65_536
 
 
+def next_counter(previous: int) -> int:
+    """Advance past *previous*, anchored on wall-clock ms (see event_adapter)."""
+    return max(previous + 1, int(time.time() * 1000))
+
+
 class JsonChannel:
     """Reuse one HTTP connection, owned by exactly one sender greenlet."""
 
@@ -87,15 +92,20 @@ class JsonChannel:
 class EventPublisher:
     """Keep one latest snapshot and small disposable queues, independent of TTS."""
 
-    def __init__(self, *, token: str = "") -> None:
-        """Keep construction free of network I/O and automatic ownership takeover."""
+    def __init__(self, *, epoch: str, token: str = "") -> None:
+        """Keep construction free of network I/O.
+
+        *epoch* identifies this publisher across process restarts (the
+        caller persists it), so a restart reclaims its own session without
+        a conflict, while a genuinely different publisher still fences.
+        """
         self._control = JsonChannel(token)
         self._audio = JsonChannel(token)
         self._commands = JsonChannel(token)
         self._command_task = None
         self._command_sequence = 0
         self.command_status = "No cache command requested"
-        self._epoch = uuid.uuid4().hex
+        self._epoch = epoch
         self._url = ""
         self._state: dict | None = None
         self._pending: list[dict] = []
@@ -105,12 +115,16 @@ class EventPublisher:
         self._serial = 0
         self._ack_revision = 0
         self._clock_due = 0.0
-        self._takeover = False
+        self._handshake_complete = False
         self._wake = Event()
         self._audio_wake = Event()
         self._tasks = []
         self._closed = False
         self.status = "Not connected"
+
+    def set_epoch(self, epoch: str) -> None:
+        """Replace the identity set at construction, before the first connect."""
+        self._epoch = epoch
 
     def start(self) -> None:
         """Start cooperative senders after RH startup, once state has been captured."""
@@ -143,11 +157,6 @@ class EventPublisher:
             self._set_status("Updating race state")
         self._wake.set()
 
-    def take_over(self) -> None:
-        """Allow replacement of a previous publisher only after an operator action."""
-        self._takeover = True
-        self._disconnect("Connection requested")
-
     def submit(
         self,
         kind: str,
@@ -157,7 +166,7 @@ class EventPublisher:
         play_at: float | None = None,
     ) -> bool:
         """Capture fresh audio without waiting; drop work while disconnected."""
-        if not self._ready() or expires_at <= time.monotonic():
+        if not self.can_send_audio() or expires_at <= time.monotonic():
             return False
         event = {
             "version": "race-events/1",
@@ -210,6 +219,26 @@ class EventPublisher:
             and self._session
             and self._state
             and self._ack_revision == self._state["context"]["revision"]
+        )
+
+    def can_send_audio(self) -> bool:
+        """Check whether this session has done its first full handshake.
+
+        Unlike _ready(), this does not wait for every subsequent state PUT
+        to be acknowledged -- the server's own admission already validates
+        context freshness per event, so gating audio dispatch on the
+        *latest* ack only adds latency (e.g. right at heat start, when
+        state changes are frequent) without a correctness benefit. But the
+        server must have received *some* state and a clock mapping for
+        this session at least once (_handshake_complete), or every event
+        is rejected as stale_context / needing a clock exchange -- which
+        tears the connection down and is far worse than the wait.
+        """
+        return bool(
+            not self._closed
+            and self._session
+            and self._state
+            and self._handshake_complete
         )
 
     def can_command(self) -> bool:
@@ -283,6 +312,7 @@ class EventPublisher:
         self._serial += 1
         self._session = None
         self._ack_revision = 0
+        self._handshake_complete = False
         self._pending.clear()
         self._set_status(status)
         self._wake.set()
@@ -299,7 +329,14 @@ class EventPublisher:
         return _checked(status, result)
 
     def _connect(self, url: str) -> str:
-        """Probe reachability before session negotiation; any healthy service is v2."""
+        """Probe reachability before session negotiation; any healthy service is v2.
+
+        A matching *epoch* (this publisher reconnecting, e.g. after its own
+        restart) reclaims the existing session via the GET alone, with no
+        POST and no conflict. A different epoch (a genuinely different
+        publisher) still fences here; that's left for an operator to
+        resolve rather than silently overridden.
+        """
         self._request(url, "GET", "/health")
         owner = self._request(url, "GET", "/v2/session")
         if owner.get("epoch") != self._epoch:
@@ -311,7 +348,7 @@ class EventPublisher:
                     **owner,
                     "epoch": self._epoch,
                     "nonce": uuid.uuid4().hex,
-                    "takeover": self._takeover,
+                    "takeover": False,
                 },
             )
         session = owner.get("session_id")
@@ -326,11 +363,10 @@ class EventPublisher:
             if serial != self._serial:
                 return
             if session != self._last_session:
-                self._sequence = 0
-                self._command_sequence = 0
+                self._sequence = next_counter(0)
+                self._command_sequence = next_counter(0)
             self._session = self._last_session = session
             self._clock_due = 0
-            self._takeover = False
         state = self._state
         session = self._session
         if self._ack_revision != state["context"]["revision"]:
@@ -361,6 +397,7 @@ class EventPublisher:
                 return
             self._clock_due = time.monotonic() + 20
             self._ack_revision = state["context"]["revision"]
+            self._handshake_complete = True
         self._set_status("Connected")
         self._audio_wake.set()
 
@@ -387,7 +424,7 @@ class EventPublisher:
             while not self._closed:
                 self._audio_wake.wait()
                 self._audio_wake.clear()
-                while self._pending and self._ready():
+                while self._pending and self.can_send_audio():
                     event = min(self._pending, key=_priority)
                     self._pending.remove(event)
                     if event["expires_at"] <= time.monotonic():

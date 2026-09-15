@@ -10,17 +10,23 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import gevent
 from eventmanager import Evt
 from filtermanager import Flt
 from gevent import monkey
 
 from . import const
-from .event_output import EventPublisher
+from .event_output import EventPublisher, next_counter
 from .services.clock_callouts import ClockCallouts
 from .ui import register_ui
 
 _LOCALES = json.loads((Path(__file__).parent / "locales.json").read_text())
 _COMPETITION_OPTION = "race_voice_competition_id"
+_PUBLISHER_EPOCH_OPTION = "race_voice_publisher_epoch"
+# The publisher's session handshake can still be in flight when a manual
+# test lands; retry briefly instead of nagging about ordinary startup timing.
+_EMIT_RETRY_S = 3.0
+_EMIT_POLL_S = 0.1
 _OPTIONS = {
     const.ENABLE_OPTION,
     const.VOICE_MODEL_OPTION,
@@ -35,6 +41,10 @@ def _locale(model: str) -> dict:
     return _LOCALES.get(model[:2], _LOCALES["en"])
 
 
+def _is_valid_time(value: Any) -> bool:
+    return type(value) in (int, float) and math.isfinite(value)
+
+
 class RaceEventAdapter:
     """Capture RH values on callbacks and hand bounded copies to the publisher."""
 
@@ -45,8 +55,12 @@ class RaceEventAdapter:
                 "The event adapter requires RotorHazard's gevent-patched sockets"
             )
         self._rhapi = rhapi
+        # Epoch is a placeholder until _startup() resolves the persisted value;
+        # the DB's options cache isn't primed yet this early in plugin load,
+        # so reading it here would read empty and overwrite a real one.
         self._publisher = EventPublisher(
-            token=os.environ.get("RACE_VOICE_SERVICE_TOKEN", "")
+            epoch=uuid.uuid4().hex,
+            token=os.environ.get("RACE_VOICE_SERVICE_TOKEN", ""),
         )
         self._snapshot: dict | None = None
         self._competition = ""
@@ -61,13 +75,6 @@ class RaceEventAdapter:
             self.clear_cache,
             self.prepare_cache,
         )
-        for name, label, function in (
-            ("race_voice_connect", "Connect / take over service", self.connect),
-            ("race_voice_status", "Service status", self.show_status),
-        ):
-            rhapi.ui.register_quickbutton(
-                panel=const.PANEL_ID, name=name, label=label, function=function
-            )
         self._register()
 
     def _register(self) -> None:
@@ -76,11 +83,12 @@ class RaceEventAdapter:
             (Evt.SHUTDOWN, self.close),
             (Evt.HEAT_SET, self._heat),
             (Evt.OPTION_SET, self._option_changed),
-            (Evt.RACE_STAGE_TONE, self._stage),
-            (Evt.RACE_START, self._race_start),
+            (Evt.RACE_STAGE, self._staged),
             (Evt.RACE_CLOCK_CALLOUT, self._clock_callout),
             (Evt.RACE_SCHEDULE, self._race_schedule),
             (Evt.RACE_SCHEDULE_CANCEL, self.stop_audio),
+            (Evt.RACE_ABORT, self.stop_audio),
+            (Evt.RACE_STOP, self.stop_audio),
         ):
             self._rhapi.events.on(event, callback, name=f"race_voice_event_{event}")
         for event in (Evt.PILOT_ADD, Evt.PILOT_ALTER, Evt.HEAT_ALTER, Evt.HEAT_DELETE):
@@ -104,7 +112,12 @@ class RaceEventAdapter:
         )
 
     def _startup(self, _args: dict | None = None) -> None:
-        self._refresh()
+        publisher_epoch = self._option(_PUBLISHER_EPOCH_OPTION, "") or uuid.uuid4().hex
+        self._rhapi.db.option_set(_PUBLISHER_EPOCH_OPTION, publisher_epoch)
+        self._publisher.set_epoch(publisher_epoch)
+        # sound_changed can't see an identity change made while we were
+        # down (no prior snapshot on a fresh process), so force one here.
+        self._refresh(invalidate=True)
         self._publisher.start()
 
     def _option(self, name: str, default: Any) -> Any:
@@ -182,9 +195,9 @@ class RaceEventAdapter:
             or old["context"]["competition_id"] != self._competition
         )
         if invalidate or sound_changed:
-            self._generation += 1
+            self._generation = next_counter(self._generation)
             self._scheduled_start = scheduled_start
-        self._revision += 1
+        self._revision = next_counter(self._revision)
         state["context"] = {
             "competition_id": self._competition,
             "revision": self._revision,
@@ -262,21 +275,29 @@ class RaceEventAdapter:
             )
         return payload
 
-    def _stage(self, args: dict) -> None:
-        self._emit(
-            "tone",
-            {"asset": "stage"},
-            ttl=0.25,
-            target=args.get("scheduled_at_monotonic"),
-        )
+    def _staged(self, args: dict) -> None:
+        """Schedule the whole staging sequence at once, not tone-by-tone.
 
-    def _race_start(self, _args: dict) -> None:
-        self._emit(
-            "tone",
-            {"asset": "buzzer"},
-            ttl=1,
-            target=self._rhapi.race.start_time_internal,
-        )
+        RACE_STAGE fires once, seconds before the actual start, already
+        carrying every stage-tone time and the start time. Waiting for each
+        RACE_STAGE_TONE (and RACE_START, which fires with no lead at all)
+        gives each tone only RH's per-tone lead; scheduling everything here
+        instead gives every tone the same head start the buzzer needs.
+        """
+        start_at = args.get("pi_starts_at_s")
+        if not _is_valid_time(start_at):
+            return
+        stage_at = args.get("pi_staging_at_s")
+        if _is_valid_time(stage_at):
+            try:
+                tone_count = int(args.get("staging_tones", 0))
+            except (TypeError, ValueError):
+                tone_count = 0
+            for i in range(max(0, tone_count)):
+                self._emit_resilient(
+                    "tone", {"asset": "stage"}, ttl=0.25, target=stage_at + i
+                )
+        self._emit_resilient("tone", {"asset": "buzzer"}, ttl=1, target=start_at)
 
     def _clock_callout(self, args: dict) -> None:
         plan = self._clock.plan(args.get("seconds_remaining"))
@@ -284,7 +305,7 @@ class RaceEventAdapter:
             return
         target = args.get("scheduled_at_monotonic")
         if plan.kind in {"tone", "buzzer"}:
-            self._emit(
+            self._emit_resilient(
                 "tone",
                 {"asset": "stage" if plan.kind == "tone" else "buzzer"},
                 ttl=0.25 if plan.kind == "tone" else 1,
@@ -292,7 +313,7 @@ class RaceEventAdapter:
             )
         else:
             text = self._clock.phrase(plan.seconds, self._snapshot["voice"]["model"])
-            self._emit("countdown", {"text": text}, ttl=8, target=target)
+            self._emit_resilient("countdown", {"text": text}, ttl=8, target=target)
 
     def _race_schedule(self, args: dict) -> None:
         target = args.get("scheduled_at")
@@ -309,7 +330,7 @@ class RaceEventAdapter:
     def generate_test_phrase(self, _args: dict | None = None) -> None:
         """Send the operator's test text through the same service event path."""
         self._report_test(
-            self._emit(
+            self._emit_resilient(
                 "voice",
                 {
                     "text": str(
@@ -324,7 +345,36 @@ class RaceEventAdapter:
 
     def audio_check(self, _args: dict | None = None) -> None:
         """Request the service's bundled audio-check asset without opening a WAV."""
-        self._report_test(self._emit("tone", {"asset": "audio_check"}, ttl=45))
+        self._report_test(
+            self._emit_resilient("tone", {"asset": "audio_check"}, ttl=45)
+        )
+
+    def _emit_resilient(
+        self,
+        kind: str,
+        payload: dict,
+        *,
+        ttl: float = 10,
+        target: float | None = None,
+    ) -> bool:
+        """Retry ``_emit`` briefly to ride out a momentary reconnect.
+
+        A service restart drops and re-establishes this connection in a
+        few milliseconds, but a race-stage tone emitted in that exact
+        window would otherwise be silently lost with no retry.
+        """
+        deadline = time.monotonic() + _EMIT_RETRY_S
+        while True:
+            if self._emit(kind, payload, ttl=ttl, target=target):
+                return True
+            if (
+                self._snapshot is None
+                or not self._snapshot["voice"]["enabled"]
+                or self._publisher.can_send_audio()
+                or time.monotonic() >= deadline
+            ):
+                return False
+            gevent.sleep(_EMIT_POLL_S)
 
     def _report_test(self, queued: bool) -> None:  # noqa: FBT001
         message = (
@@ -333,21 +383,6 @@ class RaceEventAdapter:
             else "Enable plugin audio and check service status before testing"
         )
         self._rhapi.ui.message_notify(message)
-
-    def connect(self, _args: dict | None = None) -> None:
-        """Explicitly allow this RH process to replace a previous publisher."""
-        self._refresh(invalidate=True)
-        self._publisher.take_over()
-        self._publisher.start()
-        self._rhapi.ui.message_notify(
-            "Connection requested; use Service status to check the result"
-        )
-
-    def show_status(self, _args: dict | None = None) -> None:
-        """Read publisher status on the RH side, without performing a request."""
-        self._rhapi.ui.message_notify(
-            f"Race Voice: {self._publisher.status}; {self._publisher.command_status}"
-        )
 
     def prepare_cache(self, _args: dict | None = None) -> None:
         """Prepare the captured heat roster and reusable phrases in the service."""

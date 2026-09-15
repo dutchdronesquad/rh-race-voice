@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import onnxruntime
-from gevent import get_hub
 from piper import PiperVoice
 from piper.config import PiperConfig, SynthesisConfig
 
@@ -198,14 +197,13 @@ class PiperSynthesizer:
     def _run_native[T](
         self, function: Callable[..., T], *args: Any, **kwargs: Any
     ) -> T:
-        """Offload only blocking Piper/ONNX work, retaining RH calls on the hub.
+        """Offload blocking Piper/ONNX work; subclasses supply the isolation.
 
-        RotorHazard monkey-patches threading, so its ordinary executor does not
-        isolate inference from the gevent event loop. The hub's native pool does.
-        Hold a cooperative lock on the calling side to serialize native work.
+        A gevent-patched caller and a subprocess worker need different
+        isolation, and only one of them has gevent installed at all. See
+        GeventPiperSynthesizer and WorkerSynthesizer.
         """
-        with self._native_lock:
-            return get_hub().threadpool.apply(function, args, kwargs)
+        raise NotImplementedError
 
     def _load_voice(self, model_name: str) -> Any | None:
         """Load the selected Piper model once, downloading files if necessary."""

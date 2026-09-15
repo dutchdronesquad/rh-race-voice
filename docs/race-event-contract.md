@@ -82,10 +82,10 @@ Machine-readable wire shapes are in [`protocol/race-events-v1.schema.json`](prot
 | --- | --- |
 | `Flt.EMIT_PHONETIC_DATA` | Lap payload with explicit ID; skip holeshots as today |
 | `Flt.EMIT_PHONETIC_TEXT` | Full upstream phrase and winner flag |
-| `Evt.RACE_STAGE_TONE` | Stage asset and RH scheduled target |
-| `Evt.RACE_START` | Buzzer at RH race start target |
+| `Evt.RACE_STAGE` | Every stage tone plus the buzzer, all scheduled up front (`Evt.RACE_STAGE_TONE`/`Evt.RACE_START` fire too close to their own targets to schedule from) |
 | `Evt.RACE_CLOCK_CALLOUT` | Tone/buzzer or localized spoken countdown |
 | `Evt.RACE_SCHEDULE` / cancel | Service countdown plan tied to RH target and generation |
+| `Evt.RACE_ABORT` | Cancels a scheduled buzzer when staging is stopped before start |
 | Heat/pilot/database changes | Atomic full snapshot and appropriate invalidation |
 | Test phrase / audio check | Explicit voice / bundled asset request |
 | Prepare / clear cache | Bounded manual commands with job status |

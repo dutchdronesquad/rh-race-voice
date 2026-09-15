@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from aiohttp import web
 
@@ -36,6 +37,7 @@ BYTES_PER_MIB = 1024 * 1024
 # and compose.yaml both mount persistent state at /var/lib/sendspin-service,
 # so this default needs no additional packaging configuration to persist.
 DEFAULT_RACE_CACHE_DIR = Path("/var/lib/sendspin-service/race-voice-cache")
+DEFAULT_RELAY_TIMEOUT_S = 5.0
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,10 @@ class ServiceConfig:
     player_dir: Path | None = None
     api_token: str = ""
     race_cache_dir: Path = DEFAULT_RACE_CACHE_DIR
+    relay_url: str = ""
+    relay_token: str = ""
+    relay_timeout_s: float = DEFAULT_RELAY_TIMEOUT_S
+    local_enabled: bool = True
 
 
 class SendspinService:
@@ -64,6 +70,15 @@ class SendspinService:
             and not config.api_token
         ):
             raise ValueError("Race ingest on a network interface requires an API token")
+        if config.relay_url:
+            relay_host = urlsplit(config.relay_url).hostname
+            if (
+                relay_host not in {"127.0.0.1", "::1", "localhost"}
+                and not config.relay_token
+            ):
+                raise ValueError(
+                    "Relay destination outside localhost requires --relay-token"
+                )
         asset_dir = Path(__file__).parent / "assets"
         if not asset_dir.is_dir():
             asset_dir = (
@@ -139,19 +154,31 @@ class SendspinService:
                 "audio_check": "moavii-foreign.wav",
             }.items()
         }
+        destinations: dict[str, Destination] = {}
+        if self._config.local_enabled:
+            destinations["local"] = Destination(
+                SendspinPlaybackSink(self._sendspin, destination="local")
+            )
+        relay_sink = None
+        if self._config.relay_url:
+            from .race.race_relay import RaceRelaySink  # noqa: PLC0415
+
+            relay_sink = RaceRelaySink(
+                self._config.relay_url,
+                token=self._config.relay_token,
+                timeout_s=self._config.relay_timeout_s,
+                destination="relay",
+            )
+            destinations["relay"] = Destination(relay_sink)
         ingest = RaceIngest(
-            SynthesisWorker(self._config.race_cache_dir),
-            {
-                "local": Destination(
-                    SendspinPlaybackSink(self._sendspin, destination="local")
-                )
-            },
-            assets,
+            SynthesisWorker(self._config.race_cache_dir), destinations, assets
         )
         add_routes(app, ingest)
 
         async def cleanup(_app: web.Application) -> None:
             await ingest.close()
+            if relay_sink is not None:
+                await relay_sink.aclose()
 
         app.on_cleanup.append(cleanup)
 
@@ -218,6 +245,16 @@ def _env_int(name: str, default: int) -> int:
     with contextlib.suppress(ValueError):
         return int(value)
     logger.warning("Ignoring invalid integer value for %s: %r", name, value)
+    return default
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    with contextlib.suppress(ValueError):
+        return float(value)
+    logger.warning("Ignoring invalid float value for %s: %r", name, value)
     return default
 
 
@@ -300,6 +337,30 @@ def _parse_args(argv: Sequence[str] | None = None) -> ServiceConfig:
         dest="race_cache_dir",
         help="Piper synthesis cache directory for the race-event ingest routes",
     )
+    parser.add_argument(
+        "--relay-url",
+        default=_env_str("SENDSPIN_RELAY_URL", ""),
+        help="Remote relay base URL for cloud output; empty disables the relay",
+    )
+    parser.add_argument(
+        "--relay-token",
+        default=_env_str("SENDSPIN_RELAY_TOKEN", ""),
+        help="Bearer token for the relay destination, separate from --api-token",
+    )
+    parser.add_argument(
+        "--relay-timeout-s",
+        default=_env_float("SENDSPIN_RELAY_TIMEOUT_S", DEFAULT_RELAY_TIMEOUT_S),
+        type=float,
+        dest="relay_timeout_s",
+        help="Relay HTTP request timeout in seconds",
+    )
+    parser.add_argument(
+        "--no-local-output",
+        action="store_false",
+        default=_env_bool("SENDSPIN_LOCAL_OUTPUT_ENABLED", default=True),
+        dest="local_enabled",
+        help="Disable the local Sendspin destination (relay-only primary)",
+    )
     args = parser.parse_args(argv)
     max_body_mb = _body_limit_mb(args.max_body_mb)
     return ServiceConfig(
@@ -312,6 +373,10 @@ def _parse_args(argv: Sequence[str] | None = None) -> ServiceConfig:
         player_dir=args.player_dir,
         api_token=args.api_token.strip(),
         race_cache_dir=args.race_cache_dir,
+        relay_url=args.relay_url.strip(),
+        relay_token=args.relay_token.strip(),
+        relay_timeout_s=args.relay_timeout_s,
+        local_enabled=args.local_enabled,
     )
 
 

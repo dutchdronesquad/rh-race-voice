@@ -9,6 +9,7 @@ strongest proof the two independently-built sides actually interoperate.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import threading
 import time
@@ -171,6 +172,50 @@ class RaceRelayReceiverTests(unittest.IsolatedAsyncioTestCase):
         result = self.receiver.event(body)
         self.assertEqual(result["outcome"], "dropped")
         self.assertEqual(self.sink.played, [])
+
+    async def test_state_change_interrupts_audio_already_playing(self) -> None:
+        """A stop-generation context push cuts relay-in audio, like the local side."""
+        digest = hashlib.sha256(b"beep").hexdigest()
+        self.cache.store(digest, b"beep")
+        blocked_sink = FakeSink(blocked=True)
+        receiver = RaceRelayReceiver(self.cache, blocked_sink)
+        self.addAsyncCleanup(receiver.close)
+        _prime_clock(receiver)
+        context = {
+            "competition_id": "c",
+            "revision": 1,
+            "generation": 0,
+            "heat_id": None,
+        }
+        receiver.state({"version": RELAY_VERSION, "context": context})
+        body = {
+            "version": "race-relay/1",
+            "origin_event_id": "s:1",
+            "context": context,
+            "kind": "tone",
+            "deadline": time.monotonic() + 5,
+            "target": None,
+            "volume": 1.0,
+            "pilot_id": None,
+            "text": None,
+            "lap": None,
+            "pilot_name": None,
+            "asset": "stage",
+            "winner": False,
+            "audio_refs": [digest],
+        }
+        result = receiver.event(body)
+        self.assertEqual(result["outcome"], "accepted")
+        await blocked_sink.entered.wait()
+        base_stops = blocked_sink.stops
+        receiver.state(
+            {
+                "version": RELAY_VERSION,
+                "context": {**context, "revision": 2, "generation": 1},
+            }
+        )
+        await asyncio.sleep(0)
+        self.assertEqual(blocked_sink.stops, base_stops + 1)
 
     async def test_duplicate_origin_event_id_is_not_replayed(self) -> None:
         """A retried POST with the same origin_event_id returns the cached result."""

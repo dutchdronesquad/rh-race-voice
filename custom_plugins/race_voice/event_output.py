@@ -25,11 +25,14 @@ def next_counter(previous: int) -> int:
 class JsonChannel:
     """Reuse one HTTP connection, owned by exactly one sender greenlet."""
 
+    _IDLE_LIMIT_S = 60.0
+
     def __init__(self, token: str) -> None:
         """Defer connections until background delivery."""
         self._token = token
         self._url = ""
         self._connection = None
+        self._last_used = 0.0
 
     def request(
         self, url: str, method: str, path: str, data: dict | None = None
@@ -50,7 +53,10 @@ class JsonChannel:
             raise ValueError("Invalid event service URL")
         try:
             with gevent.Timeout(3, TimeoutError("Event service request timed out")):
-                if self._connection is None or self._url != url:
+                idle = self._connection is not None and (
+                    time.monotonic() - self._last_used > self._IDLE_LIMIT_S
+                )
+                if self._connection is None or self._url != url or idle:
                     self.close()
                     connection = (
                         http.client.HTTPSConnection
@@ -77,6 +83,7 @@ class JsonChannel:
                 result = json.loads(raw)
                 if not isinstance(result, dict):
                     raise TypeError("Event service returned invalid JSON")  # noqa: TRY301
+                self._last_used = time.monotonic()
                 return response.status, result
         except BaseException:
             self.close()

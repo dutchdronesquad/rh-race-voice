@@ -298,6 +298,33 @@ class PlaybackPlannerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.sink.stops, 0)
 
+    async def test_oversized_solo_tone_is_admitted_when_queue_is_idle(self) -> None:
+        """A single bundled tone (e.g. audio-check) may alone exceed the budget."""
+        self.planner._max_bytes = 5
+        self.assertTrue(
+            self.planner.submit(replace(plan(1, EventKind.TONE), audio=(b"too large",)))
+        )
+
+    async def test_repeated_test_tone_restarts_instead_of_queuing_behind_itself(
+        self,
+    ) -> None:
+        """Re-pressing the audio-check button interrupts its own active copy."""
+        first = replace(
+            plan(1, EventKind.TONE),
+            event=replace(plan(1, EventKind.TONE).event, asset="audio_check"),
+        )
+        self.planner.submit(first)
+        await until(lambda: len(self.sink.played) == 1)
+        second = replace(
+            plan(2, EventKind.TONE),
+            event=replace(plan(2, EventKind.TONE).event, asset="audio_check"),
+        )
+        self.planner.submit(second)
+        self.assertTrue(self.sink.cancelled[0].is_set())
+        self.sink.release.set()
+        await until(lambda: len(self.sink.played) == 2)
+        self.assertEqual(self.sink.played[1].event.sequence, 2)
+
     async def test_new_lap_replaces_buffered_old_lap_for_same_pilot(self) -> None:
         """A player's backlog should favour a fresh lap before committing audio."""
         self.sink.release.set()

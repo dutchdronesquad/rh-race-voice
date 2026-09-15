@@ -46,6 +46,15 @@ def _preempts(new: Priority, old: Priority | None) -> bool:
     )
 
 
+def _supersede(
+    pending: list[_Playback], predicate: Callable[[_Playback], bool]
+) -> tuple[list[_Playback], list[_Playback]]:
+    """Split pending into (kept, superseded) by predicate."""
+    superseded = [p for p in pending if predicate(p)]
+    kept = [p for p in pending if not predicate(p)]
+    return kept, superseded
+
+
 @dataclass(frozen=True)
 class CalloutPlan:
     """A captured race event whose times are already mapped into this host's clock."""
@@ -389,7 +398,14 @@ class PlaybackPlanner:
             )
             return False
         self._pending = pending
-        if _preempts(plan.priority, self._last_priority):
+        replays_active_tone = (
+            plan.event.kind == EventKind.TONE
+            and plan.priority == Priority.HIGH
+            and self._active is not None
+            and self._active.plan.event.kind == EventKind.TONE
+            and self._active.plan.event.asset == plan.event.asset
+        )
+        if _preempts(plan.priority, self._last_priority) or replays_active_tone:
             self._interrupt()
         self._pending.append(_Playback(plan))
         if self._runner is None:
@@ -400,24 +416,33 @@ class PlaybackPlanner:
     def _admit_audio(self, plan: CalloutPlan) -> list[_Playback] | None:
         pending = list(self._pending)
         if plan.priority == Priority.SIGNAL:
-            superseded = [p for p in pending if p.plan.priority == Priority.LAP]
-            pending = [p for p in pending if p.plan.priority != Priority.LAP]
+            pending, superseded = _supersede(
+                pending, lambda p: p.plan.priority == Priority.LAP
+            )
             self._record_superseded(superseded)
         elif plan.priority == Priority.LAP and plan.event.pilot_id is not None:
-            superseded = [
-                p
-                for p in pending
-                if p.plan.priority == Priority.LAP
-                and p.plan.event.pilot_id == plan.event.pilot_id
-            ]
-            pending = [
-                p
-                for p in pending
-                if not (
+            pending, superseded = _supersede(
+                pending,
+                lambda p: (
                     p.plan.priority == Priority.LAP
                     and p.plan.event.pilot_id == plan.event.pilot_id
-                )
-            ]
+                ),
+            )
+            self._record_superseded(superseded)
+        if plan.event.kind == EventKind.TONE and plan.priority == Priority.HIGH:
+            # Only the manual test tone (audio-check) is HIGH; staging tones
+            # and the buzzer are SIGNAL and legitimately repeat the same
+            # asset for distinct countdown steps, so this must not catch
+            # them. Re-pressing the test button replaces any still-queued
+            # copy of itself rather than piling up behind it, since
+            # consecutive plays append to the same stream.
+            pending, superseded = _supersede(
+                pending,
+                lambda p: (
+                    p.plan.event.kind == EventKind.TONE
+                    and p.plan.event.asset == plan.event.asset
+                ),
+            )
             self._record_superseded(superseded)
         # Reserve some memory for a signal while ordinary speech is still buffered.
         limit = self._max_bytes
@@ -440,6 +465,11 @@ class PlaybackPlanner:
                 )
             ]
             if not replaceable:
+                if plan.event.kind == EventKind.TONE and not pending:
+                    # A bundled tone (e.g. the audio-check track) can alone
+                    # exceed the budget; once nothing else is queued to evict,
+                    # admit it solo rather than leave it permanently unplayable.
+                    return pending
                 return None
             evicted = min(replaceable, key=lambda p: (-p.plan.priority, p.plan.order))
             pending.remove(evicted)

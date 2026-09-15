@@ -14,9 +14,9 @@ RotorHazard event/filter
   -> Sendspin browser/player clients and WindowsSpin
 ```
 
-The main RotorHazard sources are `Flt.EMIT_PHONETIC_DATA`, `Flt.EMIT_PHONETIC_TEXT`, `Evt.RACE_CLOCK_CALLOUT`, `Evt.RACE_STAGE_TONE`, `Evt.RACE_START`, `Evt.HEAT_SET`, `Evt.RACE_SCHEDULE`/`Evt.RACE_SCHEDULE_CANCEL`, and the pilot/heat/database events that trigger a full state refresh.
+The main RotorHazard sources are `Flt.EMIT_PHONETIC_DATA`, `Flt.EMIT_PHONETIC_TEXT`, `Evt.RACE_CLOCK_CALLOUT`, `Evt.RACE_STAGE`, `Evt.RACE_ABORT`, `Evt.HEAT_SET`, `Evt.RACE_SCHEDULE`/`Evt.RACE_SCHEDULE_CANCEL`, and the pilot/heat/database events that trigger a full state refresh.
 
-The RotorHazard plugin is a bounded event/state adapter: it captures RH values on callbacks, builds a small JSON snapshot and disposable audio-event messages, and delivers them to `sendspin-service` over HTTP. It performs no synthesis and never imports Piper or ONNX. `sendspin-service` owns synthesis, the WAV cache, `aiosendspin`, player connections, stream state, and the Sendspin player endpoint on port `8927`. Staging tones from `Evt.RACE_STAGE_TONE` and the race-start buzzer from `Evt.RACE_START` travel through the same `/v2/events` path as spoken callouts, carrying a bundled asset name instead of text.
+The RotorHazard plugin is a bounded event/state adapter: it captures RH values on callbacks, builds a small JSON snapshot and disposable audio-event messages, and delivers them to `sendspin-service` over HTTP. It performs no synthesis and never imports Piper or ONNX. `sendspin-service` owns synthesis, the WAV cache, `aiosendspin`, player connections, stream state, and the Sendspin player endpoint on port `8927`. Staging tones and the race-start buzzer travel through the same `/v2/events` path as spoken callouts, carrying a bundled asset name instead of text. All of them are scheduled at once from `Evt.RACE_STAGE`, which fires once, several seconds ahead, already carrying every stage-tone time (`pi_staging_at_s` + `staging_tones`) and the start time (`pi_starts_at_s`) -- `Evt.RACE_STAGE_TONE` and `Evt.RACE_START` each fire too close to their own target to schedule a precisely-timed tone from (RACE_START in particular fires with no lead at all: RH busy-waits to the exact start instant before triggering it).
 
 ## Plugin Package
 
@@ -52,7 +52,8 @@ The plugin performs no local synthesis, queueing, or audio upload. `const.py`, `
 
 `synthesis/` — Piper/ONNX synthesis:
 
-- `piper.py`: `PiperSynthesizer` — Piper model download/loading, ONNX Runtime session setup, synthesis, text normalization, WAV cache writes, and its own native-thread isolation (`_run_native()`, built for a gevent-patched caller).
+- `piper.py`: `PiperSynthesizer` — Piper model download/loading, ONNX Runtime session setup, synthesis, text normalization, WAV cache writes, and an abstract `_run_native()` hook that subclasses implement. Has no dependency on `gevent`, since the worker subprocess (the only production consumer) never installs it.
+- `gevent_piper.py`: `GeventPiperSynthesizer` — a `PiperSynthesizer` subclass implementing `_run_native()` via gevent's hub-threadpool, for a gevent-patched caller.
 - `synthesis.py`: `SynthesisWorker` — bounded asyncio supervision of the persistent synthesis subprocess: a priority queue, request deduplication/promotion for identical in-flight jobs, and subprocess lifecycle management.
 - `synthesis_worker.py`: the private, line-delimited worker protocol run inside the isolated child process. `WorkerSynthesizer` subclasses `PiperSynthesizer` to run natively (no gevent, since the child is a plain, unpatched interpreter) and to key its WAV cache on a content hash of text, tuning, the installed `piper-tts` version, and the model file contents.
 
@@ -86,7 +87,7 @@ The plugin only speaks the `/v2/*` race-event API; the service registers those r
 Important behavior:
 
 - Consecutive play calls append to the active stream instead of restarting it.
-- Scheduled static sounds carry a `play_at` timestamp in the publisher's monotonic clock. The plugin derives it from `scheduled_at_monotonic` on `Evt.RACE_STAGE_TONE` and from `rhapi.race.start_time_internal` for the race-start buzzer, sends it on the `/v2/events` request, and the service maps it through its clock exchange (`ClockMapping`) into the `CalloutPlan.target` used for Sendspin scheduling.
+- Scheduled static sounds carry a `play_at` timestamp in the publisher's monotonic clock. The plugin derives every stage-tone target from `pi_staging_at_s` + its index and the buzzer's from `pi_starts_at_s`, all on `Evt.RACE_STAGE`, sends them on `/v2/events` requests, and the service maps each through its clock exchange (`ClockMapping`) into the `CalloutPlan.target` used for Sendspin scheduling.
 - Scheduled race sounds target RotorHazard's server-side tone time. Built-in RotorHazard browser tones may not line up exactly because they are driven by browser timer and audio scheduling.
 - Late-joining browser clients are added to the active stream group.
 - The stream is stopped after the queued audio has finished.
@@ -109,9 +110,9 @@ Expired jobs are dropped before playback starts, both at preparation admission a
 
 Speech synthesis never runs inside RotorHazard's process. Each admitted, non-tone `CalloutPlan` is turned into one or more `CalloutSegment`s by `SpeechEngine` and sent to `SynthesisWorker.request()`, which queues the request by priority, shares an in-flight result across identical concurrent requests (and promotes a queued background job if a higher-priority identical request arrives), and exchanges bounded JSON lines with a single persistent child process running `sendspin_service/synthesis/synthesis_worker.py`.
 
-That child process is a fresh, unpatched Python interpreter — it never inherits RotorHazard's `gevent.monkey.patch_all()` state. Inside it, `WorkerSynthesizer` (a `PiperSynthesizer` subclass) runs Piper/ONNX inference directly rather than through `PiperSynthesizer`'s gevent-hub-threadpool isolation (`_run_native()`), because that isolation exists to protect a gevent event loop that isn't present in the child. ONNX Runtime is still configured with at most two intra-op compute threads (one on a single- or dual-core host). Requests to the child are processed one at a time, in priority order; the worker restarts on failure or timeout, and the next request starts a fresh child.
+That child process is a fresh, unpatched Python interpreter — it never inherits RotorHazard's `gevent.monkey.patch_all()` state. Inside it, `WorkerSynthesizer` (a `PiperSynthesizer` subclass) runs Piper/ONNX inference directly, rather than through `GeventPiperSynthesizer`'s gevent-hub-threadpool isolation, because that isolation exists to protect a gevent event loop that isn't present in the child. ONNX Runtime is still configured with at most two intra-op compute threads (one on a single- or dual-core host). Requests to the child are processed one at a time, in priority order; the worker restarts on failure or timeout, and the next request starts a fresh child.
 
-`PiperSynthesizer`'s gevent-native-thread isolation logic still exists in `sendspin_service/synthesis/piper.py` and is exercised directly by `tests/helpers/gevent_synthesis_probe.py` under RH-style monkey-patching, but that code path is not reachable from the current production runtime, since nothing constructs `PiperSynthesizer` inside a gevent-patched process anymore.
+`GeventPiperSynthesizer`'s gevent-native-thread isolation logic is exercised directly by `tests/helpers/gevent_synthesis_probe.py` under RH-style monkey-patching, but that code path is not reachable from the current production runtime, since nothing constructs `GeventPiperSynthesizer` inside a gevent-patched process anymore.
 
 ## Cache Layout
 

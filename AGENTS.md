@@ -22,7 +22,7 @@ Service package (`sendspin_service/`), split into subpackages with the entry poi
 
 - `server.py`: process entry point and HTTP app.
 - `race/`: `race_ingest.py` (`RaceIngest`, session/admission and the `/v2/*` routes), `race_planner.py` (`PreparationPlanner`, `PlaybackPlanner`, `Destination`, `SendspinPlaybackSink`), `race_protocol.py` (wire-format parsing and the admission/clock state machine), `race_schedule.py` (scheduled-countdown timers), `speech.py` (`SpeechEngine`), `lap_callouts.py`, `cache_commands.py`, `telemetry.py`.
-- `synthesis/`: `piper.py` (`PiperSynthesizer`), `synthesis.py`/`synthesis_worker.py` (the bounded synthesis subprocess supervisor and its child protocol).
+- `synthesis/`: `piper.py` (`PiperSynthesizer`), `gevent_piper.py` (`GeventPiperSynthesizer`, the gevent-hub-isolated variant for RH's monkey-patched process; keeps `gevent` out of `piper.py` itself, since the worker subprocess never has it installed), `synthesis.py`/`synthesis_worker.py` (the bounded synthesis subprocess supervisor and its child protocol).
 - `playback/`: `sendspin.py` (`SendSpinServer`, the `aiosendspin` adapter), `audio_queue.py`, `audio_cache.py`, `player.py` (optional static browser-player routes for Docker).
 
 Cross-subpackage imports are absolute (`sendspin_service.playback.audio_queue`, not `..playback.audio_queue`) — ruff (`TID252`) forbids parent-relative imports in this repo. Same-subpackage imports stay relative.
@@ -31,7 +31,7 @@ Cross-subpackage imports are absolute (`sendspin_service.playback.audio_queue`, 
 
 Keep architecture changes incremental and concrete. For the standalone-service epic, finish and measure one local event-to-audio path before adding cloud routing or personal pilot selections. Reuse existing libraries and phrase logic; avoid generic frameworks or speculative automation. Keep preparation and per-output playback separate where needed for isolation, and use one event-to-audio path.
 
-RotorHazard phonetic filters and server-side race events are used as callout sources. Heavy work must stay off the RotorHazard event/filter thread. The existing executor schedules callout orchestration, but RotorHazard monkey-patches threading with gevent, so that executor alone does not provide native-thread isolation. Keep Piper synthesis and ONNX session construction behind `PiperSynthesizer._run_native()`; keep RH API calls, queue mutations, and status callbacks outside that native boundary.
+RotorHazard phonetic filters and server-side race events are used as callout sources. Heavy work must stay off the RotorHazard event/filter thread. The existing executor schedules callout orchestration, but RotorHazard monkey-patches threading with gevent, so that executor alone does not provide native-thread isolation. Keep Piper synthesis and ONNX session construction behind `_run_native()` (`GeventPiperSynthesizer` in a gevent-patched process, `WorkerSynthesizer` in the subprocess); keep RH API calls, queue mutations, and status callbacks outside that native boundary.
 
 Lap callouts are intentionally segmented:
 

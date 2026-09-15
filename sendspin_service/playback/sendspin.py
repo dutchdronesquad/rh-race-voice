@@ -36,10 +36,10 @@ _CHUNK_DURATION_S = 0.05
 _INITIAL_PLAYBACK_DELAY_S = 0.25
 _TIMEOUT_MARGIN_S = 10
 _BUFFER_LIMIT_US = 500_000
-_LATE_JOIN_SYNC_INTERVAL_S = 0.1
 _SCHEDULED_TAIL_S = 0.1
-_IDLE_DRAIN_S = 0.1
+_MAX_BRIDGED_GAP_US = 1_500_000
 _SCHEDULED_BUFFER_MARGIN_US = 100_000
+_SCHEDULED_BUFFER_CEILING_US = 1_200_000
 _STARTUP_TIMEOUT_S = 30.0
 
 
@@ -56,12 +56,6 @@ class _WavClip:
     audio_format: AudioFormat
     pcm_data: bytes
     duration_s: float
-
-
-class _SendspinClock(Protocol):
-    def now_us(self) -> int:
-        """Return the current Sendspin monotonic clock in microseconds."""
-        ...
 
 
 class _PushStream(Protocol):
@@ -130,7 +124,6 @@ class SendSpinServer:
         self._stream_group: SendspinGroup | None = None
         self._stream: _PushStream | None = None
         self._next_play_start_us: int | None = None
-        self._idle_stop_task: asyncio.Task[None] | None = None
 
     def start(self) -> None:
         """Start the Sendspin server in a background daemon thread."""
@@ -369,8 +362,6 @@ class SendSpinServer:
         await self._interrupt_stream(clear_client_audio=True, strict=strict)
 
     async def _stop_stream_locked(self, *, stop_all_client_groups: bool) -> None:
-        self._cancel_idle_stop()
-
         server = self._server
         group = self._stream_group
         self._stream = None
@@ -389,8 +380,6 @@ class SendSpinServer:
         self, *, clear_client_audio: bool, strict: bool = False
     ) -> None:
         """Immediately interrupt active playback, even while audio is being queued."""
-        self._cancel_idle_stop()
-
         server = self._server
         stream = self._stream
         group = self._stream_group
@@ -435,7 +424,6 @@ class SendSpinServer:
         async with lock:
             if cancelled is not None and cancelled.is_set():
                 return
-            self._cancel_idle_stop()
             await self._append_to_stream_locked(
                 clips, expires_at, play_at, duration_s, volume, cancelled
             )
@@ -459,58 +447,121 @@ class SendSpinServer:
             )
             return
 
+        ensure_started = time.monotonic()
         group, stream = await self._ensure_stream()
         if group is None or stream is None:
             return
-
-        play_start_us = self._next_play_start_us
-        now_us = server.clock.now_us()
-        stream_options = _StreamOptions(
-            max_buffer_us=_BUFFER_LIMIT_US, volume=volume, cancelled=cancelled
+        logger.info(
+            "Sendspin _ensure_stream took %.1fms",
+            (time.monotonic() - ensure_started) * 1000,
         )
-        if play_at is not None:
-            play_start_us = _scheduled_play_start_us(
-                play_at, now_us, _group_lead_time_us(group)
-            )
-            stream_options = _StreamOptions(
-                max_buffer_us=_scheduled_buffer_limit_us(
-                    play_start_us, now_us, duration_s
-                ),
-                cancelled=cancelled,
-                volume=volume,
-            )
-        elif play_start_us is None or play_start_us <= now_us:
-            play_start_us = now_us + _group_lead_time_us(group)
+
+        now_us = server.clock.now_us()
+        play_start_us, stream_options = self._resolve_play_start(
+            play_at, now_us, group, volume, cancelled, duration_s
+        )
         if self._would_start_after_expiry(play_start_us, now_us, expires_at):
             logger.info(
                 "Sendspin service dropped stale audio before Sendspin scheduling"
             )
             return
+        commit_start_us = self._bridge_gap_with_silence(clips, play_start_us)
 
         async def sync_clients() -> int:
             return await self._sync_connected_clients(group)
 
         try:
-            play_end_us, streamed_count, client_count = await self._queue_wav_paths(
+            queue_started = time.monotonic()
+            _play_end_us, streamed_count, client_count = await self._queue_wav_paths(
                 stream,
                 clips,
-                play_start_us=play_start_us,
+                play_start_us=commit_start_us,
                 sync_clients=sync_clients,
                 options=stream_options,
             )
             client_count = max(client_count, await sync_clients())
             if streamed_count and not (cancelled is not None and cancelled.is_set()):
                 logger.info(
-                    "Sendspin service: queued %d WAV(s) to %d client(s)",
+                    "Sendspin service: queued %d WAV(s) to %d client(s) in %.1fms "
+                    "(scheduled +%.1fms from commit)",
                     streamed_count,
                     client_count,
+                    (time.monotonic() - queue_started) * 1000,
+                    (play_start_us - now_us) / 1000,
                 )
-                self._schedule_idle_stop(server.clock, group, play_end_us)
         except StreamStoppedError:
             logger.info("Sendspin service: Sendspin stream stopped")
             self._stream = None
             self._stream_group = None
             self._next_play_start_us = None
+
+    def _resolve_play_start(  # noqa: PLR0913
+        self,
+        play_at: float | None,
+        now_us: int,
+        group: SendspinGroup,
+        volume: float,
+        cancelled: threading.Event | None,
+        duration_s: float,
+    ) -> tuple[int, _StreamOptions]:
+        """Pick where this clip starts and its buffer options."""
+        if play_at is not None:
+            previous_end_us = self._next_play_start_us
+            requested_us = _scheduled_play_start_us(
+                play_at, now_us, _group_lead_time_us(group)
+            )
+            play_start_us = requested_us
+            if previous_end_us is not None:
+                # Never start a scheduled clip before one already queued in
+                # this stream finishes, even if its own play_at says
+                # earlier -- otherwise back-to-back staging tones overlap.
+                play_start_us = max(requested_us, previous_end_us)
+            logger.info(
+                "Sendspin schedule: requested +%.1fms, prev clip ends +%s, "
+                "using +%.1fms, duration %.1fms",
+                (requested_us - now_us) / 1000,
+                "n/a"
+                if previous_end_us is None
+                else f"{(previous_end_us - now_us) / 1000:.1f}ms",
+                (play_start_us - now_us) / 1000,
+                duration_s * 1000,
+            )
+            return play_start_us, _StreamOptions(
+                max_buffer_us=_scheduled_buffer_limit_us(
+                    play_start_us, now_us, duration_s
+                ),
+                cancelled=cancelled,
+                volume=volume,
+            )
+        play_start_us = self._next_play_start_us
+        if play_start_us is None or play_start_us <= now_us:
+            play_start_us = now_us + _group_lead_time_us(group)
+        return play_start_us, _StreamOptions(
+            max_buffer_us=_BUFFER_LIMIT_US, volume=volume, cancelled=cancelled
+        )
+
+    def _bridge_gap_with_silence(
+        self, clips: list[_WavClip], play_start_us: int
+    ) -> int:
+        """Prepend real silence to close a small gap instead of jumping to it.
+
+        The server's resampler silently smooths over jumps under about a
+        second instead of honoring them, so tones queued shortly after the
+        previous one played closer together than scheduled. A gap wider
+        than _MAX_BRIDGED_GAP_US (minutes between race events, not
+        milliseconds between tones) falls back to the jump instead of
+        streaming that much silence.
+
+        Returns the commit start to use in place of play_start_us.
+        """
+        previous_end_us = self._next_play_start_us
+        if previous_end_us is None or not clips:
+            return play_start_us
+        gap_us = play_start_us - previous_end_us
+        if not 0 < gap_us <= _MAX_BRIDGED_GAP_US:
+            return play_start_us
+        clips[0] = _with_silent_prefix(clips[0], gap_us / 1_000_000)
+        return previous_end_us
 
     async def _queue_wav_paths(
         self,
@@ -562,21 +613,6 @@ class SendSpinServer:
         self._next_play_start_us = None
         return group, stream
 
-    def _cancel_idle_stop(self) -> None:
-        task = self._idle_stop_task
-        if task is not None and not task.done() and task is not asyncio.current_task():
-            task.cancel()
-        if self._idle_stop_task is task:
-            self._idle_stop_task = None
-
-    def _schedule_idle_stop(
-        self, clock: _SendspinClock, group: SendspinGroup, play_end_us: int
-    ) -> None:
-        self._cancel_idle_stop()
-        self._idle_stop_task = asyncio.create_task(
-            self._stop_stream_when_idle(clock, group, play_end_us)
-        )
-
     @staticmethod
     def _would_start_after_expiry(
         play_start_us: int, now_us: int, expires_at: float | None
@@ -585,30 +621,6 @@ class SendSpinServer:
             return False
         scheduled_delay_s = max(0.0, (play_start_us - now_us) / 1_000_000)
         return time.monotonic() + scheduled_delay_s > expires_at
-
-    async def _stop_stream_when_idle(
-        self, clock: _SendspinClock, group: SendspinGroup, play_end_us: int
-    ) -> None:
-        try:
-            while True:
-                if self._stream_group is not group:
-                    return
-                await self._sync_connected_clients(group)
-                delay_s = (play_end_us - clock.now_us()) / 1_000_000 + _IDLE_DRAIN_S
-                if delay_s <= 0:
-                    break
-                await asyncio.sleep(min(delay_s, _LATE_JOIN_SYNC_INTERVAL_S))
-            lock = self._stream_lock
-            if lock is None:
-                return
-            async with lock:
-                if (
-                    self._stream_group is group
-                    and self._next_play_start_us == play_end_us
-                ):
-                    await self._stop_stream_locked(stop_all_client_groups=False)
-        except asyncio.CancelledError:
-            pass
 
     async def _sync_connected_clients(self, group: SendspinGroup) -> int:
         server = self._server
@@ -690,12 +702,22 @@ def _scheduled_play_start_us(play_at: float, now_us: int, lead_time_us: int) -> 
 def _scheduled_buffer_limit_us(
     play_start_us: int, now_us: int, duration_s: float
 ) -> int:
-    """Allow future scheduled clips to be fully queued before playback starts."""
+    """Allow one scheduled clip to be queued ahead, with a ceiling.
+
+    Several tones known far in advance and queued within milliseconds of
+    each other would otherwise balloon the client's total buffer -- that
+    spiked its queue to seconds deep and triggered a client-side clock
+    resync in practice. Capping it makes sleep_to_limit_buffer pace the
+    burst out instead.
+    """
     scheduled_delay_us = max(0, play_start_us - now_us)
     duration_us = int(duration_s * 1_000_000)
-    return max(
-        _BUFFER_LIMIT_US,
-        scheduled_delay_us + duration_us + _SCHEDULED_BUFFER_MARGIN_US,
+    return min(
+        _SCHEDULED_BUFFER_CEILING_US,
+        max(
+            _BUFFER_LIMIT_US,
+            scheduled_delay_us + duration_us + _SCHEDULED_BUFFER_MARGIN_US,
+        ),
     )
 
 
@@ -726,7 +748,13 @@ async def _stream_wav(
         if stream.is_stopped:
             return play_start_us, play_end_us, client_count
         client_count = await sync_clients()
-        await stream.sleep_to_limit_buffer(max_buffer_us=options.max_buffer_us)
+        if play_start_us is None:
+            # Only throttle continuation chunks. The first chunk of an
+            # explicitly scheduled clip carries the one commit that
+            # announces its target time; aiosendspin's own throttle sleep
+            # can take up to 1s per call, so skipping it here keeps that
+            # announcement prompt regardless of how full the buffer is.
+            await stream.sleep_to_limit_buffer(max_buffer_us=options.max_buffer_us)
         if stream.is_stopped or (
             options.cancelled is not None and options.cancelled.is_set()
         ):
@@ -749,6 +777,18 @@ def _with_silent_tail(clip: _WavClip) -> _WavClip:
         name=clip.name,
         audio_format=clip.audio_format,
         pcm_data=clip.pcm_data + bytes(frames * frame_bytes),
+        duration_s=clip.duration_s + frames / clip.audio_format.sample_rate,
+    )
+
+
+def _with_silent_prefix(clip: _WavClip, seconds: float) -> _WavClip:
+    """Prepend real silence so this clip is a genuine stream continuation."""
+    frames = int(clip.audio_format.sample_rate * seconds)
+    frame_bytes = clip.audio_format.channels * (clip.audio_format.bit_depth // 8)
+    return _WavClip(
+        name=clip.name,
+        audio_format=clip.audio_format,
+        pcm_data=bytes(frames * frame_bytes) + clip.pcm_data,
         duration_s=clip.duration_s + frames / clip.audio_format.sample_rate,
     )
 

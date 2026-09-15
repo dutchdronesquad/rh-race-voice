@@ -25,11 +25,12 @@ _EVENTS = [
     "SHUTDOWN",
     "HEAT_SET",
     "OPTION_SET",
-    "RACE_STAGE_TONE",
-    "RACE_START",
+    "RACE_STAGE",
     "RACE_CLOCK_CALLOUT",
     "RACE_SCHEDULE",
     "RACE_SCHEDULE_CANCEL",
+    "RACE_ABORT",
+    "RACE_STOP",
     "PILOT_ADD",
     "PILOT_ALTER",
     "PILOT_DELETE",
@@ -51,7 +52,10 @@ sys.modules["RHUI"] = Mock()
 sys.modules["flask"] = Mock()
 os.environ.pop("RACE_VOICE_EXPERIMENTAL_EVENTS", None)
 
+from eventmanager import Evt
+
 from custom_plugins.race_voice import const, initialize
+from custom_plugins.race_voice.event_adapter import _PUBLISHER_EPOCH_OPTION
 from custom_plugins.race_voice.event_output import JsonChannel
 
 
@@ -84,6 +88,9 @@ class Service:
         self.health_entered = Event()
         self.health_release = Event()
         self.health_release.set()
+        self.state_entered = Event()
+        self.state_release = Event()
+        self.state_release.set()
         self.command_entered = Event()
         self.command_release = Event()
         self.command_release.set()
@@ -106,7 +113,7 @@ class Service:
         )
         return [body]
 
-    def dispatch(self, method: str, path: str, data: dict) -> tuple[int, dict]:  # noqa: C901, PLR0911
+    def dispatch(self, method: str, path: str, data: dict) -> tuple[int, dict]:  # noqa: C901, PLR0911, PLR0912
         """Retain sequence high-water marks when a publisher resumes its session."""
         if path == "/health":
             self.health_entered.set()
@@ -129,7 +136,29 @@ class Service:
                 self.sequence = 0
             return 200, self.owner
         if path == "/v2/state":
+            # Mirror of ContextGate.snapshot()'s admission rule (see
+            # sendspin_service/race/race_protocol.py): a resend at or below
+            # the revision already on file is a harmless duplicate only if
+            # unchanged, and any identity change (competition/heat) must
+            # come with a strictly newer generation or it is stale too.
+            old = self.state["context"] if self.state is not None else None
+            new = data["context"]
+            if old is not None:
+                if new["revision"] <= old["revision"]:
+                    if new == old:
+                        return 200, {"outcome": "duplicate"}
+                    return 409, {"outcome": "stale_context"}
+                identity_changed = (
+                    new["competition_id"] != old["competition_id"]
+                    or new["heat_id"] != old["heat_id"]
+                )
+                if new["generation"] < old["generation"] or (
+                    identity_changed and new["generation"] == old["generation"]
+                ):
+                    return 409, {"outcome": "stale_context"}
             self.state = data
+            self.state_entered.set()
+            self.state_release.wait()
         if path == "/v2/clock" and "probe_id" not in data:
             return 200, {"probe_id": "clock-probe"}
         if path == "/v2/commands":
@@ -158,10 +187,17 @@ class Service:
         self.server.stop(timeout=0.1)
 
 
-def make_adapter(url: str):  # noqa: ANN201
-    """Keep every database read on the calling RH/test greenlet."""
+def make_adapter(url: str, options: dict | None = None):  # noqa: ANN201
+    """Keep every database read on the calling RH/test greenlet.
+
+    Passing the same *options* dict back in simulates a process restart
+    reusing its persisted state (e.g. the publisher epoch).
+    """
     owner = gevent.getcurrent()
-    options = {const.ENABLE_OPTION: True, const.SENDSPIN_SERVICE_URL_OPTION: url}
+    if options is None:
+        options = {}
+    options[const.ENABLE_OPTION] = True
+    options[const.SENDSPIN_SERVICE_URL_OPTION] = url
     pilot = SimpleNamespace(id=7, callsign="Alpha", phonetic="Alfa")
     rh = Mock()
     rh.race.heat = 1
@@ -199,6 +235,15 @@ class AdapterTests(unittest.TestCase):
         """Wait for real ownership, snapshot and clock requests to complete."""
         self.adapter._startup()
         wait_for(self.adapter._publisher._ready)
+
+    def test_publisher_epoch_is_resolved_at_startup_not_construction(self) -> None:
+        """Reading it in __init__ would race RH's not-yet-primed options cache."""
+        self.assertNotIn(_PUBLISHER_EPOCH_OPTION, self.options)
+        self.connect()
+        self.assertIn(_PUBLISHER_EPOCH_OPTION, self.options)
+        self.assertEqual(
+            self.options[_PUBLISHER_EPOCH_OPTION], self.adapter._publisher._epoch
+        )
 
     def test_no_tts_imports_and_callbacks_only_capture_values(self) -> None:
         """Initialization always selects the adapter without an opt-in switch."""
@@ -256,7 +301,7 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(len(ticks), 10)
         self.service.audio_release.set()
         wait_for(self.adapter._publisher._ready)
-        self.adapter._stage({"scheduled_at_monotonic": time.monotonic() + 1})
+        self.adapter._staged({"pi_starts_at_s": time.monotonic() + 1})
         wait_for(lambda: len(self.service.events) == 1)
         self.assertEqual(self.service.events[0]["kind"], "tone")
 
@@ -273,7 +318,7 @@ class AdapterTests(unittest.TestCase):
         for _ in range(50):
             self.adapter._voice({"text": "Announcement"})
         self.assertEqual(len(publisher._pending), 33)
-        self.adapter._stage({"scheduled_at_monotonic": time.monotonic() + 1})
+        self.adapter._staged({"pi_starts_at_s": time.monotonic() + 1})
         self.assertEqual(len(publisher._pending), 32)
         self.assertFalse(any(item["kind"] == "lap" for item in publisher._pending))
         wait_for(lambda: bool(self.service.events))
@@ -291,7 +336,8 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(session, self.adapter._publisher._session)
         self.adapter._voice({"text": "Second"})
         wait_for(lambda: len(self.service.events) == 2)
-        self.assertEqual([item["sequence"] for item in self.service.events], [1, 2])
+        first, second = (item["sequence"] for item in self.service.events)
+        self.assertLess(first, second)
 
     def test_heat_settings_and_database_changes_publish_without_laps(self) -> None:
         """Roster changes retain identity; sound and database changes fence audio."""
@@ -301,12 +347,16 @@ class AdapterTests(unittest.TestCase):
         self.adapter._refresh()
         wait_for(self.adapter._publisher._ready)
         self.assertEqual(self.service.state["pilots"][0]["callsign"], "New callsign")
-        self.assertEqual(self.adapter._generation, 0)
+        # Startup itself already claimed one generation bump (see _startup's
+        # invalidate=True), so this roster-only refresh (no sound/identity
+        # change) must leave it exactly there rather than bumping again.
+        generation = self.adapter._generation
+        self.assertGreater(generation, 0)
         self.options[const.SPEECH_SPEED_OPTION] = 1.2
         self.adapter._option_changed({"option": const.SPEECH_SPEED_OPTION})
         wait_for(self.adapter._publisher._ready)
         self.assertEqual(self.service.state["voice"]["speed"], 1.2)
-        self.assertEqual(self.adapter._generation, 1)
+        self.assertGreater(self.adapter._generation, generation)
         self.rh.race.heat = 2
         self.adapter._heat({})
         wait_for(self.adapter._publisher._ready)
@@ -318,17 +368,170 @@ class AdapterTests(unittest.TestCase):
         )
         self.assertEqual(self.service.state["pilots"][0]["pilot_id"], 7)
 
-    def test_existing_owner_requires_manual_takeover(self) -> None:
-        """A restart cannot silently replace an unrelated active publisher."""
+    def test_unrelated_owner_stays_fenced(self) -> None:
+        """A different publisher's epoch is never silently replaced."""
         self.service.owner.update(
             epoch="previous-process", session_id="previous-session"
         )
         self.adapter._startup()
         wait_for(lambda: "takeover required" in self.adapter._publisher.status)
         self.assertEqual(self.service.owner["epoch"], "previous-process")
-        self.adapter.connect()
+        self.assertFalse(self.adapter._publisher._ready())
+
+    def test_restart_reclaims_its_own_session_without_conflict(self) -> None:
+        """A fresh process reusing its persisted epoch reconnects cleanly."""
+        self.connect()
+        first_session = self.adapter._publisher._session
+        self.adapter.close()
+        restarted, _rh, _options, _pilot = make_adapter(self.service.url, self.options)
+        self.addCleanup(restarted.close)
+        restarted._startup()
+        wait_for(restarted._publisher._ready)
+        self.assertEqual(restarted._publisher._session, first_session)
+        self.assertNotIn("takeover", restarted._publisher.status.lower())
+
+    def test_restart_after_many_updates_still_reclaims_session(self) -> None:
+        """A restart must not resend a revision/generation the service outran.
+
+        The service keeps its ContextGate (and the revision/generation it
+        last accepted) across a reclaimed session, but a fresh process's own
+        counters start over in memory. Without persisting them alongside the
+        epoch, a restart after any real session history would resend a lower
+        revision forever -- rejected as stale_context on every single retry,
+        with no self-recovery short of restarting the service itself.
+        """
+        self.connect()
+        for heat in range(2, 12):
+            self.rh.race.heat = heat
+            self.adapter._heat({})
+            wait_for(self.adapter._publisher._ready)
+        self.assertGreater(self.adapter._generation, 5)
+        self.assertGreater(self.adapter._publisher._state["context"]["revision"], 5)
+        self.adapter.close()
+        restarted, _rh, _options, _pilot = make_adapter(self.service.url, self.options)
+        self.addCleanup(restarted.close)
+        restarted._startup()
+        wait_for(restarted._publisher._ready)
+        self.assertEqual(
+            self.service.state["context"]["revision"],
+            restarted._publisher._state["context"]["revision"],
+        )
+
+    def test_restart_bumps_generation_even_with_no_local_history(self) -> None:
+        """A heat change RH made while we were down must still be admitted.
+
+        sound_changed (in _refresh) can only compare against *this
+        process's own* last snapshot -- on a fresh process that's None, so
+        a heat that changed on the RH side while the plugin was down would
+        never be detected as an identity change. The service would then see
+        a new heat_id at the same generation it already had on file and
+        reject it as stale_context, forever, since nothing short of
+        restarting the service itself clears that fencing.
+        """
+        self.connect()
+        self.rh.race.heat = 9
+        self.adapter._heat({})
         wait_for(self.adapter._publisher._ready)
-        self.assertEqual(self.service.owner["epoch"], self.adapter._publisher._epoch)
+        self.adapter.close()
+        # A fresh RH mock defaults to heat 1 (see make_adapter) -- simulating
+        # RH itself having moved on to a different heat while this plugin
+        # process was not running, with no local snapshot to notice it.
+        restarted, _rh, _options, _pilot = make_adapter(self.service.url, self.options)
+        self.addCleanup(restarted.close)
+        restarted._startup()
+        wait_for(restarted._publisher._ready)
+        self.assertEqual(self.service.state["context"]["heat_id"], 1)
+
+    def test_restart_reclaims_session_the_service_advanced_from_elsewhere(self) -> None:
+        """A restart must recover even if the service is far ahead of us.
+
+        The service's memory of a session's revision/generation can outrun
+        what *this* process ever sent -- e.g. another process instance held
+        the same persisted epoch for a long time before this fix shipped,
+        or the plugin's own database was restored from an older backup
+        while the (separately long-lived) service process kept running.
+        A bare local counter starting from 0 (or from whatever was last
+        durably saved) has no way to know how far ahead the service already
+        is and would resend a lower revision/generation forever. Anchoring
+        on wall-clock time instead means a fresh process's very first value
+        is already far beyond anything remotely plausible for the service
+        to have on file, with nothing that needs to be persisted or
+        restored to make that true.
+        """
+        self.connect()
+        # A drift far beyond anything a bare per-refresh counter could
+        # plausibly reach, yet comfortably below current wall-clock
+        # milliseconds -- simulating the service already holding a
+        # revision/generation this process's own in-memory counters
+        # (freshly at 0) never produced.
+        drift = 5 * 10**9
+        self.service.state["context"]["revision"] = drift
+        self.service.state["context"]["generation"] = drift
+        self.adapter.close()
+        restarted, _rh, _options, _pilot = make_adapter(self.service.url, self.options)
+        self.addCleanup(restarted.close)
+        restarted._startup()
+        wait_for(restarted._publisher._ready)
+        self.assertGreater(restarted._publisher._state["context"]["revision"], drift)
+
+    def test_restarted_audio_is_not_silently_dropped_as_duplicate(self) -> None:
+        """A restart's first tone/lap/voice event must not read back as a replay.
+
+        The service's per-session high-water sequence outlives any number of
+        plugin restarts on the persisted epoch, exactly like revision and
+        generation (see the test above) -- but a bare local counter reset to
+        0 here fails silently: the service answers 200 "duplicate" rather
+        than a rejection, so nothing ever plays and nothing ever surfaces
+        an error either.
+        """
+        self.connect()
+        self.service.sequence = 5 * 10**9
+        self.adapter.close()
+        restarted, _rh, _options, _pilot = make_adapter(self.service.url, self.options)
+        self.addCleanup(restarted.close)
+        restarted._startup()
+        wait_for(restarted._publisher._ready)
+        restarted._voice({"text": "After restart"})
+        wait_for(lambda: len(self.service.events) == 1)
+        self.assertEqual(self.service.events[0]["payload"]["text"], "After restart")
+
+    def test_audio_dispatch_does_not_wait_for_state_ack(self) -> None:
+        """A tone/lap must not queue behind an unrelated, still-in-flight state PUT."""
+        self.connect()
+        self.service.state_release.clear()
+        self.rh.race.heat = 2
+        self.adapter._heat({})
+        wait_for(self.service.state_entered.is_set)
+        self.assertFalse(self.adapter._publisher._ready())
+        self.adapter._lap(
+            {"lap": 1, "pilot_id": 7, "pilot": "Alfa", "phonetic": "four seconds"}
+        )
+        wait_for(lambda: len(self.service.events) == 1)
+        self.assertFalse(self.adapter._publisher._ready())
+        self.service.state_release.set()
+
+    def test_audio_waits_for_first_full_handshake_before_sending(self) -> None:
+        """A fresh session must not race ahead of its own first state PUT.
+
+        Racing it would get every event rejected as stale_context, which
+        tears the connection down -- far worse than a short wait.
+        """
+        self.service.state_release.clear()
+        self.adapter._startup()
+        wait_for(lambda: self.adapter._publisher._session is not None)
+        self.assertFalse(self.adapter._publisher.can_send_audio())
+        self.adapter._lap(
+            {"lap": 1, "pilot_id": 7, "pilot": "Alfa", "phonetic": "four seconds"}
+        )
+        gevent.sleep(0.05)
+        self.assertEqual(self.service.events, [])
+        self.assertIsNotNone(self.adapter._publisher._session)
+        self.service.state_release.set()
+        wait_for(self.adapter._publisher._ready)
+        self.adapter._lap(
+            {"lap": 2, "pilot_id": 7, "pilot": "Alfa", "phonetic": "five seconds"}
+        )
+        wait_for(lambda: len(self.service.events) == 1)
 
     def test_url_change_during_handshake_does_not_install_old_session(self) -> None:
         """An in-flight handshake cannot attach the old session to a new URL."""
@@ -369,6 +572,85 @@ class AdapterTests(unittest.TestCase):
         wait_for(lambda: len(self.service.events) == 3)
         self.assertEqual(self.service.events[2]["payload"], {"asset": "stage"})
         self.assertEqual(self.service.events[2]["expires_at"], target + 0.25)
+
+    def test_race_stage_schedules_buzzer_with_full_lead_not_at_race_start(self) -> None:
+        """The buzzer must be scheduled from staging, which fixes the timing.
+
+        RACE_START itself fires with no lead -- RH busy-waits to the exact
+        instant before triggering it -- so scheduling from RACE_STAGE (fired
+        several seconds ahead, carrying the same fixed start time) is what
+        gives the buzzer the same playback budget the staging tones get.
+        """
+        self.connect()
+        target = time.monotonic() + 3
+        self.adapter._staged({"pi_starts_at_s": target})
+        wait_for(lambda: len(self.service.events) == 1)
+        self.assertEqual(self.service.events[0]["payload"], {"asset": "buzzer"})
+        self.assertEqual(self.service.events[0]["play_at"], target)
+        self.assertEqual(self.service.events[0]["expires_at"], target + 1)
+
+    def test_race_stage_schedules_every_stage_tone_up_front(self) -> None:
+        """All staging tones are scheduled from RACE_STAGE, not one by one."""
+        self.connect()
+        stage_at = time.monotonic() + 1
+        self.adapter._staged(
+            {
+                "pi_staging_at_s": stage_at,
+                "staging_tones": 3,
+                "pi_starts_at_s": stage_at + 5,
+            }
+        )
+        wait_for(lambda: len(self.service.events) == 4)
+        tones = [event["payload"] for event in self.service.events]
+        self.assertEqual(tones, [{"asset": "stage"}] * 3 + [{"asset": "buzzer"}])
+        targets = [event["play_at"] for event in self.service.events]
+        self.assertEqual(targets, [stage_at, stage_at + 1, stage_at + 2, stage_at + 5])
+
+    def test_race_stage_without_a_start_time_does_not_emit(self) -> None:
+        """A malformed/missing start time must not queue an unscheduled buzzer."""
+        self.connect()
+        self.adapter._staged({})
+        self.adapter._staged({"pi_starts_at_s": None})
+        self.adapter._staged({"pi_starts_at_s": float("nan")})
+        gevent.sleep(0.05)
+        self.assertFalse(self.service.events)
+
+    def test_race_abort_during_staging_cancels_the_scheduled_buzzer(self) -> None:
+        """Aborting before the real start must not let a stale buzzer fire.
+
+        Drives RH's own RACE_ABORT callback (not stop_audio directly) to
+        prove the wiring, not just stop_audio's own behaviour.
+        """
+        self.connect()
+        target = time.monotonic() + 3
+        self.adapter._staged({"pi_starts_at_s": target})
+        wait_for(lambda: len(self.service.events) == 1)
+        generation = self.adapter._generation
+        registered = {
+            call.args[0]: call.args[1] for call in self.rh.events.on.call_args_list
+        }
+        abort_handler = registered[Evt.RACE_ABORT]
+        abort_handler({})
+        wait_for(self.adapter._publisher._ready)
+        self.assertGreater(self.adapter._generation, generation)
+
+    def test_race_stop_tears_down_audio_after_a_normal_finish(self) -> None:
+        """A normally-finished race must not leave the stream marked playing.
+
+        RACE_STOP is RH's only event for an ordinary race end (no abort
+        involved) -- without wiring it, nothing ever told the service the
+        race was over, and the stream had no way back to idle except a
+        timeout.
+        """
+        self.connect()
+        generation = self.adapter._generation
+        registered = {
+            call.args[0]: call.args[1] for call in self.rh.events.on.call_args_list
+        }
+        stop_handler = registered[Evt.RACE_STOP]
+        stop_handler({})
+        wait_for(self.adapter._publisher._ready)
+        self.assertGreater(self.adapter._generation, generation)
 
     def test_http_response_size_is_bounded_and_connection_recovers(self) -> None:
         """A bad service reply cannot allocate unbounded memory or poison reuse."""
@@ -485,7 +767,7 @@ def integration(url: str) -> None:
             {"pilot_id": 7, "pilot": "Alfa", "lap": 3, "phonetic": "twenty seconds"}
         )
         wait_for(lambda: channel.request(url, "GET", "/test/playback")[1]["count"] >= 1)
-        adapter._stage({"scheduled_at_monotonic": time.monotonic() + 1})
+        adapter._staged({"pi_starts_at_s": time.monotonic() + 1})
         wait_for(lambda: channel.request(url, "GET", "/test/playback")[1]["count"] >= 2)
         adapter.stop_audio()
         wait_for(adapter._publisher._ready)

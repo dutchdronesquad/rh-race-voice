@@ -26,6 +26,7 @@ package = ModuleType("race_voice_gevent_probe")
 package.__path__ = [str(_repo_root / "sendspin_service/synthesis")]
 sys.modules[package.__name__] = package
 module = importlib.import_module(f"{package.__name__}.piper")
+gevent_module = importlib.import_module(f"{package.__name__}.gevent_piper")
 original_sleep = monkey.get_original("time", "sleep")
 original_ident = monkey.get_original("_thread", "get_ident")
 hub_ident = original_ident()
@@ -75,7 +76,9 @@ def main() -> None:
         ThreadPoolExecutor(max_workers=1) as executor,
     ):
         root = Path(directory)
-        tts = module.PiperSynthesizer(root / "models", root / "tts", status)
+        tts = gevent_module.GeventPiperSynthesizer(
+            root / "models", root / "tts", status
+        )
         params = module.SynthesisParams("1.000", "0.667", "0.800")
         voice = Mock()
         voice.synthesize_wav.side_effect = synthesize

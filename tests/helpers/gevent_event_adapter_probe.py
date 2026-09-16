@@ -13,7 +13,7 @@ import time
 import unittest
 import uuid
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import gevent
 from gevent.event import Event
@@ -669,6 +669,17 @@ class AdapterTests(unittest.TestCase):
         channel._last_used -= JsonChannel._IDLE_LIMIT_S + 1
         self.assertEqual(channel.request(self.service.url, "GET", "/health")[0], 200)
         self.assertIsNot(channel._connection, first_connection)
+
+    def test_slow_but_healthy_reply_does_not_time_out(self) -> None:
+        """A reply slower than the old timeouts must still succeed within budget."""
+        channel = JsonChannel("")
+        self.addCleanup(channel.close)
+        with patch.object(JsonChannel, "_REQUEST_TIMEOUT_S", 0.2):
+            self.service.health_release.clear()
+            gevent.spawn_later(0.1, self.service.health_release.set)
+            self.assertEqual(
+                channel.request(self.service.url, "GET", "/health")[0], 200
+            )
 
     def test_state_update_does_not_postpone_due_clock_refresh(self) -> None:
         """Frequent settings/roster updates must not age the service clock out."""

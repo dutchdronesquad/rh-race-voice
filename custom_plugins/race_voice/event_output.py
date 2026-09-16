@@ -26,6 +26,7 @@ class JsonChannel:
     """Reuse one HTTP connection, owned by exactly one sender greenlet."""
 
     _IDLE_LIMIT_S = 60.0
+    _REQUEST_TIMEOUT_S = 8.0
 
     def __init__(self, token: str) -> None:
         """Defer connections until background delivery."""
@@ -52,7 +53,9 @@ class JsonChannel:
         ):
             raise ValueError("Invalid event service URL")
         try:
-            with gevent.Timeout(3, TimeoutError("Event service request timed out")):
+            with gevent.Timeout(
+                self._REQUEST_TIMEOUT_S, TimeoutError("Event service request timed out")
+            ):
                 idle = self._connection is not None and (
                     time.monotonic() - self._last_used > self._IDLE_LIMIT_S
                 )
@@ -64,7 +67,9 @@ class JsonChannel:
                         else http.client.HTTPConnection
                     )
                     self._connection = connection(
-                        endpoint.hostname, endpoint.port, timeout=2
+                        endpoint.hostname,
+                        endpoint.port,
+                        timeout=self._REQUEST_TIMEOUT_S,
                     )
                     self._url = url
                 headers = {

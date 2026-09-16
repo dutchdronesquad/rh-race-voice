@@ -1,0 +1,414 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/dutchdronesquad/rh-race-voice/race-events-v1.schema.json",
+  "title": "Race events v1 wire shapes",
+  "description": "Reference shapes; state ordering, event ID derivation, finite clocks, lifetime, duplicate pilots and model ranges also require semantic validation.",
+  "$defs": {
+    "context": {
+      "type": "object",
+      "properties": {
+        "competition_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "\\S"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "heat_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        }
+      },
+      "required": [
+        "competition_id",
+        "revision",
+        "generation",
+        "heat_id"
+      ]
+    },
+    "voice": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "\\S"
+        },
+        "speed": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "noise": {
+          "type": "number",
+          "minimum": 0
+        },
+        "noise_w": {
+          "type": "number",
+          "minimum": 0
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "callout_flags": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        }
+      },
+      "required": [
+        "model",
+        "speed",
+        "noise",
+        "noise_w",
+        "enabled",
+        "callout_flags"
+      ]
+    },
+    "pilot": {
+      "type": "object",
+      "properties": {
+        "pilot_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "callsign": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "\\S"
+        },
+        "spoken_name": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "node": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "colour": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 32
+        }
+      },
+      "required": [
+        "pilot_id",
+        "callsign",
+        "spoken_name"
+      ]
+    },
+    "event": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": "race-events/1"
+        },
+        "session_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "\\S"
+        },
+        "context": {
+          "$ref": "#/$defs/context"
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "enum": [
+            "lap",
+            "voice",
+            "countdown",
+            "tone"
+          ]
+        },
+        "occurred_at": {
+          "type": "number"
+        },
+        "expires_at": {
+          "type": "number"
+        },
+        "play_at": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "payload": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "version",
+        "session_id",
+        "context",
+        "event_id",
+        "sequence",
+        "kind",
+        "occurred_at",
+        "expires_at",
+        "payload"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "lap"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "properties": {
+                  "pilot_id": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 1
+                  },
+                  "pilot_name": {
+                    "type": "string",
+                    "minLength": 0,
+                    "maxLength": 256
+                  },
+                  "lap": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096,
+                    "pattern": "\\S"
+                  }
+                },
+                "required": [
+                  "pilot_id",
+                  "pilot_name",
+                  "lap",
+                  "text"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "voice"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096,
+                    "pattern": "\\S"
+                  },
+                  "winner_flag": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "text"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "countdown"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096,
+                    "pattern": "\\S"
+                  }
+                },
+                "required": [
+                  "text"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "tone"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "properties": {
+                  "asset": {
+                    "enum": [
+                      "stage",
+                      "buzzer",
+                      "audio_check"
+                    ]
+                  }
+                },
+                "required": [
+                  "asset"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "snapshot": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": "race-events/1"
+        },
+        "session_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "\\S"
+        },
+        "context": {
+          "$ref": "#/$defs/context"
+        },
+        "heat_name": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "pilots": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/pilot"
+          }
+        },
+        "voice": {
+          "$ref": "#/$defs/voice"
+        },
+        "scheduled_start": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Planned race start in the publisher monotonic clock; null or absent means no scheduled countdown."
+        }
+      },
+      "required": [
+        "version",
+        "session_id",
+        "context",
+        "heat_name",
+        "pilots",
+        "voice"
+      ]
+    },
+    "command": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": "race-events/1"
+        },
+        "session_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "\\S"
+        },
+        "context": {
+          "$ref": "#/$defs/context"
+        },
+        "command_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^\\S+:command:[1-9][0-9]*$"
+        },
+        "operation": {
+          "enum": [
+            "prepare",
+            "clear_cache"
+          ]
+        },
+        "settings_revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "version",
+        "session_id",
+        "context",
+        "command_id",
+        "operation",
+        "settings_revision"
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/event"
+    },
+    {
+      "$ref": "#/$defs/snapshot"
+    },
+    {
+      "$ref": "#/$defs/command"
+    }
+  ]
+}

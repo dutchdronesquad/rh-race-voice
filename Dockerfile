@@ -3,7 +3,7 @@
 ARG PYTHON_VERSION=3.13
 ARG SERVICE_VERSION=0.0.0+dev
 
-FROM ghcr.io/astral-sh/uv:0.12.13 AS uv
+FROM ghcr.io/astral-sh/uv:0.12.15 AS uv
 
 FROM node:24-bookworm-slim AS player-build
 
@@ -18,7 +18,7 @@ RUN npm ci
 COPY sendspin_player/ ./
 RUN npm run build
 
-FROM python:${PYTHON_VERSION}-alpine
+FROM python:${PYTHON_VERSION}-slim-bookworm
 
 ARG SERVICE_VERSION
 
@@ -50,7 +50,8 @@ for dep in tomllib.loads(Path("pyproject.toml").read_text())["project"]["optiona
     print(dep)
 PY
 
-RUN apk add --no-cache libstdc++
+RUN apt-get update && apt-get install --no-install-recommends -y libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
     --mount=type=cache,target=/root/.cache/uv \
@@ -58,10 +59,11 @@ RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
     && rm /tmp/sendspin-service-requirements.txt
 
 COPY sendspin_service ./sendspin_service
+COPY custom_plugins ./custom_plugins
 COPY custom_plugins/race_voice/assets/*.wav ./sendspin_service/assets/
 COPY --from=player-build /build/custom_plugins/race_voice/player ./player
 
-RUN adduser -D -H -u 10001 -s /sbin/nologin sendspin
+RUN useradd --no-create-home --uid 10001 --shell /usr/sbin/nologin sendspin
 RUN mkdir -p /var/lib/sendspin-service && chown sendspin:sendspin /var/lib/sendspin-service
 
 USER sendspin

@@ -2,26 +2,36 @@
 
 ## Project Context
 
-Race Voice is a RotorHazard RHAPI plugin that generates voice callouts server-side with Piper TTS and streams the resulting WAV audio to Sendspin clients. The primary plugin package lives in `custom_plugins/race_voice/`.
+Race Voice is a RotorHazard RHAPI plugin (`custom_plugins/race_voice/`) that forwards race events and state to a standalone Sendspin voice service (`sendspin_service/`) over HTTP. The plugin is a thin event/state adapter with no synthesis of its own; the service owns Piper TTS synthesis, caching, and fan-out playback to Sendspin clients (the browser player and WindowsSpin). See `docs/architecture.md` for the full runtime flow and module map.
 
 Important modules:
 
-- `plugin.py`: RotorHazard event/filter integration, synthesis scheduling, event cache cleanup, and UI button callbacks.
-- `piper.py`: Piper model download/loading, ONNX Runtime session setup, synthesis, text normalization, WAV validation, and cache-key generation.
-- `audio_queue.py`: single-worker priority queue with expiry handling and optional scheduled playback timestamps for stale/time-sensitive audio.
-- `sendspin.py`: synchronous adapter around `aiosendspin`, owns the background asyncio loop and active Sendspin stream.
+Plugin package (`custom_plugins/race_voice/`):
+
+- `__init__.py`: entry point; `initialize()` constructs the event adapter and nothing else.
+- `event_adapter.py`: `RaceEventAdapter` — RH event/filter registration, UI registration, and race-state snapshot building.
+- `event_output.py`: `EventPublisher` — bounded, gevent-cooperative HTTP delivery to the service's `/v2/*` routes (session, state, clock, events, commands).
 - `ui.py`: RotorHazard settings panel, quick buttons, and `/player` blueprint.
-- `const.py`: option names, defaults, voice model list, and Sendspin port.
-- `services/`: small stateful helpers extracted from `plugin.py`.
-  - `services/clock_callouts.py`: race-clock callout phrase planning and reusable pre-cache phrase lists.
-  - `services/lap_callouts.py`: lap callout segment planning and reusable segment lists for pre-cache.
-  - `services/precache.py`: manual pre-cache rebuild orchestration, stale-job cancellation, cleanup, and completion notifications.
-  - `services/schedule.py`: scheduled-race countdown timers.
+- `const.py`: option names, defaults, and the voice model list.
+- `services/clock_callouts.py`: race-clock callout phrase planning and reusable pre-cache phrase lists; shared with the standalone service.
 - `sendspin_player/`: Vite/React/shadcn source for the browser player; production output is written to `custom_plugins/race_voice/player/`.
+
+Piper synthesis (`piper.py`) and lap-segment planning (`lap_callouts.py`) used to live in this plugin package too, but had no plugin caller (service-only code); they now live under `sendspin_service/synthesis/` and `sendspin_service/race/` respectively.
+
+Service package (`sendspin_service/`), split into subpackages with the entry point at the top:
+
+- `server.py`: process entry point and HTTP app.
+- `race/`: `race_ingest.py` (`RaceIngest`, session/admission and the `/v2/*` routes), `race_planner.py` (`PreparationPlanner`, `PlaybackPlanner`, `Destination`, `SendspinPlaybackSink`), `race_protocol.py` (wire-format parsing and the admission/clock state machine), `race_schedule.py` (scheduled-countdown timers), `speech.py` (`SpeechEngine`), `lap_callouts.py`, `cache_commands.py`, `telemetry.py`.
+- `synthesis/`: `piper.py` (`PiperSynthesizer`), `gevent_piper.py` (`GeventPiperSynthesizer`, the gevent-hub-isolated variant for RH's monkey-patched process; keeps `gevent` out of `piper.py` itself, since the worker subprocess never has it installed), `synthesis.py`/`synthesis_worker.py` (the bounded synthesis subprocess supervisor and its child protocol).
+- `playback/`: `sendspin.py` (`SendSpinServer`, the `aiosendspin` adapter), `audio_queue.py`, `audio_cache.py`, `player.py` (optional static browser-player routes for Docker).
+
+Cross-subpackage imports are absolute (`sendspin_service.playback.audio_queue`, not `..playback.audio_queue`) — ruff (`TID252`) forbids parent-relative imports in this repo. Same-subpackage imports stay relative.
 
 ## Runtime Behavior
 
-RotorHazard phonetic filters and server-side race events are used as callout sources. Heavy work must stay off the RotorHazard event/filter thread; schedule synthesis through the existing executor instead of doing Piper work inline.
+Keep architecture changes incremental and concrete. For the standalone-service epic, finish and measure one local event-to-audio path before adding cloud routing or personal pilot selections. Reuse existing libraries and phrase logic; avoid generic frameworks or speculative automation. Keep preparation and per-output playback separate where needed for isolation, and use one event-to-audio path.
+
+RotorHazard phonetic filters and server-side race events are used as callout sources. Heavy work must stay off the RotorHazard event/filter thread. The existing executor schedules callout orchestration, but RotorHazard monkey-patches threading with gevent, so that executor alone does not provide native-thread isolation. Keep Piper synthesis and ONNX session construction behind `_run_native()` (`GeventPiperSynthesizer` in a gevent-patched process, `WorkerSynthesizer` in the subprocess); keep RH API calls, queue mutations, and status callbacks outside that native boundary.
 
 Lap callouts are intentionally segmented:
 
@@ -29,12 +39,11 @@ Lap callouts are intentionally segmented:
 - reusable lap-number segment: `"Lap [n]"`, stored in `precache/laps/`.
 - dynamic lap-time phrase: stored in the per-model `tmp/` cache.
 
-Do not clear `precache/` on `HEAT_SET`. A heat change should clear queued audio and `tmp/` only. Operators can use **Rebuild pre-cache** to generate race-clock callouts, scheduled-race countdowns, and reusable schedule phrases, pilot-name segments, and lap-number segments. RotorHazard data reset and the **Clear TTS cache** button may clear all model WAV cache content, including `precache/`.
+Do not clear `precache/` on `HEAT_SET`. A heat change should clear queued audio and `tmp/` only. Operators can use **Prepare pre-cache** to generate race-clock callouts, scheduled-race countdowns, and reusable schedule phrases, pilot-name segments, and lap-number segments. RotorHazard data reset and the **Clear TTS cache** button may clear all model WAV cache content, including `precache/`.
 
 Lap callouts should expire quickly enough to avoid stale race audio. The current lap expiry is intentionally longer than the queue default to handle several pilots crossing close together, but it should remain race-day conservative.
 
-Staging tones depend on upstream `Evt.RACE_STAGE_TONE`. Keep them as direct event integrations for branches that target the RotorHazard version containing that event; do not add a fallback timer that reimplements staging logic in the plugin.
-Race-clock callouts depend on upstream `Evt.RACE_CLOCK_CALLOUT`. Keep them as direct event integrations for branches that target the RotorHazard version containing that event; do not add a fallback timer that reimplements race-clock countdown logic in the plugin.
+Staging tones depend on upstream `Evt.RACE_STAGE_TONE`. Keep them as direct event integrations for branches that target the RotorHazard version containing that event; do not add a fallback timer that reimplements staging logic in the plugin. Race-clock callouts depend on upstream `Evt.RACE_CLOCK_CALLOUT`. Keep them as direct event integrations for branches that target the RotorHazard version containing that event; do not add a fallback timer that reimplements race-clock countdown logic in the plugin.
 
 ## Sendspin Notes
 
@@ -48,10 +57,10 @@ Late-joining Sendspin clients should be synced into the active group while playb
 
 ## Cache Layout
 
-Generated files live below RotorHazard's data directory:
+Generated files live under the standalone service's own cache directory (`SENDSPIN_RACE_CACHE_DIR` / `--race-cache-dir`, defaulting to `race-voice-cache` under the service's systemd state directory or Docker volume), not RotorHazard's data directory:
 
 ```text
-race_voice_cache/
+race-voice-cache/
   models/                 downloaded Piper ONNX models
   tts/<model>/            normal cached phrases
   tts/<model>/precache/pilots/
@@ -66,11 +75,11 @@ race_voice_cache/
   tts/<model>/test/       generated test phrases
 ```
 
-Cache keys must include normalized phrase text and synthesis parameters so changing voice tuning does not reuse the wrong WAV.
+Cache keys are content hashes that must include normalized phrase text and synthesis parameters (plus the model file contents and Piper library version) so changing voice tuning, models, or the Piper dependency does not reuse the wrong WAV.
 
 ## Dependency Policy
 
-The plugin currently imports Piper and ONNX Runtime at module import time. Missing runtime dependencies are expected to fail through the normal RotorHazard/plugin dependency path rather than through a custom lazy-import layer.
+The hard cutover to v2.0.0 has happened: the plugin entry point (`custom_plugins/race_voice/__init__.py`) always constructs the event adapter and never loads Piper or ONNX inside RH, and `custom_plugins/race_voice/manifest.json` no longer lists `piper-tts` as a plugin dependency. Only the `sendspin-service` optional dependency group in `pyproject.toml` pulls in `piper-tts`, `aiosendspin`, `av`, `numpy`, and `pillow`, for the service's isolated synthesis worker subprocess. Do not add legacy modes, automatic fallbacks, or compatibility adapters for the removed v1 HTTP surface or in-process synthesis path. Rollback means installing the previous release. Missing runtime dependencies should fail through the normal dependency path.
 
 Keep dependencies aligned between `pyproject.toml` and `custom_plugins/race_voice/manifest.json`.
 
@@ -94,22 +103,21 @@ The browser player source lives in `sendspin_player/`:
 
 ## Documentation Style
 
+Write Markdown prose as natural paragraphs without a fixed line-length limit. The Python formatter's 88-character target does not apply to documentation. Preserve intentional line breaks in code blocks, tables and lists.
+
 The README should stay selective: keep it focused on what Race Voice is, what it needs, and how to get started. Move day-to-day operation, settings, cache behavior, and troubleshooting details into files under `docs/`.
 
 Keep user-facing docs aligned with actual race behavior, especially cache cleanup, browser playback, Sendspin port `8927`, and the need to set RotorHazard browser Voice Volume and Tone Volume to `0` when Race Voice handles callouts and race sounds.
 
 ## PR Style
 
-Write PR descriptions as a short explanation of the change, not as a raw change
-log. Start with one or two paragraphs that explain the problem, the chosen
-direction, and the user-visible result. Use bullet lists only for the parts that
-are easier to scan as lists, such as notable implementation details, follow-up
-work, or validation steps.
+Write PR descriptions as a short explanation of the change, not as a raw change log. Start with one or two paragraphs that explain the problem, the chosen direction, and the user-visible result. Use bullet lists only for the parts that are easier to scan as lists, such as notable implementation details, follow-up work, or validation steps.
 
-Avoid PR bodies made entirely of bullet lists. Do not enumerate every touched
-file or internal refactor unless it changes behavior, deployment, packaging, or
-the operator workflow. The reader should understand why the branch exists before
-they see the checklist.
+Avoid PR bodies made entirely of bullet lists. Do not enumerate every touched file or internal refactor unless it changes behavior, deployment, packaging, or the operator workflow. The reader should understand why the branch exists before they see the checklist.
+
+## PR Labels
+
+Apply exactly one category label to every PR when creating it, matching the repo's existing label set: `new-feature` for new capability, `bugfix` for bug fixes, `documentation` for docs-only changes, `refactor` for structural changes with no behavior change, `cleanup` for removing dead code or unused dependencies, `enhancement` for improving existing behavior without adding new capability, `breaking-change` for anything that changes existing defaults or behavior for current users. `gh pr edit`/`gh issue edit --add-label` sometimes fails with a GraphQL "Projects (classic) deprecated" error unrelated to the label itself; work around it with the REST API directly: `gh api repos/<owner>/<repo>/issues/<number>/labels -f "labels[]=<label>"`.
 
 ## Changelog Style
 

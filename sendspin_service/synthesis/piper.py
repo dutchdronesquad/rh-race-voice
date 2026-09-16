@@ -22,7 +22,7 @@ import onnxruntime
 from piper import PiperVoice
 from piper.config import PiperConfig, SynthesisConfig
 
-from .const import VOICE_MODELS
+from custom_plugins.race_voice.const import VOICE_MODELS
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -69,6 +69,7 @@ class PiperSynthesizer:
         self._voice: Any | None = None
         self._loaded_model: str | None = None
         self._voice_lock = threading.Lock()
+        self._native_lock = threading.Lock()
         self._cache_locks: dict[tuple[str, str, str], threading.Lock] = {}
         self._cache_locks_lock = threading.Lock()
 
@@ -124,7 +125,8 @@ class PiperSynthesizer:
             try:
                 buf = io.BytesIO()
                 with wave.open(buf, "wb") as wav_file:
-                    voice.synthesize_wav(
+                    self._run_native(
+                        voice.synthesize_wav,
                         normalized_text,
                         wav_file,
                         syn_config=self._make_syn_config(params),
@@ -179,8 +181,11 @@ class PiperSynthesizer:
         try:
             buf = io.BytesIO()
             with wave.open(buf, "wb") as wav_file:
-                voice.synthesize_wav(
-                    "ready", wav_file, syn_config=self._make_syn_config(params)
+                self._run_native(
+                    voice.synthesize_wav,
+                    "ready",
+                    wav_file,
+                    syn_config=self._make_syn_config(params),
                 )
         except Exception:
             logger.exception("Race Voice: model preparation failed for %s", model_name)
@@ -188,6 +193,17 @@ class PiperSynthesizer:
         else:
             logger.info("Race Voice: model prepared for %s", model_name)
             return True
+
+    def _run_native[T](
+        self, function: Callable[..., T], *args: Any, **kwargs: Any
+    ) -> T:
+        """Offload blocking Piper/ONNX work; subclasses supply the isolation.
+
+        A gevent-patched caller and a subprocess worker need different
+        isolation, and only one of them has gevent installed at all. See
+        GeventPiperSynthesizer and WorkerSynthesizer.
+        """
+        raise NotImplementedError
 
     def _load_voice(self, model_name: str) -> Any | None:
         """Load the selected Piper model once, downloading files if necessary."""
@@ -208,10 +224,13 @@ class PiperSynthesizer:
                 with config_path.open("r", encoding="utf-8") as f:
                     config_dict = json.load(f)
                 sess_options = onnxruntime.SessionOptions()
-                sess_options.intra_op_num_threads = os.cpu_count() or 4
+                sess_options.intra_op_num_threads = max(
+                    1, min(2, (os.cpu_count() or 2) - 1)
+                )
                 self._voice = PiperVoice(
                     config=PiperConfig.from_dict(config_dict),
-                    session=onnxruntime.InferenceSession(
+                    session=self._run_native(
+                        onnxruntime.InferenceSession,
                         str(model_path),
                         sess_options=sess_options,
                         providers=["CPUExecutionProvider"],

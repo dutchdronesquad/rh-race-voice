@@ -1,5 +1,7 @@
 # Pilot Filter Feature — Design Document
 
+**Status: superseded.** This is the original pre-v2 design (PR #65) for exactly the feature now tracked as [#295](https://github.com/dutchdronesquad/rh-race-voice/issues/295) (personalized player audio, per-listener pilot selection) with its backend routing/session work in [#302](https://github.com/dutchdronesquad/rh-race-voice/issues/302), both part of epic [#296](https://github.com/dutchdronesquad/rh-race-voice/issues/296). It was never implemented against the old architecture. The problem, user experience and open questions below are still a useful starting point; the code sketches (`audio_queue.py`'s `AudioJob`, the single-stream `sendspin.py` design) describe the v1 plugin-does-synthesis architecture removed in #319 and do not match the current service — read #295/#302 for the current architecture (`RaceIngest`'s named `PlaybackPlanner` destinations, shared synthesis, `PlaybackSink`) before implementing this.
+
 A feature that lets each connected Sendspin player choose which audio it receives, filtered by pilot. A device set to "My pilot" only hears announcements relevant to that pilot (crossings, lap times) plus general race events (race start/stop, heat winner).
 
 ---

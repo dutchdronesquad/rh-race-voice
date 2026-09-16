@@ -19,8 +19,6 @@ from .const import (
     NOISE_SCALE_OPTION,
     NOISE_W_SCALE_OPTION,
     PANEL_ID,
-    SENDSPIN_CLOUD_TOKEN_OPTION,
-    SENDSPIN_CLOUD_URL_OPTION,
     SENDSPIN_SERVICE_URL_OPTION,
     SPEECH_SPEED_OPTION,
     TEST_PHRASE_OPTION,
@@ -65,26 +63,6 @@ def register_ui(  # noqa: PLR0913
     )
     rhapi.fields.register_option(
         UIField(
-            SENDSPIN_CLOUD_URL_OPTION,
-            "Cloud Sendspin service URL",
-            UIFieldType.TEXT,
-            value="",
-            desc="Additional cloud API URL. Empty disables cloud output.",
-        ),
-        panel=PANEL_ID,
-    )
-    rhapi.fields.register_option(
-        UIField(
-            SENDSPIN_CLOUD_TOKEN_OPTION,
-            "Cloud Sendspin API token",
-            UIFieldType.PASSWORD,
-            value="",
-            desc="Cloud service API token.",
-        ),
-        panel=PANEL_ID,
-    )
-    rhapi.fields.register_option(
-        UIField(
             VOICE_MODEL_OPTION,
             "Voice model",
             UIFieldType.SELECT,
@@ -93,7 +71,7 @@ def register_ui(  # noqa: PLR0913
                 UIFieldSelectOption(model_name, model["label"])
                 for model_name, model in VOICE_MODELS.items()
             ],
-            desc="Downloaded once into the local RotorHazard data cache.",
+            desc="Downloaded by the connected voice service.",
         ),
         panel=PANEL_ID,
     )
@@ -138,8 +116,7 @@ def register_ui(  # noqa: PLR0913
         '<a href="/player" target="_blank" rel="noopener noreferrer">'
         "Open browser player in a new tab</a>\n\n"
         "⚠ Set Voice Volume and Tone Volume to 0 on all browser clients.\n\n"
-        "After first setup or voice model/settings changes, use Rebuild pre-cache to "
-        "prepare race-clock, schedule, and current-heat WAV files.",
+        "Voice runs in the connected service. Enable plugin audio before testing.",
     )
 
     # Test phrase
@@ -181,7 +158,7 @@ def register_ui(  # noqa: PLR0913
     rhapi.ui.register_quickbutton(
         panel=PANEL_ID,
         name="race_voice_rebuild_precache",
-        label="Rebuild pre-cache",
+        label="Prepare pre-cache",
         function=rebuild_precache_callback,
     )
 

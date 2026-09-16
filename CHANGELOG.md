@@ -6,7 +6,21 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 ## [Unreleased]
 
-Piper speech generation and model loading now run outside RotorHazard's event-loop thread, addressing pauses in live node/RSSI chart updates while TTS is busy. Synthesis remains bounded; this change does not remove the time needed to generate and buffer speech.
+## [2.0.0] - 2026-09-16
+
+Race Voice v2 moves the entire race-audio pipeline into the standalone Sendspin service; the RotorHazard plugin is now a thin adapter that only forwards race events and state. This is a hard cutover — update the plugin and service together. The in-process synthesis path and the old **Cloud Sendspin service URL** / **Cloud Sendspin API token** plugin fields are gone; see the [Usage Guide](docs/usage.md) for the three supported deployment shapes (local-only, local+relay, cloud-direct).
+
+### Cloud relay redesigned
+
+Cloud playback is now a relay from the primary service instead of a second upload from the plugin, so audio is only ever synthesized once. Stopping a race or changing heats now reaches the cloud side too, and a failed delivery retries automatically. Set it up with `sendspin-service relay enable --url <cloud-url>` instead of hand-editing the config file.
+
+### Race-day reliability
+
+- Scheduled stage tones and the race-start buzzer stream in chunks with client-aware lead time, fixing tones that played closer together than scheduled on slower connections.
+- A stop or heat change discards synthesis still in flight instead of letting it play late.
+- Announcements are prioritized over lap speech, with scheduled countdowns first.
+- Lap synthesis load is bounded so a busy gate crossing cannot back up the pipeline.
+- Piper/ONNX work is fully isolated from RotorHazard's gevent-patched event loop.
 
 ## [1.2.0] - 2026-09-13
 

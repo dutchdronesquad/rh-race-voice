@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -32,6 +33,38 @@ class SendspinStartupTests(unittest.IsolatedAsyncioTestCase):
             await backend._stop_stream(strict=True)
         healthy.stop.assert_awaited_once()
         failed.stop.assert_awaited_once()
+
+    async def test_idle_stop_returns_group_to_stopped_after_last_clip(self) -> None:
+        """Nothing left queued must eventually let clients leave the playing state."""
+        backend = SendSpinServer()
+        backend._stream_lock = asyncio.Lock()
+        group = Mock(stop=AsyncMock(), clients=[])
+        backend._stream_group = group
+        backend._next_play_start_us = 1_000_000
+        backend._server = Mock(connected_clients=[])
+        play_end_us = 1_000_000
+        clock = Mock(now_us=Mock(return_value=play_end_us + 1_000_000))
+        backend._schedule_idle_stop(clock, group, play_end_us)
+        await backend._idle_stop_task
+        group.stop.assert_awaited_once()
+        self.assertIsNone(backend._stream_group)
+
+    async def test_idle_stop_is_a_no_op_once_superseded_by_newer_audio(self) -> None:
+        """A later play() extending the queue must cancel the pending idle stop."""
+        backend = SendSpinServer()
+        backend._stream_lock = asyncio.Lock()
+        group = Mock(stop=AsyncMock(), clients=[])
+        backend._stream_group = group
+        play_end_us = 1_000_000
+        # A newer clip has already pushed the known end further out by the
+        # time this watchdog's wait elapses.
+        backend._next_play_start_us = play_end_us + 500_000
+        backend._server = Mock(connected_clients=[])
+        clock = Mock(now_us=Mock(return_value=play_end_us + 1_000_000))
+        backend._schedule_idle_stop(clock, group, play_end_us)
+        await backend._idle_stop_task
+        group.stop.assert_not_called()
+        self.assertIs(backend._stream_group, group)
 
     async def test_starts_with_installed_api_and_persists_identity(self) -> None:
         """Catch constructor-breaking dependency upgrades and identity rotation."""

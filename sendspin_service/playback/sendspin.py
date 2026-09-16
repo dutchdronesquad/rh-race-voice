@@ -41,6 +41,8 @@ _MAX_BRIDGED_GAP_US = 1_500_000
 _SCHEDULED_BUFFER_MARGIN_US = 100_000
 _SCHEDULED_BUFFER_CEILING_US = 1_200_000
 _STARTUP_TIMEOUT_S = 30.0
+_LATE_JOIN_SYNC_INTERVAL_S = 0.1
+_IDLE_DRAIN_S = 0.1
 
 
 @dataclass(frozen=True)
@@ -56,6 +58,12 @@ class _WavClip:
     audio_format: AudioFormat
     pcm_data: bytes
     duration_s: float
+
+
+class _SendspinClock(Protocol):
+    def now_us(self) -> int:
+        """Return the current Sendspin monotonic clock in microseconds."""
+        ...
 
 
 class _PushStream(Protocol):
@@ -124,6 +132,7 @@ class SendSpinServer:
         self._stream_group: SendspinGroup | None = None
         self._stream: _PushStream | None = None
         self._next_play_start_us: int | None = None
+        self._idle_stop_task: asyncio.Task[None] | None = None
 
     def start(self) -> None:
         """Start the Sendspin server in a background daemon thread."""
@@ -362,6 +371,7 @@ class SendSpinServer:
         await self._interrupt_stream(clear_client_audio=True, strict=strict)
 
     async def _stop_stream_locked(self, *, stop_all_client_groups: bool) -> None:
+        self._cancel_idle_stop()
         server = self._server
         group = self._stream_group
         self._stream = None
@@ -376,10 +386,51 @@ class SendSpinServer:
         elif group is not None:
             await group.stop()
 
+    def _cancel_idle_stop(self) -> None:
+        task = self._idle_stop_task
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+        if self._idle_stop_task is task:
+            self._idle_stop_task = None
+
+    def _schedule_idle_stop(
+        self, clock: _SendspinClock, group: SendspinGroup, play_end_us: int
+    ) -> None:
+        """Return the group to idle once nothing extends playback past this end."""
+        self._cancel_idle_stop()
+        self._idle_stop_task = asyncio.create_task(
+            self._stop_stream_when_idle(clock, group, play_end_us)
+        )
+
+    async def _stop_stream_when_idle(
+        self, clock: _SendspinClock, group: SendspinGroup, play_end_us: int
+    ) -> None:
+        try:
+            while True:
+                if self._stream_group is not group:
+                    return
+                await self._sync_connected_clients(group)
+                delay_s = (play_end_us - clock.now_us()) / 1_000_000 + _IDLE_DRAIN_S
+                if delay_s <= 0:
+                    break
+                await asyncio.sleep(min(delay_s, _LATE_JOIN_SYNC_INTERVAL_S))
+            lock = self._stream_lock
+            if lock is None:
+                return
+            async with lock:
+                if (
+                    self._stream_group is group
+                    and self._next_play_start_us == play_end_us
+                ):
+                    await self._stop_stream_locked(stop_all_client_groups=False)
+        except asyncio.CancelledError:
+            pass
+
     async def _interrupt_stream(
         self, *, clear_client_audio: bool, strict: bool = False
     ) -> None:
         """Immediately interrupt active playback, even while audio is being queued."""
+        self._cancel_idle_stop()
         server = self._server
         stream = self._stream
         group = self._stream_group
@@ -424,6 +475,7 @@ class SendSpinServer:
         async with lock:
             if cancelled is not None and cancelled.is_set():
                 return
+            self._cancel_idle_stop()
             await self._append_to_stream_locked(
                 clips, expires_at, play_at, duration_s, volume, cancelled
             )
@@ -472,7 +524,7 @@ class SendSpinServer:
 
         try:
             queue_started = time.monotonic()
-            _play_end_us, streamed_count, client_count = await self._queue_wav_paths(
+            play_end_us, streamed_count, client_count = await self._queue_wav_paths(
                 stream,
                 clips,
                 play_start_us=commit_start_us,
@@ -489,6 +541,7 @@ class SendSpinServer:
                     (time.monotonic() - queue_started) * 1000,
                     (play_start_us - now_us) / 1000,
                 )
+                self._schedule_idle_stop(server.clock, group, play_end_us)
         except StreamStoppedError:
             logger.info("Sendspin service: Sendspin stream stopped")
             self._stream = None

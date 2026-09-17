@@ -22,7 +22,7 @@ sendspin-service = [
 dev = [
   "pre-commit-hooks==6.0.0",
   "prek==0.5.3",
-  "ruff==0.16.7",
+  "ruff==0.16.8",
 ]
 
 [tool.ruff]

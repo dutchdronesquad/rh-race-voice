@@ -8,6 +8,6 @@
   "required_rhapi_version": "1.5",
   "version": "2.0.0",
   "dependencies": [
-    "gevent>=24.11.1"
+    "gevent>=26.9.0"
   ]
 }

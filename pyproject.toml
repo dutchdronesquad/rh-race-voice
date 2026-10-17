@@ -10,7 +10,7 @@ dependencies = [
 
 [project.optional-dependencies]
 sendspin-service = [
-    "aiosendspin>=9.1.0,<10",
+    "aiosendspin>=10.2,<11",
     "av>=17.0.1",
     "numpy>=2.4.5",
     "pillow>=12.2.0",

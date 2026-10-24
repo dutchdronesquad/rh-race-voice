@@ -81,7 +81,7 @@ Cache keys are content hashes that must include normalized phrase text and synth
 
 The hard cutover to v2.0.0 has happened: the plugin entry point (`custom_plugins/race_voice/__init__.py`) always constructs the event adapter and never loads Piper or ONNX inside RH, and `custom_plugins/race_voice/manifest.json` no longer lists `piper-tts` as a plugin dependency. Only the `sendspin-service` optional dependency group in `pyproject.toml` pulls in `piper-tts`, `aiosendspin`, `av`, `numpy`, and `pillow`, for the service's isolated synthesis worker subprocess. Do not add legacy modes, automatic fallbacks, or compatibility adapters for the removed v1 HTTP surface or in-process synthesis path. Rollback means installing the previous release. Missing runtime dependencies should fail through the normal dependency path.
 
-Keep dependencies aligned between `pyproject.toml` and `custom_plugins/race_voice/manifest.json`.
+List only additional packages that RotorHazard does not provide in `custom_plugins/race_voice/manifest.json`. The plugin uses RotorHazard's installed `gevent`; keep it in `pyproject.toml` for local development and tests, but do not install or upgrade it through the plugin manifest. Keep any additional plugin runtime dependencies aligned with `pyproject.toml`.
 
 ## Development Checks
 

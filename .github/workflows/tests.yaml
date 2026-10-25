@@ -14,6 +14,41 @@ env:
   DEFAULT_PYTHON: "3.13"
 
 jobs:
+  rotorhazard-contract:
+    name: RotorHazard contract tests
+    runs-on: ubuntu-latest
+    env:
+      RACE_VOICE_RH_SOURCE: ${{ github.workspace }}/.test-deps/rotorhazard
+    steps:
+      - name: Check out Race Voice
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read pinned RotorHazard revision
+        id: rh
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          for key, value in json.loads(Path("tests/rotorhazard.json").read_text()).items():
+              print(f"{key}={value}")
+          PY
+      - name: Check out upstream RotorHazard
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.rh.outputs.repository }}
+          ref: ${{ steps.rh.outputs.revision }}
+          path: .test-deps/rotorhazard
+          persist-credentials: false
+      - name: Set up UV
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "latest"
+          python-version: ${{ env.DEFAULT_PYTHON }}
+          enable-cache: true
+      - name: Test actual RH APIs and emitted payloads
+        run: >-
+          uv run --locked --group rh-contract --extra sendspin-service --no-dev
+          python -m unittest tests.test_rh_contract -v
+
   service:
     name: Service regression tests
     runs-on: ubuntu-latest

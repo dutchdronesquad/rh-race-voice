@@ -10,6 +10,10 @@ Laps below RotorHazard's configured minimum lap time no longer request TTS or en
 
 Lap announcements now speak the pilot's callsign before the lap number and time, falling back to the phonetic name only when the callsign is empty. Pre-cache preparation uses the same name preference. Update the RotorHazard plugin to receive this change.
 
+Busy-race speech now keeps a shorter backlog of recent laps. Each output retains at most four waiting lap callouts and normally four seconds of waiting lap speech, dropping the oldest when overloaded. A single longer callout remains complete, and new laps do not interrupt speech already playing. Newer laps also cancel preparation of the same pilot's obsolete lap, and cancelled worker requests immediately release queue space.
+
+Queued pre-cache work no longer starts between the name, lap number and time of a live announcement. New timing logs distinguish preparation and playback queue waits from the planned Sendspin start delay. Update the primary Sendspin service for synthesis changes and each playback service for its queue limit. Actual audible latency still depends on the race hardware and connected players.
+
 Cloud listeners can disconnect and reconnect during an audio check and continue at the current position, even when they were the only listener. Finished, stopped or cancelled audio is not replayed. Update the cloud Sendspin service to receive this fix.
 
 ## [2.0.2] - 2026-10-25

@@ -51,15 +51,17 @@ class Worker:
         self.release.set()
         self.calls = []
         self.closed = False
+        self._lock = asyncio.Lock()
 
     async def request(self, payload: dict, **_kwargs: object) -> dict:
         """Simulate the supervisor boundary without loading a model in HTTP tests."""
-        self.calls.append(payload)
-        self.started.set()
-        await self.release.wait()
-        if payload["operation"] == "clear":
-            return {"cleared": 3}
-        return {"audio": ASSET.read_bytes(), "cache_hit": True}
+        async with self._lock:
+            self.calls.append(payload)
+            self.started.set()
+            await self.release.wait()
+            if payload["operation"] == "clear":
+                return {"cleared": 3}
+            return {"audio": ASSET.read_bytes(), "cache_hit": True}
 
     async def close(self) -> None:
         """Record application cleanup."""

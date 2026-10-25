@@ -549,6 +549,13 @@ class SendSpinServer:
         play_start_us, stream_options = self._resolve_play_start(
             play_at, now_us, group, volume, cancelled, duration_s
         )
+        if play_at is None:
+            logger.info(
+                "Sendspin playback %s: start in %.1fms, audio %.1fms",
+                clips[0].name,
+                (play_start_us - now_us) / 1000,
+                duration_s * 1000,
+            )
         if unattended_start_us is not None:
             # The programme was already advancing without listeners. Join its
             # current position, including the new player's startup lead time.

@@ -28,6 +28,7 @@ class _Job:
     request: bytes = field(compare=False)
     result: asyncio.Future = field(compare=False)
     waiters: int = field(default=0, compare=False)
+    running: bool = field(default=False, compare=False)
 
 
 class SynthesisWorker:
@@ -98,6 +99,21 @@ class SynthesisWorker:
         finally:
             job.waiters -= 1
             self._waiters -= 1
+            if not job.waiters and not job.running and not job.result.done():
+                self._discard_pending(job)
+
+    def _discard_pending(self, job: _Job) -> None:
+        """Free admission immediately when a queued operation loses its last caller."""
+        pending = []
+        while not self._queue.empty():
+            item = self._queue.get_nowait()
+            self._queue.task_done()
+            if item is not job:
+                pending.append(item)
+        for item in pending:
+            self._queue.put_nowait(item)
+        self._jobs.pop(job.key, None)
+        job.result.cancel()
 
     def _promote(self, job: _Job, priority: int) -> None:
         job.priority = priority
@@ -130,6 +146,7 @@ class SynthesisWorker:
     async def _run(self) -> None:
         while True:
             job = await self._queue.get()
+            job.running = True
             try:
                 if not job.waiters:
                     job.result.cancel()

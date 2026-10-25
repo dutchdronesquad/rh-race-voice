@@ -5,10 +5,12 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import threading
 import time
 import unittest
+import wave
 from dataclasses import replace
 from unittest.mock import AsyncMock, Mock
 
@@ -39,6 +41,15 @@ async def until(predicate) -> None:  # noqa: ANN001
     async with asyncio.timeout(1):
         while not predicate():  # noqa: ASYNC110
             await asyncio.sleep(0)
+
+
+def wav_audio(seconds: float) -> bytes:
+    """Build real WAV headers to test audible backlog independently of file size."""
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav:
+        wav.setparams((1, 2, 8000, 0, "NONE", "not compressed"))
+        wav.writeframes(bytes(round(seconds * 8000) * 2))
+    return output.getvalue()
 
 
 class PreparationPlannerTests(unittest.IsolatedAsyncioTestCase):
@@ -90,6 +101,28 @@ class PreparationPlannerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.planner.submit(replace(plan(21, EventKind.TONE), order=3), {})
         self.assertEqual(self.ready.call_args.args[0].order, 3)
+
+    async def test_new_lap_cancels_old_preparation_without_skipping_other_pilots(
+        self,
+    ) -> None:
+        """Stop spending inference on a pilot's old lap while others are waiting."""
+        entered = asyncio.Event()
+
+        async def generate(event: RaceEvent, *_args, **_kwargs) -> tuple[bytes, ...]:  # noqa: ANN002, ANN003
+            if event.sequence == 1:
+                entered.set()
+                await asyncio.Event().wait()
+            return (b"fresh",)
+
+        self.speech.synthesize.side_effect = generate
+        self.planner.submit(plan(1, pilot=1), {})
+        await entered.wait()
+        self.planner.submit(plan(2, pilot=2), {})
+        self.planner.submit(plan(3, pilot=1), {})
+        await until(lambda: self.ready.call_count == 2)
+        self.assertEqual(
+            [call.args[0].event.sequence for call in self.ready.call_args_list], [2, 3]
+        )
 
     async def test_beep_bypasses_active_speech_and_drops_obsolete_laps(self) -> None:
         """Ignoring task cancellation cannot revive interrupted audio."""
@@ -332,6 +365,64 @@ class PlaybackPlannerTests(unittest.IsolatedAsyncioTestCase):
         self.planner.submit(plan(2))
         await until(lambda: len(self.sink.played) == 1)
         self.assertEqual(self.sink.played[0].event.sequence, 2)
+
+    async def test_lap_backlog_is_bounded_by_duration_and_retains_other_speech(
+        self,
+    ) -> None:
+        """A small byte footprint must not conceal many seconds of old lap speech."""
+        active = plan(1, EventKind.TONE)
+        self.planner.submit(active)
+        await until(lambda: len(self.sink.played) == 1)
+        self.planner.submit(plan(2, EventKind.VOICE))
+        for number, seconds in ((3, 2), (4, 2), (5, 1)):
+            self.planner.submit(
+                replace(plan(number, pilot=number), audio=(wav_audio(seconds),))
+            )
+        self.assertFalse(self.sink.cancelled[0].is_set())
+        self.assertEqual([p.plan.order for p in self.planner._pending], [2, 4, 5])
+        self.assertEqual(sum(p.plan.duration_s for p in self.planner._pending), 3)
+        self.sink.release.set()
+        await until(lambda: len(self.sink.played) == 4)
+        self.assertEqual([p.order for p in self.sink.played], [1, 2, 4, 5])
+
+    async def test_prepared_lap_burst_keeps_at_most_four_pending_pilots(self) -> None:
+        """Bound even very short callouts without restarting current playback."""
+        self.planner.submit(plan(1))
+        await until(lambda: len(self.sink.played) == 1)
+        for number in range(2, 20):
+            self.planner.submit(plan(number, pilot=number))
+        self.assertEqual(
+            [p.plan.order for p in self.planner._pending], [16, 17, 18, 19]
+        )
+        self.assertFalse(self.sink.cancelled[0].is_set())
+
+    async def test_single_long_lap_is_complete_and_usable(self) -> None:
+        """The duration budget must not truncate or permanently exclude one callout."""
+        clips = (wav_audio(2), wav_audio(1), wav_audio(3))
+        long_lap = replace(plan(1), audio=clips)
+        self.assertEqual(long_lap.duration_s, 6)
+        self.assertTrue(self.planner.submit(long_lap))
+        await until(lambda: len(self.sink.played) == 1)
+        self.assertEqual(self.sink.played[0].audio, clips)
+
+    async def test_rejected_large_lap_does_not_report_queued_laps_as_dropped(
+        self,
+    ) -> None:
+        """Backlog eviction is committed only if its replacement can be admitted."""
+        self.planner.submit(plan(1))
+        await until(lambda: len(self.sink.played) == 1)
+        waiting = replace(plan(2, pilot=2), audio=(wav_audio(1),))
+        self.planner.submit(waiting)
+        self.planner._max_bytes = 100_000
+        with self.assertLogs("sendspin_service.telemetry", level="INFO") as captured:
+            self.assertFalse(
+                self.planner.submit(replace(plan(3, pilot=3), audio=(wav_audio(10),)))
+            )
+        records = [json.loads(record.getMessage()) for record in captured.records]
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["event_id"], plan(3).event.event_id)
+        self.assertEqual(records[0]["reason"], "no_room")
+        self.assertEqual([p.plan for p in self.planner._pending], [waiting])
 
     async def test_higher_priority_can_displace_full_pending_queue(self) -> None:
         """Capacity held by lower-priority speech must not exclude a race signal."""

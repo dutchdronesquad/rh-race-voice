@@ -6,6 +6,10 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 ## [Unreleased]
 
+Laps below RotorHazard's configured minimum lap time no longer request TTS or enter the audio queues. Laps exactly at the minimum are still announced, and changes to the minimum apply immediately. Update the RotorHazard plugin for this fix.
+
+Lap announcements now speak the pilot's callsign before the lap number and time, falling back to the phonetic name only when the callsign is empty. Pre-cache preparation uses the same name preference. Update the RotorHazard plugin to receive this change.
+
 Cloud listeners can disconnect and reconnect during an audio check and continue at the current position, even when they were the only listener. Finished, stopped or cancelled audio is not replayed. Update the cloud Sendspin service to receive this fix.
 
 ## [2.0.2] - 2026-10-25

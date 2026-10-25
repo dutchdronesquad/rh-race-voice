@@ -106,3 +106,44 @@ class SendspinStartupTests(unittest.IsolatedAsyncioTestCase):
                 server.get_client.return_value.connection_security = security
                 await SendSpinServer._admit_player(server, "other-player")
                 server.trust_unpaired.assert_not_awaited()
+
+    async def test_rejects_windows_versions_above_supported_maximum(self) -> None:
+        """The temporary cap applies regardless of encryption or pairing state."""
+        for version in ("2.2.7", "3.0.0", "v3.0.0-beta.1", "10.0.0"):
+            with self.subTest(version=version):
+                server = Mock(trust_unpaired=AsyncMock())
+                client = server.get_client.return_value
+                client.info.device_info.product_name = "Sendspin for Windows"
+                client.info.device_info.software_version = version
+                client.connection.disconnect = AsyncMock()
+                with self.assertLogs(
+                    "sendspin_service.playback.sendspin", level="WARNING"
+                ) as logs:
+                    await SendSpinServer._admit_player(server, "windows-player")
+                self.assertIn("supported maximum", " ".join(logs.output))
+                self.assertIn("2.2.6", " ".join(logs.output))
+                client.connection.disconnect.assert_awaited_once_with(
+                    retry_connection=False
+                )
+                server.trust_unpaired.assert_not_awaited()
+
+    async def test_preserves_supported_windows_and_other_clients(self) -> None:
+        """Admit Windows 2.2.6 and do not cap unrelated product versions."""
+        for product, version in (
+            ("Sendspin for Windows", "2.2.6"),
+            ("WindowsSpin", "2.2.5"),
+            ("Race Voice Browser Player", "3.0.0"),
+            ("Other Sendspin client", "10.0.0"),
+            ("Sendspin for Windows", None),
+            ("Sendspin for Windows", "unknown"),
+        ):
+            with self.subTest(product=product, version=version):
+                server = Mock(trust_unpaired=AsyncMock())
+                client = server.get_client.return_value
+                client.info.device_info.product_name = product
+                client.info.device_info.software_version = version
+                client.connection_security.psk_category = PskCategory.SENTINEL
+                client.connection.disconnect = AsyncMock()
+                await SendSpinServer._admit_player(server, "supported-player")
+                client.connection.disconnect.assert_not_awaited()
+                server.trust_unpaired.assert_awaited_once_with("supported-player")

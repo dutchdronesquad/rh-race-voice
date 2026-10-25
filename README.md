@@ -62,7 +62,7 @@ Server-side voice callouts for the [RotorHazard] timing platform, powered by [Pi
 - Python 3.12 or newer.
 - `sendspin-service` (installation below).
 - Network access from playback clients to `sendspin-service`.
-- A playback client: a browser or [WindowsSpin].
+- A playback client: a browser or [WindowsSpin] **2.2.6 or earlier**. Newer Sendspin for Windows versions are temporarily unsupported and refused by the service.
 
 ## Quick Start
 
@@ -79,7 +79,7 @@ Server-side voice callouts for the [RotorHazard] timing platform, powered by [Pi
    Choose a stable service release and confirm. Plugin and service release numbers do not need to match; see [update guidance](docs/usage.md#update-or-choose-a-version). The installer starts the service automatically. Stop any Sendspin Docker container on this machine first to avoid a [port conflict](docs/usage.md#port-conflicts).
 
 3. In **Settings → Race Voice**, enable **Plugin audio** and keep **Sendspin service URL** at `http://127.0.0.1:8766`.
-4. On your playback device, open `<RotorHazard UI base URL>/player` and press **Connect**. Alternatively, connect WindowsSpin to the Pi's LAN address on port `8927`.
+4. On your playback device, open `<RotorHazard UI base URL>/player` and press **Connect**. Alternatively, connect WindowsSpin **2.2.6 or earlier** to the Pi's LAN address on port `8927`.
 5. Use **Play audio check** to test sound, then **Rebuild pre-cache** to prepare callouts.
 
 Set RotorHazard browser **Voice Volume** and **Tone Volume** to `0` to prevent duplicate audio. The first use of a voice downloads its model.
@@ -130,7 +130,7 @@ Distributed under the **MIT** License. See [`LICENSE`](LICENSE) for more informa
 [RotorHazard]: https://github.com/RotorHazard/RotorHazard
 [Piper TTS]: https://github.com/OHF-Voice/piper1-gpl
 [Sendspin]: https://github.com/sendspin
-[WindowsSpin]: https://github.com/sendspin/windowsspin
+[WindowsSpin]: https://github.com/chrisuthe/windowsSpin/releases/tag/v2.2.6
 
 [license-shield]: https://img.shields.io/github/license/dutchdronesquad/rh-race-voice.svg
 [maintenance-shield]: https://img.shields.io/maintenance/yes/2026.svg

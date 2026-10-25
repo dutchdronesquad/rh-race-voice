@@ -89,7 +89,6 @@ class RaceEventAdapter:
             (Evt.RACE_SCHEDULE, self._race_schedule),
             (Evt.RACE_SCHEDULE_CANCEL, self.stop_audio),
             (Evt.RACE_ABORT, self.stop_audio),
-            (Evt.RACE_STOP, self.stop_audio),
         ):
             self._rhapi.events.on(event, callback, name=f"race_voice_event_{event}")
         for event in (Evt.PILOT_ADD, Evt.PILOT_ALTER, Evt.HEAT_ALTER, Evt.HEAT_DELETE):
@@ -308,6 +307,9 @@ class RaceEventAdapter:
         start_at = args.get("pi_starts_at_s")
         if not _is_valid_time(start_at):
             return
+        # Normal race finish drains final speech. A new race, including one in
+        # the same heat, must fence that speech before its staging signals.
+        self._refresh(invalidate=True)
         stage_at = args.get("pi_staging_at_s")
         if _is_valid_time(stage_at):
             try:

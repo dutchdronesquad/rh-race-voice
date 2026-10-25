@@ -6,6 +6,10 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 ## [Unreleased]
 
+A normal race finish now lets the winner and final callouts complete instead of clearing all audio at `RACE_STOP`. The stream returns to idle when its queued audio finishes. **Stop audio**, race aborts and heat changes still clear audio, and starting another race also clears the previous race's speech even when the heat stays the same.
+
+New announcements wait for their race-state update to be acknowledged before being sent, avoiding a race between separate HTTP connections that could lose the winner or reconnect the publisher unnecessarily. Capturing events stays nonblocking and original expiry deadlines remain unchanged. Update the RotorHazard plugin for these fixes.
+
 Laps below RotorHazard's configured minimum lap time no longer request TTS or enter the audio queues. Laps exactly at the minimum are still announced, and changes to the minimum apply immediately. Update the RotorHazard plugin for this fix.
 
 Lap announcements now speak the pilot's callsign before the lap number and time, falling back to the phonetic name only when the callsign is empty. Pre-cache preparation uses the same name preference. Update the RotorHazard plugin to receive this change.

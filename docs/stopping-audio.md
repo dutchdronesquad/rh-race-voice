@@ -1,3 +1,5 @@
 # Stopping audio and changing heats
 
 Stopping audio or switching heats invalidates pending voice synthesis and prevents already running synthesis from adding obsolete audio afterward. Stop requests are serialized after any in-flight upload on each output, then fresh audio can resume. A slow cloud upload does not delay the local output's stop. Heat changes retain reusable pre-cache files.
+
+An ordinary race finish (`RACE_STOP`) drains final speech, including the winner, rather than treating the finish as **Stop audio**. Playback returns to idle at the end of the queued audio. Explicit **Stop audio**, a race abort, a heat change or staging the next race still invalidates and clears previous audio. A new staging sequence advances the generation even for the same heat, fencing old winner speech before its tones are submitted. Fresh events can be captured while state synchronization is in progress, but dispatch waits for the current snapshot acknowledgement so an event cannot overtake its state and be rejected. Waiting does not extend an event's original expiry.

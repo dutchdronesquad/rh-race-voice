@@ -6,6 +6,21 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-10-25
+
+### Clearer cache feedback
+
+**Prepare pre-cache** and **Clear TTS cache** now report when they are queued, started and completed, including preparation totals or the number of files removed. Failures, cancellations and results that could not be confirmed produce separate alerts.
+
+Pressing **Prepare pre-cache** while clearing is still in progress shows the active operation and its latest progress instead of suggesting that the service is disconnected. Wait for **TTS cache cleared** before preparing again. Preparation can also be queued while a connected service acknowledges a settings update.
+
+### Faster commands and correct player versions
+
+- Relay CLI commands respond faster by avoiding unnecessary audio/server startup work, especially on Raspberry Pi.
+- The browser player bundled with a plugin release now displays the release version instead of `dev`.
+
+Update the RotorHazard plugin for the cache notifications and player version display. Update the standalone Sendspin service to receive the CLI startup improvement.
+
 ## [2.0.1] - 2026-10-25
 
 ### Joining audio already in progress

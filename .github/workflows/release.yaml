@@ -25,6 +25,8 @@ jobs:
         run: npm ci
         working-directory: sendspin_player
       - name: 🚀 Build player
+        env:
+          VITE_SERVICE_VERSION: ${{ github.event.release.tag_name }}
         run: npm run build:plugin
         working-directory: sendspin_player
       - name: 📦 Package plugin

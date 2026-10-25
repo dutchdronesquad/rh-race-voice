@@ -5,13 +5,16 @@
 from __future__ import annotations
 
 import io
+import subprocess
+import sys
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from sendspin_service import relay_cli, server
+from sendspin_service import relay_cli
+from sendspin_service.__main__ import main
 from sendspin_service.relay_cli import _apply, _existing_value
 
 
@@ -142,18 +145,55 @@ class RelayCommandTests(unittest.TestCase):
         restart.assert_called_once()
 
 
-class ServerDispatchTests(unittest.TestCase):
+class CliDispatchTests(unittest.TestCase):
     """Confirm 'relay' argv routes to relay_cli without starting the server."""
 
     def test_relay_subcommand_never_constructs_the_service(self) -> None:
-        """server.main(["relay", ...]) never touches the running service."""
+        """Management dispatch never constructs or starts the service."""
         directory = self.enterContext(TemporaryDirectory())
         env_file = Path(directory) / "sendspin-service"
         with (
             patch("sendspin_service.server.SendspinService") as service,
             patch("sendspin_service.server.SendSpinServer") as sendspin,
         ):
-            exit_code = server.main(["relay", "status", "--env-file", str(env_file)])
+            exit_code = main(["relay", "status", "--env-file", str(env_file)])
         self.assertEqual(exit_code, 0)
         service.assert_not_called()
         sendspin.assert_not_called()
+
+    def test_relay_status_does_not_import_audio_or_server_modules(self) -> None:
+        """The actual module entry point works without loading audio dependencies."""
+        directory = self.enterContext(TemporaryDirectory())
+        env_file = Path(directory) / "sendspin-service"
+        probe = """
+import runpy
+import sys
+
+for module in ('sendspin_service.server', 'numpy', 'av', 'aiosendspin', 'aiohttp'):
+    sys.modules[module] = None
+sys.argv = ['sendspin-service', *sys.argv[1:]]
+runpy.run_module('sendspin_service', run_name='__main__')
+"""
+        result = subprocess.run(  # noqa: S603
+            [
+                sys.executable,
+                "-c",
+                probe,
+                "relay",
+                "status",
+                "--env-file",
+                str(env_file),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("disabled", result.stdout)
+
+    def test_service_arguments_reach_the_server(self) -> None:
+        """The default invocation still launches the service with its arguments."""
+        with patch("sendspin_service.server.main", return_value=0) as server_main:
+            self.assertEqual(main(["--ingest-port", "8766"]), 0)
+        server_main.assert_called_once_with(["--ingest-port", "8766"])

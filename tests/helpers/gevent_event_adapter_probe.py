@@ -1082,12 +1082,29 @@ def integration(url: str) -> None:
             }
         )
         wait_for(lambda: channel.request(url, "GET", "/test/playback")[1]["count"] >= 1)
-        adapter._staged({"pi_starts_at_s": time.monotonic() + 1})
+        adapter._lap(
+            {
+                "pilot_id": 7,
+                "callsign": "Alpha",
+                "lap": None,
+                "raw_time": 20000,
+                "phonetic": "post-finish lap",
+            }
+        )
+        adapter._voice(
+            {
+                "text": "Winner is Alpha",
+                "domain": "race_winner",
+                "winner_flag": True,
+            }
+        )
         wait_for(lambda: channel.request(url, "GET", "/test/playback")[1]["count"] >= 2)
+        adapter._staged({"pi_starts_at_s": time.monotonic() + 1})
+        wait_for(lambda: channel.request(url, "GET", "/test/playback")[1]["count"] >= 3)
         adapter.stop_audio()
         wait_for(adapter._publisher._ready)
         adapter._race_schedule({"scheduled_at": time.monotonic() + 6})
-        wait_for(lambda: channel.request(url, "GET", "/test/playback")[1]["count"] >= 3)
+        wait_for(lambda: channel.request(url, "GET", "/test/playback")[1]["count"] >= 4)
         adapter.stop_audio()
         wait_for(adapter._publisher._ready)
         adapter.prepare_cache()

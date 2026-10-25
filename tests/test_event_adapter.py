@@ -76,11 +76,14 @@ class EventAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(worker.calls[2]["text"], "twenty seconds")
         self.assertFalse(
             any(
-                call.get("text") in {"Too short,", "under minimum"}
+                call.get("text") in {"Too short,", "under minimum", "post-finish lap"}
                 for call in worker.calls
             )
         )
         self.assertGreater(len(worker.calls), 3)
+        self.assertTrue(
+            any(call.get("text") == "Winner is Alpha" for call in worker.calls)
+        )
         self.assertEqual(worker.calls[-1]["operation"], "clear")
         self.assertTrue(
             any(call.get("subdir") == "precache/clock" for call in worker.calls)

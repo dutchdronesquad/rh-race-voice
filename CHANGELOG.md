@@ -6,6 +6,8 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 ## [Unreleased]
 
+Internal race-audio logs now explain pending expiry, heat/state changes, interruptions, shutdown and output failures. Each output records one final queue outcome, including when cancellation races a late playback reply. Logs identify the pilot, lap, heat and generation at event receipt. A queued outcome describes acceptance by playback, not sound confirmed at the speaker. This adds no UI or periodic polling; update the Sendspin service for the diagnostics.
+
 Four pilots crossing close together no longer lose the second pilot's lap callout merely because the waiting speech exceeds four seconds. Each output retains up to four waiting lap callouts in passage order; memory limits, original expiry deadlines and replacement of an older waiting lap for the same pilot still apply. Update each Sendspin playback service for this fix.
 
 Early lap speech now starts only when the voice model is actually warm. Prepared callsigns and lap numbers alone no longer trigger an early start that could leave a long model-loading pause before the time. Preparation logs report model warmth and how many heat segments are resident, including a warning if the fast path is not fully ready. These checks are internal; update the primary Sendspin service.

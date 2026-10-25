@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -23,6 +24,7 @@ _LOCALES = json.loads(
         Path(__file__).resolve().parents[2] / "custom_plugins/race_voice/locales.json"
     ).read_text(encoding="utf-8")
 )
+logger = logging.getLogger(__name__)
 
 
 def _locale(model: str) -> dict:
@@ -48,6 +50,26 @@ class SpeechEngine:
                 )
             ]
         )
+
+    async def readiness(self, settings: dict, pilot_names: list[str]) -> dict:
+        """Inspect reusable heat audio without triggering generation or warmup."""
+        segments = list(self._laps.precache_segments(pilot_names, settings["model"]))
+        status = await self.worker.audio_status(
+            settings["model"],
+            [self._request(settings, segment) for segment in segments],
+        )
+        groups = {}
+        for name, subdir in (
+            ("callsigns", "precache/pilots"),
+            ("laps", "precache/laps"),
+        ):
+            matches = [
+                resident
+                for segment, resident in zip(segments, status["resident"], strict=True)
+                if segment.subdir == subdir
+            ]
+            groups[name] = {"ready": sum(matches), "total": len(matches)}
+        return {"model_warm": status["model_warm"], **groups}
 
     def segments(self, event: RaceEvent, model: str) -> tuple[CalloutSegment, ...]:
         """Preserve RH phonetic time and name, with service-localized lap numbers."""
@@ -106,7 +128,12 @@ class SpeechEngine:
                 and not tasks[-1].done()
                 and is_current()
                 and time.monotonic() < deadline
-                and all(result and result.get("memory_cache_hit") for result in prefix)
+                and all(
+                    result
+                    and result.get("memory_cache_hit")
+                    and result.get("model_warm") is True
+                    for result in prefix
+                )
             ):
                 on_prefix(tuple(result["audio"] for result in prefix))
 
@@ -188,6 +215,24 @@ class SpeechEngine:
                 "reused": reused,
             }
             await asyncio.sleep(0)
+        if is_current():
+            status = await self.readiness(settings, pilot_names)
+            if is_current():
+                ready = status["model_warm"] and all(
+                    status[name]["ready"] == status[name]["total"]
+                    for name in ("callsigns", "laps")
+                )
+                logger.log(
+                    logging.INFO if ready else logging.WARNING,
+                    "Race Voice heat preparation: model_warm=%s, callsigns=%d/%d, "
+                    "lap_numbers=%d/%d, early_lap_speech_ready=%s",
+                    status["model_warm"],
+                    status["callsigns"]["ready"],
+                    status["callsigns"]["total"],
+                    status["laps"]["ready"],
+                    status["laps"]["total"],
+                    ready,
+                )
 
     @staticmethod
     def _request(settings: dict, segment: CalloutSegment) -> dict:

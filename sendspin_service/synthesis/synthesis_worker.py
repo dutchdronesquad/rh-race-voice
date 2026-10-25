@@ -127,7 +127,12 @@ def execute(tts: WorkerSynthesizer, data: dict) -> dict:
         return {"cleared": count}
     tts.select_revision(model)
     if data["operation"] == "warmup":
-        return {"ready": tts.prepare_model(model, params)}
+        ready = tts.prepare_model(model, params)
+        return {
+            "ready": ready,
+            "model_ready": ready,
+            "model_signature": tts.model_signature,
+        }
     result = tts.synthesize_to_cache(
         data["text"], model, params, subdir=data.get("subdir", "")
     )
@@ -138,6 +143,7 @@ def execute(tts: WorkerSynthesizer, data: dict) -> dict:
         "cache_hit": result.cache_hit,
         "duration_ms": result.duration_ms,
         "model_signature": tts.model_signature,
+        "model_ready": tts._voice is not None and tts._loaded_model == model,  # noqa: SLF001
     }
 
 

@@ -54,6 +54,10 @@ class Worker:
         self._lock = asyncio.Lock()
         self.preferred = []
 
+    async def audio_status(self, _model: str, requests: list[dict]) -> dict:
+        """Explicit fake preparation leaves its fake reusable audio resident."""
+        return {"model_warm": True, "resident": [True] * len(requests)}
+
     def prioritize_audio(self, requests: list[dict]) -> None:
         """Record current heat cache policy independently of synthesis."""
         self.preferred = requests

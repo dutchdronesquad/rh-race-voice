@@ -32,6 +32,7 @@ class ProgressiveLapTests(unittest.IsolatedAsyncioTestCase):
         self.release = asyncio.Event()
         self.started = asyncio.Event()
         self.cached = True
+        self.warm = True
         self.fail = False
         self.current = True
         self.prefix = (wav_audio(0.4), wav_audio(0.6))
@@ -70,7 +71,12 @@ class ProgressiveLapTests(unittest.IsolatedAsyncioTestCase):
             audio = self.tail
         else:
             audio = self.prefix[int(subdir == "precache/laps")]
-        return {"audio": audio, "memory_cache_hit": self.cached, "cache_hit": True}
+        return {
+            "audio": audio,
+            "memory_cache_hit": self.cached,
+            "model_warm": self.warm,
+            "cache_hit": True,
+        }
 
     def submit(self, number: int = 1, *, pilot: int = 1) -> None:
         """Ensure each lap includes a pilot and the dynamic phonetic time."""
@@ -117,6 +123,19 @@ class ProgressiveLapTests(unittest.IsolatedAsyncioTestCase):
         await self.started.wait()
         await until(lambda: self.worker.request.call_count == 3)
         self.assertEqual(self.plans, [])
+        self.release.set()
+        await until(lambda: self.backend.play.call_count == 1)
+        self.assertEqual(self.played_audio(), [(*self.prefix, self.tail)])
+        self.assertIsNone(self.plans[0].completion)
+
+    async def test_cold_model_does_not_expose_prefix_before_time_is_ready(self) -> None:
+        """Cached audio alone cannot hide a potentially long model startup pause."""
+        self.warm = False
+        self.submit()
+        await self.started.wait()
+        await until(lambda: self.worker.request.call_count == 3)
+        self.assertEqual(self.plans, [])
+        self.assertEqual(self.backend.play.call_count, 0)
         self.release.set()
         await until(lambda: self.backend.play.call_count == 1)
         self.assertEqual(self.played_audio(), [(*self.prefix, self.tail)])

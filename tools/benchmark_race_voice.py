@@ -64,7 +64,14 @@ async def _measure(args: argparse.Namespace, *, max_cache_bytes: int) -> dict:
             )
 
         lap_ms = []
+        first_audio_ms = []
+        first_ready_at = 0.0
+        prefix_count = 0
         cached_pair_ms = []
+
+        def prefix_ready(_audio: tuple[bytes, ...]) -> None:
+            nonlocal first_ready_at
+            first_ready_at = time.perf_counter()
 
         try:
             started = time.perf_counter()
@@ -74,6 +81,7 @@ async def _measure(args: argparse.Namespace, *, max_cache_bytes: int) -> dict:
             await reusable(lap_phrase, "precache/laps")
             before_laps = worker.worker_jobs
             for index in range(args.laps):
+                first_ready_at = 0.0
                 started = time.perf_counter()
                 audio = await speech.synthesize(
                     _event(index),
@@ -81,11 +89,14 @@ async def _measure(args: argparse.Namespace, *, max_cache_bytes: int) -> dict:
                     deadline=time.monotonic() + 120,
                     priority=3,
                     is_current=lambda: True,
+                    on_prefix=prefix_ready,
                 )
                 finished = time.perf_counter()
                 if len(audio) != 3:
                     raise RuntimeError("Benchmark did not produce a complete lap")
                 lap_ms.append((finished - started) * 1000)
+                first_audio_ms.append(((first_ready_at or finished) - started) * 1000)
+                prefix_count += int(bool(first_ready_at))
             lap_jobs = worker.worker_jobs - before_laps
             before_reuse = worker.worker_jobs
             for _ in range(args.cached_rounds):
@@ -102,6 +113,8 @@ async def _measure(args: argparse.Namespace, *, max_cache_bytes: int) -> dict:
         "ram_cache_bytes": max_cache_bytes,
         "cold_first_name_ms": round(cold_model_ms, 3),
         "uncached_lap_preparation": _summary(lap_ms),
+        "first_audio_ready": _summary(first_audio_ms),
+        "early_cached_prefixes": prefix_count,
         "uncached_lap_worker_jobs": lap_jobs,
         "cached_name_and_lap_pair": _summary(cached_pair_ms),
         "cached_pair_worker_jobs": reuse_jobs,

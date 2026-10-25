@@ -14,7 +14,6 @@ import threading
 import time
 import wave
 from dataclasses import dataclass, field, replace
-from functools import cached_property
 from typing import TYPE_CHECKING, Protocol
 
 from sendspin_service.playback.audio_queue import Priority, WavItem
@@ -68,17 +67,34 @@ class CalloutPlan:
     volume: float = 1.0
     audio: tuple[bytes, ...] = ()
     order: int = field(kw_only=True)
+    completion: asyncio.Future[tuple[bytes, ...]] | None = field(
+        default=None, kw_only=True, compare=False, repr=False
+    )
+
+    @property
+    def retained_audio(self) -> tuple[bytes, ...]:
+        """Include a completed continuation in queue byte and duration bounds."""
+        if self.completion is not None and self.completion.done():
+            return self.completion.result() or self.audio
+        return self.audio
+
+    async def complete_audio(self) -> tuple[bytes, ...]:
+        """Await shared synthesis without letting one output cancel other outputs."""
+        if self.completion is None:
+            return self.audio
+        async with asyncio.timeout_at(self.deadline):
+            return await asyncio.shield(self.completion)
 
     @property
     def priority(self) -> Priority:
         """Use the same semantic priority at preparation and every output."""
         return priority_for(self.event)
 
-    @cached_property
+    @property
     def duration_s(self) -> float:
-        """Read WAV headers once to bound queued speech by audible duration."""
+        """Include newly completed speech when bounding audible backlog."""
         duration = 0.0
-        for data in self.audio:
+        for data in self.retained_audio:
             try:
                 with wave.open(io.BytesIO(data), "rb") as wav:
                     duration += wav.getnframes() / wav.getframerate()
@@ -94,6 +110,7 @@ class _Preparation:
     plan: CalloutPlan
     settings: dict
     cancelled: bool = False
+    published: bool = False
     enqueued_at: float = field(default_factory=time.monotonic)
 
 
@@ -149,6 +166,7 @@ class PreparationPlanner:
             and plan.priority == active.plan.priority == Priority.LAP
             and plan.event.pilot_id is not None
             and plan.event.pilot_id == active.plan.event.pilot_id
+            and not active.published
         )
         if (
             active
@@ -249,11 +267,12 @@ class PreparationPlanner:
                     if self._closed:
                         raise
                 except Exception:
-                    telemetry.record(
-                        item.plan.event.event_id,
-                        "output_dropped",
-                        reason="synthesis_failed",
-                    )
+                    if not item.published:
+                        telemetry.record(
+                            item.plan.event.event_id,
+                            "output_dropped",
+                            reason="synthesis_failed",
+                        )
                     logger.exception(
                         "Race Voice preparation failed: %s", item.plan.event.event_id
                     )
@@ -263,11 +282,23 @@ class PreparationPlanner:
 
     async def _prepare(self, item: _Preparation) -> None:
         plan = item.plan
+        completion = None
+
+        def publish_prefix(audio: tuple[bytes, ...]) -> None:
+            nonlocal completion
+            if item.cancelled or not self._usable(plan):
+                return
+            completion = asyncio.get_running_loop().create_future()
+            item.published = True
+            self._ready(replace(plan, audio=audio, completion=completion))
+            telemetry.record(plan.event.event_id, "prefix_ready")
+
         telemetry.record(
             plan.event.event_id,
             "synthesis_start",
             wait_ms=round((time.monotonic() - item.enqueued_at) * 1000, 1),
         )
+        audio = ()
         try:
             audio = await self._speech.synthesize(
                 plan.event,
@@ -282,13 +313,25 @@ class PreparationPlanner:
                     memory_cache_hit=result.get("memory_cache_hit", False),
                     duration_ms=result.get("duration_ms"),
                 ),
+                on_prefix=publish_prefix,
             )
         except asyncio.CancelledError:
             # A preempting signal cancels this task mid-await; without this the
             # event would keep no terminal telemetry record at all.
-            telemetry.record(plan.event.event_id, "output_dropped", reason="cancelled")
+            if not item.published:
+                telemetry.record(
+                    plan.event.event_id, "output_dropped", reason="cancelled"
+                )
             raise
+        finally:
+            if completion is not None and not completion.done():
+                completion.set_result(
+                    audio if not item.cancelled and self._usable(plan) else ()
+                )
         telemetry.record(plan.event.event_id, "synthesis_end", empty=not audio)
+        if completion is not None:
+            # The reserved output slot owns delivery and its terminal telemetry.
+            return
         if audio and not item.cancelled and self._usable(plan):
             self._ready(replace(plan, audio=audio))
         else:
@@ -351,18 +394,7 @@ class SendspinPlaybackSink:
                 destination=self._destination,
             )
             return
-        clips = [
-            WavItem(name=f"{plan.event.event_id}-{index}.wav", data=data)
-            for index, data in enumerate(plan.audio)
-        ]
-        queued = await asyncio.to_thread(
-            self._backend.play,
-            clips,
-            deadline,
-            plan.target,
-            plan.volume,
-            cancelled=cancelled,
-        )
+        queued = await self._play_audio(plan, cancelled, deadline)
         if queued:
             telemetry.record(
                 plan.event.event_id, "output_played", destination=self._destination
@@ -376,6 +408,41 @@ class SendspinPlaybackSink:
                 reason="sink",
                 destination=self._destination,
             )
+
+    async def _play_audio(
+        self, plan: CalloutPlan, cancelled: threading.Event, deadline: float
+    ) -> bool:
+        complete = plan.completion is None or plan.completion.done()
+        audio = await plan.complete_audio() if complete else plan.audio
+        offset = 0
+        while audio:
+            if cancelled.is_set() or time.monotonic() >= deadline:
+                return False
+            clips = [
+                WavItem(name=f"{plan.event.event_id}-{offset + index}.wav", data=data)
+                for index, data in enumerate(audio)
+            ]
+            queued = await asyncio.to_thread(
+                self._backend.play,
+                clips,
+                deadline,
+                plan.target,
+                plan.volume,
+                cancelled=cancelled,
+            )
+            if not queued or complete:
+                return bool(queued)
+            # Keep this output's one callout slot until its time is appended.
+            # The backend appends to the existing timeline, preserving the
+            # prefix's client lead and preventing another pilot interleaving.
+            offset += len(audio)
+            try:
+                full_audio = await plan.complete_audio()
+            except TimeoutError:
+                return False
+            audio = full_audio[offset:]
+            complete = True
+        return False
 
     async def stop(self) -> None:
         """Wait for the actual stream clear before the next plan can play."""
@@ -503,11 +570,13 @@ class PlaybackPlanner:
         if plan.priority != Priority.SIGNAL:
             limit -= min(262_144, limit // 4)
         active_size = (
-            sum(len(data) for data in self._active.plan.audio) if self._active else 0
+            sum(len(data) for data in self._active.plan.retained_audio)
+            if self._active
+            else 0
         )
         while True:
-            size = active_size + sum(len(data) for data in plan.audio)
-            size += sum(len(data) for p in pending for data in p.plan.audio)
+            size = active_size + sum(len(data) for data in plan.retained_audio)
+            size += sum(len(data) for p in pending for data in p.plan.retained_audio)
             if len(pending) < self._max_pending and size <= limit:
                 for dropped in backlog:
                     telemetry.record(

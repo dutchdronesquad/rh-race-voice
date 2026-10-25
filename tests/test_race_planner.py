@@ -366,10 +366,10 @@ class PlaybackPlannerTests(unittest.IsolatedAsyncioTestCase):
         await until(lambda: len(self.sink.played) == 1)
         self.assertEqual(self.sink.played[0].event.sequence, 2)
 
-    async def test_lap_backlog_is_bounded_by_duration_and_retains_other_speech(
+    async def test_small_lap_burst_retains_other_speech_and_complete_laps(
         self,
     ) -> None:
-        """A small byte footprint must not conceal many seconds of old lap speech."""
+        """Normal bursts may exceed four seconds without evicting a pilot."""
         active = plan(1, EventKind.TONE)
         self.planner.submit(active)
         await until(lambda: len(self.sink.played) == 1)
@@ -379,11 +379,11 @@ class PlaybackPlannerTests(unittest.IsolatedAsyncioTestCase):
                 replace(plan(number, pilot=number), audio=(wav_audio(seconds),))
             )
         self.assertFalse(self.sink.cancelled[0].is_set())
-        self.assertEqual([p.plan.order for p in self.planner._pending], [2, 4, 5])
-        self.assertEqual(sum(p.plan.duration_s for p in self.planner._pending), 3)
+        self.assertEqual([p.plan.order for p in self.planner._pending], [2, 3, 4, 5])
+        self.assertEqual(sum(p.plan.duration_s for p in self.planner._pending), 5)
         self.sink.release.set()
-        await until(lambda: len(self.sink.played) == 4)
-        self.assertEqual([p.order for p in self.sink.played], [1, 2, 4, 5])
+        await until(lambda: len(self.sink.played) == 5)
+        self.assertEqual([p.order for p in self.sink.played], [1, 2, 3, 4, 5])
 
     async def test_prepared_lap_burst_keeps_at_most_four_pending_pilots(self) -> None:
         """Bound even very short callouts without restarting current playback."""
@@ -396,8 +396,29 @@ class PlaybackPlannerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(self.sink.cancelled[0].is_set())
 
+    async def test_four_pilots_in_one_burst_keep_every_callout_in_order(self) -> None:
+        """Three waiting 1.5s callouts must not evict the second pilot."""
+        with self.assertLogs("sendspin_service.telemetry", level="INFO") as captured:
+            self.planner.submit(replace(plan(1, pilot=1), audio=(wav_audio(1.5),)))
+            await until(lambda: len(self.sink.played) == 1)
+            for number in range(2, 5):
+                self.planner.submit(
+                    replace(plan(number, pilot=number), audio=(wav_audio(1.5),))
+                )
+            self.sink.release.set()
+            await until(
+                lambda: not self.planner._pending and self.planner._active is None
+            )
+        self.assertEqual([p.event.pilot_id for p in self.sink.played], [1, 2, 3, 4])
+        drops = [
+            json.loads(record.getMessage())
+            for record in captured.records
+            if json.loads(record.getMessage())["stage"] == "output_dropped"
+        ]
+        self.assertEqual(drops, [])
+
     async def test_single_long_lap_is_complete_and_usable(self) -> None:
-        """The duration budget must not truncate or permanently exclude one callout."""
+        """Count admission must not truncate an individually long callout."""
         clips = (wav_audio(2), wav_audio(1), wav_audio(3))
         long_lap = replace(plan(1), audio=clips)
         self.assertEqual(long_lap.duration_s, 6)

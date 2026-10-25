@@ -152,6 +152,38 @@ class ProgressiveLapTests(unittest.IsolatedAsyncioTestCase):
             self.played_audio(), [self.prefix, (self.tail,), (b"other pilot",)]
         )
 
+    async def test_four_pilot_burst_with_an_active_prefix_preserves_every_callout(
+        self,
+    ) -> None:
+        """Completing times while the first prefix queues must not evict pilot two."""
+        entered = threading.Event()
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def blocked(*_args: object, **_kwargs: object) -> bool:
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("Test did not release playback")
+            return True
+
+        self.backend.play.side_effect = blocked
+        self.submit(1, pilot=1)
+        await until(entered.is_set)
+        for number in range(2, 5):
+            self.submit(number, pilot=number)
+        self.release.set()
+        await until(lambda: self.preparation._active is None)
+        self.assertEqual(len(self.plans), 4)
+        release.set()
+        await until(lambda: not self.output._pending and self.output._active is None)
+        first_id = self.plans[0].event.event_id
+        expected = [f"{first_id}-0.wav", f"{first_id}-2.wav"]
+        expected.extend(f"{p.event.event_id}-0.wav" for p in self.plans[1:])
+        self.assertEqual(
+            [call.args[0][0].name for call in self.backend.play.call_args_list],
+            expected,
+        )
+
     async def test_new_lap_cannot_cancel_the_time_after_its_prefix_is_published(
         self,
     ) -> None:

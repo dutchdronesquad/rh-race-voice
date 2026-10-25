@@ -73,7 +73,7 @@ class CalloutPlan:
 
     @property
     def retained_audio(self) -> tuple[bytes, ...]:
-        """Include a completed continuation in queue byte and duration bounds."""
+        """Include a completed continuation in byte bounds and duration reporting."""
         if self.completion is not None and self.completion.done():
             return self.completion.result() or self.audio
         return self.audio
@@ -92,7 +92,7 @@ class CalloutPlan:
 
     @property
     def duration_s(self) -> float:
-        """Include newly completed speech when bounding audible backlog."""
+        """Include newly completed speech in playback duration telemetry."""
         duration = 0.0
         for data in self.retained_audio:
             try:
@@ -468,15 +468,9 @@ class PlaybackPlanner:
         max_pending: int = 32,
         max_bytes: int = 8 * 1024 * 1024,
         max_laps: int = 4,
-        max_lap_audio_s: float = 4.0,
     ) -> None:
         """Bound both queue count and retained audio, independent of other outputs."""
-        if (
-            max_pending < 1
-            or max_bytes < 1
-            or max_laps < 1
-            or not (0 < max_lap_audio_s < float("inf"))
-        ):
+        if max_pending < 1 or max_bytes < 1 or max_laps < 1:
             raise ValueError("Playback limits must be positive")
         self._sink = sink
         self._is_current = is_current
@@ -484,7 +478,6 @@ class PlaybackPlanner:
         self._max_pending = max_pending
         self._max_bytes = max_bytes
         self._max_laps = max_laps
-        self._max_lap_audio_s = max_lap_audio_s
         self._pending: list[_Playback] = []
         self._active: _Playback | None = None
         self._last_priority: Priority | None = None
@@ -531,11 +524,12 @@ class PlaybackPlanner:
 
     def _admit_audio(self, plan: CalloutPlan) -> list[_Playback] | None:
         pending = list(self._pending)
+        dropped: list[tuple[_Playback, str]] = []
         if plan.priority == Priority.SIGNAL:
             pending, superseded = _supersede(
                 pending, lambda p: p.plan.priority == Priority.LAP
             )
-            self._record_superseded(superseded)
+            dropped.extend((p, "superseded") for p in superseded)
         elif plan.priority == Priority.LAP and plan.event.pilot_id is not None:
             pending, superseded = _supersede(
                 pending,
@@ -544,7 +538,7 @@ class PlaybackPlanner:
                     and p.plan.event.pilot_id == plan.event.pilot_id
                 ),
             )
-            self._record_superseded(superseded)
+            dropped.extend((p, "superseded") for p in superseded)
         if plan.event.kind == EventKind.TONE and plan.priority == Priority.HIGH:
             # Only the manual test tone (audio-check) is HIGH; staging tones
             # and the buzzer are SIGNAL and legitimately repeat the same
@@ -559,12 +553,11 @@ class PlaybackPlanner:
                     and p.plan.event.asset == plan.event.asset
                 ),
             )
-            self._record_superseded(superseded)
+            dropped.extend((p, "superseded") for p in superseded)
         backlog = (
-            self._bound_lap_backlog(plan, pending)
-            if plan.priority == Priority.LAP
-            else []
+            self._bound_lap_backlog(pending) if plan.priority == Priority.LAP else []
         )
+        dropped.extend((p, "lap_backlog") for p in backlog)
         # Reserve some memory for a signal while ordinary speech is still buffered.
         limit = self._max_bytes
         if plan.priority != Priority.SIGNAL:
@@ -578,13 +571,7 @@ class PlaybackPlanner:
             size = active_size + sum(len(data) for data in plan.retained_audio)
             size += sum(len(data) for p in pending for data in p.plan.retained_audio)
             if len(pending) < self._max_pending and size <= limit:
-                for dropped in backlog:
-                    telemetry.record(
-                        dropped.plan.event.event_id,
-                        "output_dropped",
-                        reason="lap_backlog",
-                        destination=self._destination,
-                    )
+                self._record_dropped(dropped)
                 return pending
             replaceable = [
                 p
@@ -599,42 +586,33 @@ class PlaybackPlanner:
                     # A bundled tone (e.g. the audio-check track) can alone
                     # exceed the budget; once nothing else is queued to evict,
                     # admit it solo rather than leave it permanently unplayable.
+                    self._record_dropped(dropped)
                     return pending
                 return None
             evicted = min(replaceable, key=lambda p: (-p.plan.priority, p.plan.order))
             pending.remove(evicted)
-            telemetry.record(
-                evicted.plan.event.event_id,
-                "output_dropped",
-                reason="evicted",
-                destination=self._destination,
-            )
+            dropped.append((evicted, "evicted"))
 
-    def _bound_lap_backlog(
-        self, plan: CalloutPlan, pending: list[_Playback]
-    ) -> list[_Playback]:
-        """Keep recent laps without retaining many seconds of prepared old speech."""
+    def _bound_lap_backlog(self, pending: list[_Playback]) -> list[_Playback]:
+        """Reserve space by count without evicting a normal multi-pilot lap burst."""
         laps = sorted(
             (p for p in pending if p.plan.priority == Priority.LAP),
             key=lambda p: p.plan.order,
         )
-        duration_s = plan.duration_s + sum(p.plan.duration_s for p in laps)
         dropped = []
-        while laps and (
-            len(laps) >= self._max_laps or duration_s > self._max_lap_audio_s
-        ):
+        while len(laps) >= self._max_laps:
             oldest = laps.pop(0)
-            duration_s -= oldest.plan.duration_s
             pending.remove(oldest)
             dropped.append(oldest)
         return dropped
 
-    def _record_superseded(self, superseded: list[_Playback]) -> None:
-        for item in superseded:
+    def _record_dropped(self, dropped: list[tuple[_Playback, str]]) -> None:
+        """Record evictions only after the replacement has been admitted."""
+        for item, reason in dropped:
             telemetry.record(
                 item.plan.event.event_id,
                 "output_dropped",
-                reason="superseded",
+                reason=reason,
                 destination=self._destination,
             )
 

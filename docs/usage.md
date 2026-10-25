@@ -264,7 +264,9 @@ Use **Sync** for most race-day setups. Switch to **Quality** if playback resets 
 - **Play audio check**: Plays a bundled demo WAV without synthesizing TTS. Confirms `sendspin-service` is reachable and clients receive audio even if no voice model is loaded yet.
 - **Stop audio**: Immediately stops all queued and active audio on the Sendspin service. Useful when a callout needs to be cut mid-playback.
 - **Clear TTS cache**: Removes all generated WAV files. Use after a voice model change to avoid stale audio from the previous model.
-- **Prepare pre-cache**: Manually fills missing or invalid race-clock, current-heat pilot, lap-number, and schedule segments for the selected voice settings. Valid files are reused. Startup never prepares audio automatically. To regenerate everything, use **Clear TTS cache** first, then **Prepare pre-cache**.
+- **Prepare pre-cache**: Manually fills missing or invalid race-clock, current-heat pilot, lap-number, and schedule segments for the selected voice settings. Valid files are reused. Startup never prepares audio automatically. To regenerate everything, use **Clear TTS cache**, wait for the **TTS cache cleared** completion message, then use **Prepare pre-cache**.
+
+Cache operations show notifications when queued, started and completed. Preparation finishes with **Pre-cache is ready** and the preparation totals. Only one cache operation runs at a time; pressing another cache button while one is active shows its current operation and progress. Failures, cancellation and an unconfirmed result produce separate alerts.
 
 ## Cache Layout
 

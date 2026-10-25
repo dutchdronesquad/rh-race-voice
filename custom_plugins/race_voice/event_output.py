@@ -8,10 +8,14 @@ import json
 import logging
 import time
 import uuid
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 import gevent
 from gevent.event import Event
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 _LIMIT = 65_536
@@ -104,7 +108,13 @@ class JsonChannel:
 class EventPublisher:
     """Keep one latest snapshot and small disposable queues, independent of TTS."""
 
-    def __init__(self, *, epoch: str, token: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        epoch: str,
+        token: str = "",
+        on_command_update: Callable[[str, dict], None] | None = None,
+    ) -> None:
         """Keep construction free of network I/O.
 
         *epoch* identifies this publisher across process restarts (the
@@ -117,6 +127,7 @@ class EventPublisher:
         self._command_task = None
         self._command_sequence = 0
         self.command_status = "No cache command requested"
+        self._on_command_update = on_command_update
         self._epoch = epoch
         self._url = ""
         self._state: dict | None = None
@@ -254,8 +265,10 @@ class EventPublisher:
         )
 
     def can_command(self) -> bool:
-        """Allow one operator action at a time on a connected source."""
-        return self._ready() and (self._command_task is None or self._command_task.dead)
+        """Capture one action while connected; its worker waits for pending state."""
+        return self.can_send_audio() and (
+            self._command_task is None or self._command_task.dead
+        )
 
     def command(self, operation: str) -> bool:
         """Queue a captured manual action, including immediately after a stop update."""
@@ -280,18 +293,34 @@ class EventPublisher:
         self._command_task = gevent.spawn(
             self._run_command, data, self._serial, self._url
         )
+        self._notify_command(operation, {"status": "queued"})
         return True
+
+    def _notify_command(self, operation: str, result: dict) -> None:
+        if self._on_command_update is not None:
+            try:
+                self._on_command_update(operation, dict(result))
+            except Exception:
+                logger.exception("Race Voice cache notification failed")
+
+    def _command_is_current(self, data: dict, serial: int) -> bool:
+        return bool(
+            serial == self._serial
+            and self._state is not None
+            and data["context"] == self._state["context"]
+        )
 
     def _run_command(self, data: dict, serial: int, url: str) -> None:
         try:
             posted = False
+            last_status = "queued"
             while not self._closed:
-                if (
-                    serial != self._serial
-                    or self._state is None
-                    or data["context"] != self._state["context"]
-                ):
+                if not self._command_is_current(data, serial):
                     self.command_status = "Cache command interrupted by state change"
+                    self._notify_command(
+                        data["operation"],
+                        {"status": "cancelled", "reason": "context_changed"},
+                    )
                     return
                 if not self._ready():
                     gevent.sleep(0.05)
@@ -304,6 +333,8 @@ class EventPublisher:
                         url, "GET", f"/v2/commands/{data['command_id']}"
                     )
                 result = _checked(*response)
+                if not self._command_is_current(data, serial):
+                    result = {"status": "cancelled", "reason": "context_changed"}
                 status = result["status"]
                 progress = (
                     f" ({result['completed']}/{result['total']})"
@@ -311,12 +342,16 @@ class EventPublisher:
                     else ""
                 )
                 self.command_status = f"{data['operation']}: {status}{progress}"
+                if status != last_status:
+                    self._notify_command(data["operation"], result)
+                    last_status = status
                 if status in {"completed", "cancelled", "failed"}:
                     return
                 gevent.sleep(0.5)
         except Exception as err:
             self.command_status = f"Cache command result unknown: {err}"
             logger.warning("Race Voice %s", self.command_status)
+            self._notify_command(data["operation"], {"status": "unknown"})
         finally:
             self._commands.close()
 

@@ -61,6 +61,7 @@ class RaceEventAdapter:
         self._publisher = EventPublisher(
             epoch=uuid.uuid4().hex,
             token=os.environ.get("RACE_VOICE_SERVICE_TOKEN", ""),
+            on_command_update=self._cache_command_update,
         )
         self._snapshot: dict | None = None
         self._competition = ""
@@ -395,15 +396,63 @@ class RaceEventAdapter:
 
     def _cache_command(self, operation: str) -> None:
         if not self._publisher.can_command():
-            self._rhapi.ui.message_alert(
-                "Not connected to the Sendspin service yet, or a cache "
-                "command is still running -- try again shortly"
+            status = self._publisher.command_status.replace(
+                "clear_cache:", "Clear TTS cache:"
+            ).replace("prepare:", "Prepare pre-cache:")
+            message = (
+                f"A cache command is already running: {status}. Wait for it to finish."
+                if self._publisher.can_send_audio()
+                else f"Sendspin service: {self._publisher.status}. "
+                "Check the service URL and that it is running."
             )
+            self._rhapi.ui.message_alert(message)
             return
         if operation == "clear_cache":
             self.stop_audio()
         self._publisher.command(operation)
-        self._rhapi.ui.message_notify("Cache command queued")
+
+    def _cache_command_update(self, operation: str, result: dict) -> None:
+        """Report cache lifecycle changes without spamming every progress poll."""
+        label = (
+            "Pre-cache preparation" if operation == "prepare" else "TTS cache clearing"
+        )
+        status = result["status"]
+        progress = (
+            f" ({result['completed']}/{result['total']})"
+            if "completed" in result and "total" in result
+            else ""
+        )
+        if status in {"queued", "running"}:
+            action = "queued" if status == "queued" else "started"
+            self._rhapi.ui.message_notify(f"{label} {action}{progress}.")
+        elif status == "completed":
+            message = (
+                f"Pre-cache is ready{progress}."
+                if operation == "prepare"
+                else "TTS cache cleared"
+                + (
+                    f" ({result['cleared']} files removed)."
+                    if "cleared" in result
+                    else "."
+                )
+            )
+            self._rhapi.ui.message_notify(message)
+        elif status == "cancelled":
+            reason = (
+                " because race data or settings changed"
+                if result.get("reason") == "context_changed"
+                else ""
+            )
+            self._rhapi.ui.message_alert(f"{label} cancelled{reason}.")
+        elif status == "failed":
+            error = result.get("error") or "Check the Sendspin service log."
+            self._rhapi.ui.message_alert(f"{label} failed. {error}")
+        elif status == "unknown":
+            self._rhapi.ui.message_alert(
+                f"Could not confirm the result of {label.lower()}. "
+                "It may still be running. "
+                "Check the Sendspin service connection and log."
+            )
 
     def close(self, _args: dict | None = None) -> None:
         """Discard transport work on RH shutdown."""

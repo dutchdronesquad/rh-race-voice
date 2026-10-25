@@ -94,6 +94,7 @@ class Service:
         self.command_entered = Event()
         self.command_release = Event()
         self.command_release.set()
+        self.command_responses: list[tuple[int, dict]] = []
         self.fail_event = False
         self.server = WSGIServer(("127.0.0.1", 0), self.handle, log=None)
         self.server.start()
@@ -164,6 +165,9 @@ class Service:
         if path == "/v2/commands":
             self.command_entered.set()
             self.command_release.wait()
+        if path == "/v2/commands" or path.startswith("/v2/commands/"):
+            if self.command_responses:
+                return self.command_responses.pop(0)
             return 200, {"command_id": data["command_id"], "status": "completed"}
         if path == "/v2/events":
             self.audio_entered.set()
@@ -724,6 +728,135 @@ class AdapterTests(unittest.TestCase):
         self.assertFalse(self.service.audio_release.is_set())
         self.assertFalse(self.service.health_release.is_set())
         self.adapter.close()
+
+    def test_prepare_waits_for_pending_state_without_rejecting_the_button(self) -> None:
+        """A connected publisher can capture preparation before its latest state ack."""
+        self.connect()
+        self.adapter._refresh()
+        publisher = self.adapter._publisher
+        self.assertFalse(publisher._ready())
+        self.assertTrue(publisher.can_send_audio())
+        self.adapter.prepare_cache()
+        self.rh.ui.message_alert.assert_not_called()
+        wait_for(lambda: "prepare: completed" in publisher.command_status)
+        commands = [
+            data for path, data in self.service.requests if path == "/v2/commands"
+        ]
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(commands[0]["context"], self.service.state["context"])
+
+    def test_busy_cache_button_reports_the_active_command_status(self) -> None:
+        """Prepare reports an active clear, then becomes usable once clearing ends."""
+        self.connect()
+        self.service.command_release.clear()
+        self.adapter.clear_cache()
+        wait_for(self.service.command_entered.is_set)
+        self.adapter.prepare_cache()
+        message = self.rh.ui.message_alert.call_args.args[0]
+        self.assertIn("already running", message)
+        self.assertIn("Clear TTS cache: queued", message)
+        self.service.command_release.set()
+        wait_for(
+            lambda: "clear_cache: completed" in self.adapter._publisher.command_status
+        )
+        self.rh.ui.message_alert.reset_mock()
+        self.adapter.prepare_cache()
+        wait_for(lambda: "prepare: completed" in self.adapter._publisher.command_status)
+        self.rh.ui.message_alert.assert_not_called()
+        commands = [
+            data for path, data in self.service.requests if path == "/v2/commands"
+        ]
+        self.assertEqual(
+            [data["operation"] for data in commands], ["clear_cache", "prepare"]
+        )
+
+    def test_disconnected_cache_button_reports_the_connection_status(self) -> None:
+        """Before startup, the alert must explain the missing service connection."""
+        self.adapter.prepare_cache()
+        message = self.rh.ui.message_alert.call_args.args[0]
+        self.assertIn(self.adapter._publisher.status, message)
+        self.assertNotIn("still running", message)
+
+    def test_cache_preparation_notifies_start_and_completion_without_poll_spam(
+        self,
+    ) -> None:
+        """Show completion without repeating notifications on progress polls."""
+        self.connect()
+        self.service.command_responses = [
+            (200, {"status": "running", "completed": 0, "total": 3}),
+            (200, {"status": "running", "completed": 2, "total": 3}),
+            (200, {"status": "completed", "completed": 3, "total": 3}),
+        ]
+        self.adapter.prepare_cache()
+        wait_for(
+            lambda: self.adapter._publisher.command_status == "prepare: running (2/3)"
+        )
+        self.adapter.prepare_cache()
+        self.assertIn(
+            "Prepare pre-cache: running (2/3)",
+            self.rh.ui.message_alert.call_args.args[0],
+        )
+        wait_for(
+            lambda: self.adapter._publisher.command_status == "prepare: completed (3/3)"
+        )
+        messages = [call.args[0] for call in self.rh.ui.message_notify.call_args_list]
+        self.assertEqual(
+            messages,
+            [
+                "Pre-cache preparation queued.",
+                "Pre-cache preparation started (0/3).",
+                "Pre-cache is ready (3/3).",
+            ],
+        )
+
+    def test_cache_clearing_notifies_completion_with_removed_file_count(self) -> None:
+        """Operators can see when it is safe to prepare the cache again."""
+        self.connect()
+        self.service.command_responses = [(200, {"status": "completed", "cleared": 12})]
+        self.adapter.clear_cache()
+        wait_for(
+            lambda: "clear_cache: completed" in self.adapter._publisher.command_status
+        )
+        self.rh.ui.message_notify.assert_called_with(
+            "TTS cache cleared (12 files removed)."
+        )
+
+    def test_cache_failure_and_unknown_result_are_visible(self) -> None:
+        """Report service failure and transport uncertainty as different problems."""
+        self.connect()
+        for response, expected in (
+            (
+                (200, {"status": "failed", "error": "Model download failed"}),
+                "Model download failed",
+            ),
+            ((503, {"error": "Service unavailable"}), "It may still be running"),
+        ):
+            with self.subTest(response=response):
+                self.rh.ui.message_alert.reset_mock()
+                self.service.command_responses = [response]
+                self.adapter.prepare_cache()
+                wait_for(lambda: self.adapter._publisher._command_task.dead)
+                self.assertIn(expected, self.rh.ui.message_alert.call_args.args[0])
+
+    def test_state_change_during_cache_request_notifies_cancellation(self) -> None:
+        """An old successful response must not announce readiness for a new heat."""
+        self.connect()
+        self.service.command_release.clear()
+        self.adapter.prepare_cache()
+        wait_for(self.service.command_entered.is_set)
+        self.adapter._refresh(invalidate=True)
+        self.service.command_release.set()
+        wait_for(lambda: self.adapter._publisher._command_task.dead)
+        self.assertIn(
+            "cancelled because race data or settings changed",
+            self.rh.ui.message_alert.call_args.args[0],
+        )
+        self.assertFalse(
+            any(
+                "is ready" in call.args[0]
+                for call in self.rh.ui.message_notify.call_args_list
+            )
+        )
 
     def test_cache_request_never_blocks_stop_and_shutdown_owns_its_socket(self) -> None:
         """A held cache response leaves the state connection free and closes cleanly."""

@@ -279,6 +279,7 @@ class PreparationPlanner:
                     plan.event.event_id,
                     "segment",
                     cache_hit=result.get("cache_hit"),
+                    memory_cache_hit=result.get("memory_cache_hit", False),
                     duration_ms=result.get("duration_ms"),
                 ),
             )

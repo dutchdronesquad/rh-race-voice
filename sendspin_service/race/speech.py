@@ -112,6 +112,19 @@ class SpeechEngine:
         """Manually fill missing phrases, yielding progress between jobs."""
         if len(pilot_names) > 256:
             raise ValueError("Too many pilots to prepare")
+        if not is_current():
+            return
+        # Valid cached WAVs do not load Piper. Explicit preparation must also
+        # warm the model, or the first new lap time still pays its startup cost.
+        warmup = await self.worker.request(
+            {**settings, "operation": "warmup"},
+            deadline=time.monotonic() + 120,
+            priority=10,
+        )
+        if not is_current():
+            return
+        if warmup.get("ready") is not True:
+            raise RuntimeError("Voice model warmup failed")
         model = settings["model"]
         phrases = [
             CalloutSegment(p.text, p.subdir)

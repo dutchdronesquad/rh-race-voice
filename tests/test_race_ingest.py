@@ -61,6 +61,8 @@ class Worker:
             await self.release.wait()
             if payload["operation"] == "clear":
                 return {"cleared": 3}
+            if payload["operation"] == "warmup":
+                return {"ready": True}
             return {"audio": ASSET.read_bytes(), "cache_hit": True}
 
     async def close(self) -> None:

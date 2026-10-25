@@ -14,6 +14,8 @@ Busy-race speech now keeps a shorter backlog of recent laps. Each output retains
 
 Queued pre-cache work no longer starts between the name, lap number and time of a live announcement. New timing logs distinguish preparation and playback queue waits from the planned Sendspin start delay. Update the primary Sendspin service for synthesis changes and each playback service for its queue limit. Actual audible latency still depends on the race hardware and connected players.
 
+**Prepare pre-cache** now also warms the voice model when every WAV file already exists. This moves model initialization out of the first new lap announcement. Reusable names, lap numbers and countdown phrases are retained in a bounded RAM cache, avoiding repeated worker requests and WAV reads. The voice engine also spends less CPU time spinning between callouts. These efficiency changes require an update of the primary Sendspin service.
+
 Cloud listeners can disconnect and reconnect during an audio check and continue at the current position, even when they were the only listener. Finished, stopped or cancelled audio is not replayed. Update the cloud Sendspin service to receive this fix.
 
 ## [2.0.2] - 2026-10-25

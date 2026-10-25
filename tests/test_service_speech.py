@@ -27,7 +27,11 @@ class ServiceSpeechTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         """Supply an already-admitted event and a worker returning pinned bytes."""
         self.worker = AsyncMock()
-        self.worker.request.return_value = {"audio": b"wav", "cache_hit": True}
+        self.worker.request.return_value = {
+            "audio": b"wav",
+            "cache_hit": True,
+            "ready": True,
+        }
         self.engine = SpeechEngine(self.worker)
         self.event = RaceEvent.parse(event_payload())
 
@@ -53,7 +57,7 @@ class ServiceSpeechTests(unittest.IsolatedAsyncioTestCase):
         prepared = [
             call.args[0]
             for call in self.worker.request.call_args_list
-            if call.args[0]["subdir"] == "precache/clock"
+            if call.args[0].get("subdir") == "precache/clock"
         ]
         self.assertGreater(len(prepared), 5)
         for request in prepared:
@@ -211,14 +215,30 @@ class ServiceSpeechTests(unittest.IsolatedAsyncioTestCase):
                 current = False
         self.assertEqual(progress[-1]["generated"], 0)
         self.assertEqual(progress[-1]["reused"], 2)
-        self.assertEqual(self.worker.request.await_count, 2)
+        self.assertEqual(self.worker.request.await_count, 3)
+        self.assertEqual(
+            self.worker.request.call_args_list[0].args[0],
+            {**SETTINGS, "operation": "warmup"},
+        )
         self.assertTrue(
             all(
                 call.args[0]["operation"] == "synthesize"
                 and call.kwargs["priority"] == 10
-                for call in self.worker.request.call_args_list
+                for call in self.worker.request.call_args_list[1:]
             )
         )
+
+    async def test_cached_preparation_cannot_succeed_when_model_warmup_fails(
+        self,
+    ) -> None:
+        """Existing WAVs alone must not produce a misleading ready notification."""
+        self.worker.request.return_value = {"ready": False}
+        with self.assertRaises(RuntimeError):  # noqa: PT027
+            async for _ in self.engine.prepare(
+                SETTINGS, ["Klaas"], is_current=lambda: True
+            ):
+                self.fail("Failed warmup produced preparation progress")
+        self.worker.request.assert_awaited_once()
 
 
 if __name__ == "__main__":

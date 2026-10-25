@@ -6,6 +6,10 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 ## [Unreleased]
 
+The first listener can now join an audio check already in progress, including on a cloud relay that had no listeners when the track started. Playback joins the current position; finished or stopped audio is not replayed. Update the cloud service as well as the local service to apply this fix to cloud listeners.
+
+Sendspin for Windows **2.2.6 is currently recommended**; the setup guide links directly to this release.
+
 ## [2.0.0] - 2026-09-16
 
 Race Voice v2 moves the entire race-audio pipeline into the standalone Sendspin service; the RotorHazard plugin is now a thin adapter that only forwards race events and state. This is a hard cutover — update the plugin and service together. The in-process synthesis path and the old **Cloud Sendspin service URL** / **Cloud Sendspin API token** plugin fields are gone; see the [Usage Guide](docs/usage.md) for the three supported deployment shapes (local-only, local+relay, cloud-direct).

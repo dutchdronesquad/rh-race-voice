@@ -133,6 +133,7 @@ class SendSpinServer:
         self._stream: _PushStream | None = None
         self._next_play_start_us: int | None = None
         self._idle_stop_task: asyncio.Task[None] | None = None
+        self._playback_generation = 0
 
     def start(self) -> None:
         """Start the Sendspin server in a background daemon thread."""
@@ -169,19 +170,13 @@ class SendSpinServer:
         *,
         cancelled: threading.Event | None = None,
     ) -> bool:
-        """Queue WAV files to connected clients without resetting active playback."""
+        """Append WAV playback and let listeners join its current position."""
         if not self._ready.wait(timeout=5.0) or self._loop is None:
             logger.warning("Sendspin service: Sendspin server not yet ready")
             return False
         if self._server is None:
             logger.warning("Sendspin service: Sendspin server failed to start")
             return False
-        if not self._server.connected_clients:
-            logger.info(
-                "Sendspin service: no Sendspin clients connected - audio dropped"
-            )
-            return False
-
         if cancelled is not None and cancelled.is_set():
             return False
         clips = _read_wav_clips(wav_items)
@@ -200,7 +195,7 @@ class SendSpinServer:
             self._loop,
         )
         try:
-            future.result(timeout=timeout)
+            queued = future.result(timeout=timeout)
         except TimeoutError:
             future.cancel()
             logger.warning("Sendspin service: Sendspin stream timed out")
@@ -208,7 +203,7 @@ class SendSpinServer:
         except Exception:
             logger.exception("Sendspin service: Sendspin stream error")
             return False
-        return True
+        return queued
 
     def stop(self, *, strict: bool = False) -> None:
         """Stop current playback and clear scheduled client audio."""
@@ -343,8 +338,16 @@ class SendSpinServer:
         # encrypted unpaired access, which 9.x requires the server to approve.
         # The task runs after the synchronous client-attachment event returns.
         client = server.get_client(client_id)
-        security = client.connection_security if client is not None else None
+        if client is None:
+            return
+        security = client.connection_security
         if security is not None and security.psk_category is PskCategory.SENTINEL:
+            if not client.info.unpaired_access.enabled:
+                logger.warning(
+                    "Sendspin service: player %s disables unpaired playback; "
+                    "pair the player or enable unpaired access in its settings",
+                    client_id,
+                )
             try:
                 await server.trust_unpaired(client_id)
             except Exception:
@@ -430,6 +433,7 @@ class SendSpinServer:
         self, *, clear_client_audio: bool, strict: bool = False
     ) -> None:
         """Immediately interrupt active playback, even while audio is being queued."""
+        self._playback_generation += 1
         self._cancel_idle_stop()
         server = self._server
         stream = self._stream
@@ -467,20 +471,20 @@ class SendSpinServer:
         duration_s: float,
         volume: float,
         cancelled: threading.Event | None = None,
-    ) -> None:
+    ) -> bool:
         lock = self._stream_lock
         if lock is None:
             logger.warning("Sendspin service: Sendspin stream lock not ready")
-            return
+            return False
         async with lock:
             if cancelled is not None and cancelled.is_set():
-                return
+                return False
             self._cancel_idle_stop()
-            await self._append_to_stream_locked(
+            return await self._append_to_stream_locked(
                 clips, expires_at, play_at, duration_s, volume, cancelled
             )
 
-    async def _append_to_stream_locked(  # noqa: PLR0913
+    async def _append_to_stream_locked(  # noqa: C901, PLR0913, PLR0911
         self,
         clips: list[_WavClip],
         expires_at: float | None,
@@ -488,21 +492,22 @@ class SendSpinServer:
         duration_s: float,
         volume: float,
         cancelled: threading.Event | None = None,
-    ) -> None:
+    ) -> bool:
         server = self._server
         if server is None:
-            return
-        clients = server.connected_clients
-        if not clients:
-            logger.info(
-                "Sendspin service: no Sendspin clients connected - audio dropped"
+            return False
+        unattended_start_us = None
+        if not server.connected_clients:
+            unattended_start_us = await self._wait_for_first_listener(
+                duration_s, expires_at, play_at, cancelled
             )
-            return
+            if unattended_start_us is None:
+                return False
 
         ensure_started = time.monotonic()
         group, stream = await self._ensure_stream()
         if group is None or stream is None:
-            return
+            return False
         logger.info(
             "Sendspin _ensure_stream took %.1fms",
             (time.monotonic() - ensure_started) * 1000,
@@ -512,11 +517,21 @@ class SendSpinServer:
         play_start_us, stream_options = self._resolve_play_start(
             play_at, now_us, group, volume, cancelled, duration_s
         )
-        if self._would_start_after_expiry(play_start_us, now_us, expires_at):
+        if unattended_start_us is not None:
+            # The programme was already advancing without listeners. Join its
+            # current position, including the new player's startup lead time.
+            clips = _skip_elapsed_audio(
+                clips, max(0, play_start_us - unattended_start_us)
+            )
+            if not clips:
+                self._schedule_idle_stop(server.clock, group, now_us)
+                self._next_play_start_us = now_us
+                return False
+        elif self._would_start_after_expiry(play_start_us, now_us, expires_at):
             logger.info(
                 "Sendspin service dropped stale audio before Sendspin scheduling"
             )
-            return
+            return False
         commit_start_us = self._bridge_gap_with_silence(clips, play_start_us)
 
         async def sync_clients() -> int:
@@ -542,11 +557,53 @@ class SendSpinServer:
                     (play_start_us - now_us) / 1000,
                 )
                 self._schedule_idle_stop(server.clock, group, play_end_us)
+                return True
         except StreamStoppedError:
             logger.info("Sendspin service: Sendspin stream stopped")
             self._stream = None
             self._stream_group = None
             self._next_play_start_us = None
+        return False
+
+    async def _wait_for_first_listener(
+        self,
+        duration_s: float,
+        expires_at: float | None,
+        play_at: float | None,
+        cancelled: threading.Event | None,
+    ) -> int | None:
+        """Advance an unattended programme until a listener joins or it ends."""
+        server = self._server
+        if server is None:
+            return None
+        now_us = server.clock.now_us()
+        lead_us = int(_INITIAL_PLAYBACK_DELAY_S * 1_000_000)
+        start_us = (
+            _scheduled_play_start_us(play_at, now_us, lead_us)
+            if play_at is not None
+            else now_us + lead_us
+        )
+        start_us = max(start_us, self._next_play_start_us or start_us)
+        if self._would_start_after_expiry(start_us, now_us, expires_at):
+            return None
+        end_us = start_us + int(duration_s * 1_000_000)
+        generation = self._playback_generation
+        logger.info(
+            "Sendspin service: advancing audio without listeners; "
+            "first listener can join the remaining %.1fs",
+            duration_s,
+        )
+        while True:
+            if generation != self._playback_generation or (
+                cancelled is not None and cancelled.is_set()
+            ):
+                return None
+            remaining_s = (end_us - server.clock.now_us()) / 1_000_000
+            if remaining_s <= 0:
+                return None
+            if server.connected_clients:
+                return start_us
+            await asyncio.sleep(min(remaining_s, _LATE_JOIN_SYNC_INTERVAL_S))
 
     def _resolve_play_start(  # noqa: PLR0913
         self,
@@ -820,6 +877,25 @@ async def _stream_wav(
         play_end_us = chunk_start_us + chunk_duration_us
         play_start_us = None
     return play_start_us, play_end_us, client_count
+
+
+def _skip_elapsed_audio(clips: list[_WavClip], elapsed_us: int) -> list[_WavClip]:
+    """Keep only the unplayed suffix, aligned to whole PCM frames."""
+    for index, clip in enumerate(clips):
+        duration_us = round(clip.duration_s * 1_000_000)
+        if elapsed_us >= duration_us:
+            elapsed_us -= duration_us
+            continue
+        frames = elapsed_us * clip.audio_format.sample_rate // 1_000_000
+        frame_bytes = clip.audio_format.channels * (clip.audio_format.bit_depth // 8)
+        suffix = _WavClip(
+            name=clip.name,
+            audio_format=clip.audio_format,
+            pcm_data=clip.pcm_data[frames * frame_bytes :],
+            duration_s=clip.duration_s - frames / clip.audio_format.sample_rate,
+        )
+        return [suffix, *clips[index + 1 :]]
+    return []
 
 
 def _with_silent_tail(clip: _WavClip) -> _WavClip:

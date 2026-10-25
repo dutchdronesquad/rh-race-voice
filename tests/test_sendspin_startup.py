@@ -106,3 +106,27 @@ class SendspinStartupTests(unittest.IsolatedAsyncioTestCase):
                 server.get_client.return_value.connection_security = security
                 await SendSpinServer._admit_player(server, "other-player")
                 server.trust_unpaired.assert_not_awaited()
+
+    async def test_admission_does_not_depend_on_product_version(self) -> None:
+        """Player product/version metadata must not restrict admission."""
+        for product, version in (
+            ("Sendspin for Windows", "2.2.6"),
+            ("Sendspin for Windows", "2.2.7"),
+            ("Sendspin for Windows", "3.0.0"),
+            ("Sendspin for Windows", "10.0.0"),
+            ("WindowsSpin", "2.2.5"),
+            ("Race Voice Browser Player", "3.0.0"),
+            ("Other Sendspin client", "10.0.0"),
+            ("Sendspin for Windows", None),
+            ("Sendspin for Windows", "unknown"),
+        ):
+            with self.subTest(product=product, version=version):
+                server = Mock(trust_unpaired=AsyncMock())
+                client = server.get_client.return_value
+                client.info.device_info.product_name = product
+                client.info.device_info.software_version = version
+                client.connection_security.psk_category = PskCategory.SENTINEL
+                client.connection.disconnect = AsyncMock()
+                await SendSpinServer._admit_player(server, "supported-player")
+                client.connection.disconnect.assert_not_awaited()
+                server.trust_unpaired.assert_awaited_once_with("supported-player")

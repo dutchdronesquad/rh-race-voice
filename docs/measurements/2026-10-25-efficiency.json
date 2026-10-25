@@ -1,0 +1,82 @@
+{
+  "measured_on": "2026-10-25",
+  "cache_and_restart": {
+    "environment": {
+      "architecture": "x86_64",
+      "logical_cpus": 4,
+      "python": "3.13.3",
+      "piper_tts": "1.8.0",
+      "onnxruntime": "1.31.0"
+    },
+    "model": "nl_NL-pim-medium",
+    "scope": "Speech preparation only; excludes HTTP, playback and player latency",
+    "disk": {
+      "ram_cache_bytes": 0,
+      "cold_first_name_ms": 2407.377,
+      "uncached_lap_preparation": {
+        "samples": 30,
+        "p50_ms": 214.828,
+        "p95_ms": 244.964
+      },
+      "uncached_lap_worker_jobs": 90,
+      "cached_name_and_lap_pair": {
+        "samples": 100,
+        "p50_ms": 1.725,
+        "p95_ms": 1.991
+      },
+      "cached_pair_worker_jobs": 200
+    },
+    "ram": {
+      "ram_cache_bytes": 8388608,
+      "cold_first_name_ms": 2341.153,
+      "uncached_lap_preparation": {
+        "samples": 30,
+        "p50_ms": 215.443,
+        "p95_ms": 240.207
+      },
+      "uncached_lap_worker_jobs": 30,
+      "cached_name_and_lap_pair": {
+        "samples": 100,
+        "p50_ms": 0.431,
+        "p95_ms": 0.578
+      },
+      "cached_pair_worker_jobs": 0
+    },
+    "cached_restart": {
+      "cached_wavs_only": {
+        "setup_ms": 319.043,
+        "first_lap_preparation_ms": 2267.916
+      },
+      "model_warmed": {
+        "setup_ms": 2631.607,
+        "first_lap_preparation_ms": 264.848
+      }
+    }
+  },
+  "thread_settings": [
+    {
+      "name": "default",
+      "p50_generation_ms": 209.279,
+      "p50_generation_cpu_ms": 417.116,
+      "p50_idle_cpu_ms_per_200ms": 22.178
+    },
+    {
+      "name": "bounded_spin",
+      "p50_generation_ms": 207.417,
+      "p50_generation_cpu_ms": 413.433,
+      "p50_idle_cpu_ms_per_200ms": 3.224
+    },
+    {
+      "name": "no_spin",
+      "p50_generation_ms": 220.819,
+      "p50_generation_cpu_ms": 413.71,
+      "p50_idle_cpu_ms_per_200ms": 0.038
+    },
+    {
+      "name": "single_thread",
+      "p50_generation_ms": 393.803,
+      "p50_generation_cpu_ms": 393.776,
+      "p50_idle_cpu_ms_per_200ms": 0.034
+    }
+  ]
+}

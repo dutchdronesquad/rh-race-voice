@@ -56,7 +56,7 @@ The plugin performs no local synthesis, queueing, or audio upload. `const.py`, `
 
 - `piper.py`: `PiperSynthesizer` — Piper model download/loading, ONNX Runtime session setup, synthesis, text normalization, WAV cache writes, and an abstract `_run_native()` hook that subclasses implement. Has no dependency on `gevent`, since the worker subprocess (the only production consumer) never installs it.
 - `gevent_piper.py`: `GeventPiperSynthesizer` — a `PiperSynthesizer` subclass implementing `_run_native()` via gevent's hub-threadpool, for a gevent-patched caller.
-- `synthesis.py`: `SynthesisWorker` — bounded asyncio supervision of the persistent synthesis subprocess: a priority queue, request deduplication/promotion for identical in-flight jobs, and subprocess lifecycle management.
+- `synthesis.py`: `SynthesisWorker` — bounded asyncio supervision of the persistent synthesis subprocess: a priority queue, request deduplication/promotion for identical in-flight jobs, bounded RAM reuse of prepared segments, and subprocess lifecycle management.
 - `synthesis_worker.py`: the private, line-delimited worker protocol run inside the isolated child process. `WorkerSynthesizer` subclasses `PiperSynthesizer` to run natively (no gevent, since the child is a plain, unpatched interpreter) and to key its WAV cache on a content hash of text, tuning, the installed `piper-tts` version, and the model file contents.
 
 `playback/` — Sendspin/audio transport:

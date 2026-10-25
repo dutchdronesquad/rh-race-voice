@@ -329,8 +329,8 @@ class SendspinPlaybackSink:
                 plan.event.event_id, "output_played", destination=self._destination
             )
         else:
-            # The backend can no-op (no connected clients, not ready, stream
-            # error) without raising; don't count that as audible playback.
+            # The backend can finish without delivery (no listener before the
+            # end, expired, cancelled, or a stream error) without raising.
             telemetry.record(
                 plan.event.event_id,
                 "output_dropped",

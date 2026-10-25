@@ -1,9 +1,9 @@
-# syntax=docker/dockerfile:1.27
+# syntax=docker/dockerfile:1.28
 
 ARG PYTHON_VERSION=3.13
 ARG SERVICE_VERSION=0.0.0+dev
 
-FROM ghcr.io/astral-sh/uv:0.12.15 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.5 AS uv
 
 FROM node:24-bookworm-slim AS player-build
 

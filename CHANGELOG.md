@@ -6,9 +6,19 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 ## [Unreleased]
 
-The first listener can now join an audio check already in progress, including on a cloud relay that had no listeners when the track started. Playback joins the current position; finished or stopped audio is not replayed. Update the cloud service as well as the local service to apply this fix to cloud listeners.
+## [2.0.1] - 2026-10-25
 
-Sendspin for Windows **2.2.6 is currently recommended**; the setup guide links directly to this release.
+### Joining audio already in progress
+
+The first listener can now join an audio check already in progress, including on a cloud relay that had no listeners when the track started. Playback joins the current position; finished or stopped audio is not replayed. **Stop audio** and race-context changes also cancel playback that is still waiting for its first listener.
+
+Update the cloud service to receive this fix for cloud listeners. Updating only the local service or RotorHazard plugin does not update the cloud relay.
+
+### Installation and compatibility
+
+- Installing the plugin no longer requests a separate gevent version, avoiding unintended upgrades of RotorHazard's own dependency.
+- The service now uses `aiosendspin` 10.x, with refreshed runtime and browser-player dependencies.
+- Sendspin for Windows **2.2.6 is currently recommended**; the setup guide links directly to this release.
 
 ## [2.0.0] - 2026-09-16
 

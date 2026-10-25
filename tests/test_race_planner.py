@@ -201,7 +201,7 @@ class PreparationPlannerTests(unittest.IsolatedAsyncioTestCase):
             for entry in captured.records
             if json.loads(entry.getMessage())["stage"] == "output_dropped"
         ]
-        self.assertTrue(any(record["reason"] == "cancelled" for record in drops))
+        self.assertEqual([record["reason"] for record in drops], ["preempted"])
 
     async def test_rejected_or_expired_tone_cannot_interrupt(self) -> None:
         """A missing asset or missed deadline must not silence usable speech."""

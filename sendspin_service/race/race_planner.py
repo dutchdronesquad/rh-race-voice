@@ -70,6 +70,9 @@ class CalloutPlan:
     completion: asyncio.Future[tuple[bytes, ...]] | None = field(
         default=None, kw_only=True, compare=False, repr=False
     )
+    outcome: _OutputOutcome | None = field(
+        default=None, kw_only=True, compare=False, repr=False
+    )
 
     @property
     def retained_audio(self) -> tuple[bytes, ...]:
@@ -106,11 +109,33 @@ class CalloutPlan:
 
 
 @dataclass
+class _OutputOutcome:
+    """One bounded receipt per admitted output, shared with its sink."""
+
+    finished: bool = False
+
+
+def record_output(
+    plan: CalloutPlan, stage: str, *, destination: str, **fields: object
+) -> None:
+    """Record one final queue outcome even when cancellation races a sink reply."""
+    if plan.outcome is not None:
+        if plan.outcome.finished:
+            return
+        plan.outcome.finished = True
+    if stage == "output_played":
+        fields["delivery"] = "queued"
+    telemetry.record(plan.event.event_id, stage, destination=destination, **fields)
+
+
+@dataclass
 class _Preparation:
     plan: CalloutPlan
     settings: dict
     cancelled: bool = False
     published: bool = False
+    reported: bool = False
+    cancel_reason: str = "cancelled"
     enqueued_at: float = field(default_factory=time.monotonic)
 
 
@@ -157,9 +182,7 @@ class PreparationPlanner:
             telemetry.record(plan.event.event_id, "output_dropped", reason="no_room")
             return False
         if plan.priority == Priority.SIGNAL:
-            self._pending = [
-                p for p in self._pending if p.plan.priority != Priority.LAP
-            ]
+            self._discard_laps()
         active = self._active
         supersedes_active = (
             active is not None
@@ -174,6 +197,9 @@ class PreparationPlanner:
             and (_preempts(plan.priority, active.plan.priority) or supersedes_active)
         ):
             self._active.cancelled = True
+            self._active.cancel_reason = (
+                "superseded" if supersedes_active else "preempted"
+            )
             if self._inference is not None:
                 self._inference.cancel()
         if plan.event.kind == EventKind.TONE:
@@ -187,17 +213,22 @@ class PreparationPlanner:
         self._wake.set()
         return True
 
-    def invalidate(self) -> None:
+    def invalidate(self, *, reason: str = "context_changed") -> None:
         """Call after installing new source state, before acknowledging a stop/reset."""
-        self._pending = [p for p in self._pending if self._usable(p.plan)]
+        self._prune(reason=reason)
         if self._active and not self._usable(self._active.plan) and self._inference:
             self._active.cancelled = True
+            self._active.cancel_reason = reason
             self._inference.cancel()
 
     async def close(self) -> None:
         """Stop preparation without closing a separately owned shared worker."""
         self._closed = True
+        for item in self._pending:
+            self._drop(item, "shutdown")
         self._pending.clear()
+        if self._active is not None:
+            self._active.cancel_reason = "shutdown"
         if self._runner is not None:
             self._runner.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -212,7 +243,7 @@ class PreparationPlanner:
         )
 
     def _make_room(self, plan: CalloutPlan) -> bool:
-        self._pending = [p for p in self._pending if self._usable(p.plan)]
+        self._prune()
         is_lap = plan.priority == Priority.LAP
         same_class = [
             p for p in self._pending if (p.plan.priority == Priority.LAP) == is_lap
@@ -225,9 +256,7 @@ class PreparationPlanner:
                 return False
             evicted = min(lower, key=lambda p: (-p.plan.priority, p.plan.order))
             self._pending.remove(evicted)
-            telemetry.record(
-                evicted.plan.event.event_id, "output_dropped", reason="evicted"
-            )
+            self._drop(evicted, "evicted")
             return True
         replacement = next(
             (
@@ -242,10 +271,43 @@ class PreparationPlanner:
             replacement = min(same_class, key=lambda p: p.plan.order)
         if replacement is not None:
             self._pending.remove(replacement)
-            telemetry.record(
-                replacement.plan.event.event_id, "output_dropped", reason="evicted"
-            )
+            self._drop(replacement, "evicted")
         return True
+
+    @staticmethod
+    def _drop(item: _Preparation, reason: str) -> None:
+        if not item.published and not item.reported:
+            item.reported = True
+            telemetry.record(item.plan.event.event_id, "output_dropped", reason=reason)
+
+    def _discard_laps(self) -> None:
+        for item in self._pending:
+            if item.plan.priority == Priority.LAP:
+                self._drop(item, "superseded")
+        self._pending = [p for p in self._pending if p.plan.priority != Priority.LAP]
+
+    def _reason(self, item: _Preparation, fallback: str) -> str:
+        if self._closed:
+            return "shutdown"
+        if item.cancelled:
+            return item.cancel_reason
+        if item.plan.deadline <= time.monotonic():
+            return "expired"
+        if not self._is_current(item.plan.event):
+            return "context_changed"
+        return fallback
+
+    def _prune(self, *, reason: str = "context_changed") -> None:
+        pending = []
+        for item in self._pending:
+            if self._usable(item.plan):
+                pending.append(item)
+            else:
+                self._drop(
+                    item,
+                    "expired" if item.plan.deadline <= time.monotonic() else reason,
+                )
+        self._pending = pending
 
     async def _run(self) -> None:
         while not self._closed:
@@ -258,21 +320,23 @@ class PreparationPlanner:
                 )
                 self._pending.remove(item)
                 if not self._usable(item.plan):
+                    self._drop(
+                        item,
+                        "expired"
+                        if item.plan.deadline <= time.monotonic()
+                        else "context_changed",
+                    )
                     continue
                 self._active = item
                 self._inference = asyncio.create_task(self._prepare(item))
                 try:
                     await self._inference
                 except asyncio.CancelledError:
+                    self._drop(item, item.cancel_reason)
                     if self._closed:
                         raise
                 except Exception:
-                    if not item.published:
-                        telemetry.record(
-                            item.plan.event.event_id,
-                            "output_dropped",
-                            reason="synthesis_failed",
-                        )
+                    self._drop(item, self._reason(item, "synthesis_failed"))
                     logger.exception(
                         "Race Voice preparation failed: %s", item.plan.event.event_id
                     )
@@ -318,10 +382,7 @@ class PreparationPlanner:
         except asyncio.CancelledError:
             # A preempting signal cancels this task mid-await; without this the
             # event would keep no terminal telemetry record at all.
-            if not item.published:
-                telemetry.record(
-                    plan.event.event_id, "output_dropped", reason="cancelled"
-                )
+            self._drop(item, item.cancel_reason)
             raise
         finally:
             if completion is not None and not completion.done():
@@ -335,12 +396,7 @@ class PreparationPlanner:
         if audio and not item.cancelled and self._usable(plan):
             self._ready(replace(plan, audio=audio))
         else:
-            reason = (
-                "synthesis_empty"
-                if not audio
-                else ("cancelled" if item.cancelled else "expired")
-            )
-            telemetry.record(plan.event.event_id, "output_dropped", reason=reason)
+            self._drop(item, self._reason(item, "synthesis_empty"))
 
 
 class PlaybackSink(Protocol):
@@ -387,8 +443,8 @@ class SendspinPlaybackSink:
             lateness = 1.0 if plan.event.asset == "buzzer" else 0.25
             deadline = min(deadline, plan.target + lateness)
         if cancelled.is_set() or deadline <= time.monotonic():
-            telemetry.record(
-                plan.event.event_id,
+            record_output(
+                plan,
                 "output_dropped",
                 reason="cancelled" if cancelled.is_set() else "expired",
                 destination=self._destination,
@@ -396,16 +452,25 @@ class SendspinPlaybackSink:
             return
         queued = await self._play_audio(plan, cancelled, deadline)
         if queued:
-            telemetry.record(
-                plan.event.event_id, "output_played", destination=self._destination
-            )
+            record_output(plan, "output_played", destination=self._destination)
         else:
             # The backend can finish without delivery (no listener before the
             # end, expired, cancelled, or a stream error) without raising.
-            telemetry.record(
-                plan.event.event_id,
+            reason = "sink"
+            if cancelled.is_set():
+                reason = "cancelled"
+            elif deadline <= time.monotonic():
+                reason = "expired"
+            elif (
+                plan.completion is not None
+                and plan.completion.done()
+                and not plan.completion.result()
+            ):
+                reason = "synthesis_incomplete"
+            record_output(
+                plan,
                 "output_dropped",
-                reason="sink",
+                reason=reason,
                 destination=self._destination,
             )
 
@@ -488,19 +553,20 @@ class PlaybackPlanner:
 
     def submit(self, plan: CalloutPlan) -> bool:
         """Accept prepared audio; source synthesis is never repeated per listener."""
+        plan = replace(plan, outcome=_OutputOutcome())
         if not plan.audio or not self._usable(plan):
-            telemetry.record(
-                plan.event.event_id,
+            record_output(
+                plan,
                 "output_dropped",
                 reason="expired",
                 destination=self._destination,
             )
             return False
-        self._pending = [p for p in self._pending if self._usable(p.plan)]
+        self._prune()
         pending = self._admit_audio(plan)
         if pending is None:
-            telemetry.record(
-                plan.event.event_id,
+            record_output(
+                plan,
                 "output_dropped",
                 reason="no_room",
                 destination=self._destination,
@@ -609,29 +675,48 @@ class PlaybackPlanner:
     def _record_dropped(self, dropped: list[tuple[_Playback, str]]) -> None:
         """Record evictions only after the replacement has been admitted."""
         for item, reason in dropped:
-            telemetry.record(
-                item.plan.event.event_id,
+            record_output(
+                item.plan,
                 "output_dropped",
                 reason=reason,
                 destination=self._destination,
             )
 
-    def invalidate(self) -> None:
+    def _prune(self) -> None:
+        pending = []
+        for item in self._pending:
+            if self._usable(item.plan):
+                pending.append(item)
+            else:
+                self._record_dropped(
+                    [
+                        (
+                            item,
+                            "expired"
+                            if item.plan.deadline <= time.monotonic()
+                            else "context_changed",
+                        )
+                    ]
+                )
+        self._pending = pending
+
+    def invalidate(self, *, reason: str = "context_changed") -> None:
         """Discard previous source state and flush all currently buffered audio."""
+        self._record_dropped([(item, reason) for item in self._pending])
         self._pending.clear()
         self._last_priority = None
-        self._interrupt()
+        self._interrupt(reason=reason)
 
-    async def flush(self) -> None:
+    async def flush(self, *, reason: str = "context_changed") -> None:
         """Acknowledge a source stop only after the sink has cleared its buffer."""
-        self.invalidate()
+        self.invalidate(reason=reason)
         if self._stop_task is not None:
             await asyncio.shield(self._stop_task)
 
     async def close(self) -> None:
         """Flush and finish this output without touching other planners."""
         self._closed = True
-        self.invalidate()
+        self.invalidate(reason="shutdown")
         if self._runner is not None:
             self._runner.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -646,9 +731,10 @@ class PlaybackPlanner:
             and self._is_current(plan.event)
         )
 
-    def _interrupt(self) -> None:
+    def _interrupt(self, *, reason: str = "preempted") -> None:
         if self._active is not None:
             self._active.cancelled.set()
+            self._record_dropped([(self._active, reason)])
         if self._stop_task is None or self._stop_task.done():
             self._stop_task = asyncio.create_task(self._sink.stop())
 
@@ -662,6 +748,9 @@ class PlaybackPlanner:
                         await asyncio.shield(self._stop_task)
                     except Exception:
                         logger.exception("Race Voice output could not be stopped")
+                        self._record_dropped(
+                            [(item, "stop_failed") for item in self._pending]
+                        )
                         self._pending.clear()
                         break
                 if not self._pending:
@@ -672,6 +761,16 @@ class PlaybackPlanner:
                 )
                 self._pending.remove(item)
                 if not self._usable(item.plan):
+                    self._record_dropped(
+                        [
+                            (
+                                item,
+                                "expired"
+                                if item.plan.deadline <= time.monotonic()
+                                else "context_changed",
+                            )
+                        ]
+                    )
                     continue
                 self._active = item
                 self._last_priority = item.plan.priority
@@ -684,8 +783,16 @@ class PlaybackPlanner:
                 )
                 try:
                     await self._sink.play(item.plan, item.cancelled)
+                    record_output(
+                        item.plan, "output_played", destination=self._destination
+                    )
+                except asyncio.CancelledError:
+                    self._record_dropped(
+                        [(item, "shutdown" if self._closed else "cancelled")]
+                    )
+                    raise
                 except Exception:
-                    self._interrupt()
+                    self._interrupt(reason="playback_failed")
                     logger.exception(
                         "Race Voice playback failed: %s", item.plan.event.event_id
                     )

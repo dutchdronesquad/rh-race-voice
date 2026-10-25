@@ -406,7 +406,9 @@ class AdapterTests(unittest.TestCase):
         for _ in range(50):
             self.adapter._voice({"text": "Announcement"})
         self.assertEqual(len(publisher._pending), 33)
-        self.adapter._staged({"pi_starts_at_s": time.monotonic() + 1})
+        self.adapter._emit(
+            "tone", {"asset": "buzzer"}, ttl=1, target=time.monotonic() + 1
+        )
         self.assertEqual(len(publisher._pending), 32)
         self.assertFalse(any(item["kind"] == "lap" for item in publisher._pending))
         wait_for(lambda: bool(self.service.events))
@@ -583,8 +585,10 @@ class AdapterTests(unittest.TestCase):
         wait_for(lambda: len(self.service.events) == 1)
         self.assertEqual(self.service.events[0]["payload"]["text"], "After restart")
 
-    def test_audio_dispatch_does_not_wait_for_state_ack(self) -> None:
-        """A tone/lap must not queue behind an unrelated, still-in-flight state PUT."""
+    def test_audio_capture_is_nonblocking_but_dispatch_waits_for_state_ack(
+        self,
+    ) -> None:
+        """A lap is captured immediately but cannot overtake its required snapshot."""
         self.connect()
         self.service.state_release.clear()
         self.rh.race.heat = 2
@@ -594,9 +598,12 @@ class AdapterTests(unittest.TestCase):
         self.adapter._lap(
             {"lap": 1, "pilot_id": 7, "pilot": "Alfa", "phonetic": "four seconds"}
         )
-        wait_for(lambda: len(self.service.events) == 1)
+        gevent.sleep(0.03)
+        self.assertFalse(self.service.events)
+        self.assertTrue(self.adapter._publisher._pending)
         self.assertFalse(self.adapter._publisher._ready())
         self.service.state_release.set()
+        wait_for(lambda: len(self.service.events) == 1)
 
     def test_audio_waits_for_first_full_handshake_before_sending(self) -> None:
         """A fresh session must not race ahead of its own first state PUT.
@@ -722,23 +729,76 @@ class AdapterTests(unittest.TestCase):
         wait_for(self.adapter._publisher._ready)
         self.assertGreater(self.adapter._generation, generation)
 
-    def test_race_stop_tears_down_audio_after_a_normal_finish(self) -> None:
-        """A normally-finished race must not leave the stream marked playing.
-
-        RACE_STOP is RH's only event for an ordinary race end (no abort
-        involved) -- without wiring it, nothing ever told the service the
-        race was over, and the stream had no way back to idle except a
-        timeout.
-        """
+    def test_normal_race_finish_retains_the_winner_instead_of_stopping_speech(
+        self,
+    ) -> None:
+        """RH can declare a winner before or after RACE_STOP; neither may clear it."""
         self.connect()
         generation = self.adapter._generation
         registered = {
             call.args[0]: call.args[1] for call in self.rh.events.on.call_args_list
         }
-        stop_handler = registered[Evt.RACE_STOP]
-        stop_handler({})
+        self.assertNotIn(Evt.RACE_STOP, registered)
+        for text in ("Winner is Alpha", "Winner is Bravo"):
+            self.adapter._voice({"text": text, "winner_flag": True})
+        self.assertEqual(self.adapter._generation, generation)
+        wait_for(lambda: len(self.service.events) == 2)
+        self.assertTrue(all(e["payload"]["winner_flag"] for e in self.service.events))
+
+    def test_winner_waits_for_new_state_ack_without_disconnect_or_duplicate(
+        self,
+    ) -> None:
+        """An end-of-race winner must not race the stop/state PUT on another socket."""
+        self.connect()
+        publisher = self.adapter._publisher
+        session = publisher._session
+        self.service.state_release.clear()
+        self.adapter.stop_audio()
+        self.adapter._voice({"text": "Winner is Alpha", "winner_flag": True})
+        gevent.sleep(0.05)
+        self.assertEqual(self.service.events, [])
+        self.assertEqual(len(publisher._pending), 1)
+        self.assertEqual(publisher._session, session)
+        self.service.state_release.set()
+        wait_for(lambda: len(self.service.events) == 1)
+        self.assertEqual(self.service.events[0]["payload"]["text"], "Winner is Alpha")
+        self.assertEqual(publisher._session, session)
+        self.assertEqual(
+            self.service.events[0]["context"], self.service.state["context"]
+        )
+
+    def test_next_race_same_heat_invalidates_previous_winner_and_pending_laps(
+        self,
+    ) -> None:
+        """Draining a normal finish must not carry old speech into the next start."""
+        self.connect()
+        self.adapter._voice({"text": "Old winner", "winner_flag": True})
+        previous = self.adapter._generation
+        self.adapter._staged({"pi_starts_at_s": time.monotonic() + 2})
+        self.assertGreater(self.adapter._generation, previous)
+        wait_for(lambda: len(self.service.events) == 1)
+        self.assertEqual(self.service.events[0]["kind"], "tone")
+        self.assertEqual(
+            self.service.events[0]["context"], self.service.state["context"]
+        )
+
+    def test_event_expiry_is_not_extended_while_waiting_for_state_ack(self) -> None:
+        """Waiting for a snapshot must not replay speech after its original deadline."""
+        self.connect()
+        self.service.state_release.clear()
+        self.adapter.stop_audio()
+        self.assertTrue(
+            self.adapter._publisher.submit(
+                "voice",
+                {"text": "Winner is Alpha", "winner_flag": True},
+                expires_at=time.monotonic() + 0.01,
+            )
+        )
+        gevent.sleep(0.03)
+        self.service.state_release.set()
         wait_for(self.adapter._publisher._ready)
-        self.assertGreater(self.adapter._generation, generation)
+        wait_for(lambda: not self.adapter._publisher._pending)
+        self.assertEqual(self.service.events, [])
 
     def test_http_response_size_is_bounded_and_connection_recovers(self) -> None:
         """A bad service reply cannot allocate unbounded memory or poison reuse."""

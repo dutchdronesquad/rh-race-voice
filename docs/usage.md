@@ -198,6 +198,8 @@ Race Voice hooks into two RotorHazard filter events and generates the following 
 
 Lap 0 (first crossing without a completed lap) does not produce a callout. Winner callouts are generated from the RotorHazard phonetic text filter, which fires when RotorHazard determines the race winner.
 
+A normal race finish lets the winner and remaining final callouts complete. The Sendspin stream returns to idle after its queued audio finishes. **Stop audio**, a race abort, a heat change or staging the next race clears old audio immediately; staging also does this when the same heat is raced again. Race Voice uses RotorHazard's winner decision and does not generate a winner announcement for a tie, an undecided result or a race format that does not declare a winner.
+
 Lap announcements below RotorHazard's **Minimum Lap Time** (`MinLapSec`) are suppressed before they reach the service or its synthesis/playback queues. Race Voice compares the unrounded lap time, so a lap exactly at the minimum is still announced. A minimum of `0` disables this check. Changes to the minimum apply on the next passage. This only suppresses the spoken lap announcement; RotorHazard's own minimum-lap behavior still determines how the crossing affects race results.
 
 Countdown callouts are generated when a race is scheduled via the RotorHazard schedule panel. They are cancelled automatically if the schedule is replaced or cancelled before the race starts.

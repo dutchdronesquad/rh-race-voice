@@ -7,7 +7,6 @@ import contextlib
 import io
 import logging
 import os
-import re
 import socket
 import threading
 import time
@@ -44,8 +43,6 @@ _SCHEDULED_BUFFER_CEILING_US = 1_200_000
 _STARTUP_TIMEOUT_S = 30.0
 _LATE_JOIN_SYNC_INTERVAL_S = 0.1
 _IDLE_DRAIN_S = 0.1
-_MAX_WINDOWS_VERSION = (2, 2, 6)
-_WINDOWS_PRODUCTS = {"Sendspin for Windows", "WindowsSpin"}
 
 
 @dataclass(frozen=True)
@@ -342,20 +339,6 @@ class SendSpinServer:
         # The task runs after the synchronous client-attachment event returns.
         client = server.get_client(client_id)
         if client is None:
-            return
-        device = client.info.device_info
-        if device is not None and _unsupported_windows_version(
-            device.product_name, device.software_version
-        ):
-            logger.warning(
-                "Sendspin service: rejected %s %s (%s); "
-                "the supported maximum is Sendspin for Windows 2.2.6",
-                device.product_name,
-                device.software_version,
-                client_id,
-            )
-            if client.connection is not None:
-                await client.connection.disconnect(retry_connection=False)
             return
         security = client.connection_security
         if security is not None and security.psk_category is PskCategory.SENTINEL:
@@ -761,14 +744,6 @@ class SendSpinServer:
                     client.client_id,
                 )
         return sum(1 for client in group.clients if client.is_connected)
-
-
-def _unsupported_windows_version(product: str | None, version: str | None) -> bool:
-    """Apply the temporary Windows client cap without restricting other players."""
-    if product not in _WINDOWS_PRODUCTS or not isinstance(version, str):
-        return False
-    match = re.match(r"^v?(\d+)\.(\d+)\.(\d+)", version.strip())
-    return match is not None and tuple(map(int, match.groups())) > _MAX_WINDOWS_VERSION
 
 
 def _load_identity(state_dir: Path) -> Identity:

@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import io
 import threading
 import time
@@ -189,25 +188,19 @@ class FirstListenerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await asyncio.to_thread(self.backend.play, [_wav(0.1)]))
         self.assertEqual(self.audio, [])
 
-    async def test_newer_windows_client_is_disconnected_over_real_transport(
+    async def test_newer_windows_client_can_receive_audio_over_real_transport(
         self,
     ) -> None:
-        """Enforce the Windows cap during the encrypted hello/activation exchange."""
-        with self.assertLogs(
-            "sendspin_service.playback.sendspin", level="WARNING"
-        ) as logs:
-            # Depending on whether the first activate was already sent, rejection
-            # happens during connect() or immediately after it returns.
-            with contextlib.suppress(RuntimeError):
-                await self.connect(
-                    device_info=DeviceInfo(
-                        product_name="Sendspin for Windows", software_version="3.0.0"
-                    )
-                )
-            await asyncio.sleep(0.05)
-        self.assertIn("supported maximum", " ".join(logs.output))
-        self.assertEqual(self.backend.connected_client_count(), 0)
-        self.assertEqual(self.audio, [])
+        """Allow newer Windows versions when the client permits playback."""
+        await self.connect(
+            device_info=DeviceInfo(
+                product_name="Sendspin for Windows", software_version="3.0.0"
+            )
+        )
+        self.assertEqual(self.backend.connected_client_count(), 1)
+        self.assertTrue(await asyncio.to_thread(self.backend.play, [_wav(0.1)]))
+        await asyncio.wait_for(self.received.wait(), timeout=1)
+        self.assertTrue(self.audio)
 
 
 class AudioPositionTests(unittest.TestCase):

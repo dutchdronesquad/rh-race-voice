@@ -42,7 +42,7 @@ If Sendspin already runs in Docker on this machine, [stop that container first](
 1. In RotorHazard, enable **Settings → Race Voice → Plugin audio**. Keep **Sendspin service URL** at `http://127.0.0.1:8766`.
 2. Connect a player:
    - **Browser:** open `<RotorHazard UI base URL>/player`, set **Server URL** to `http://<Pi LAN address>:8927`, and press **Connect**.
-   - **WindowsSpin 2.2.6 or earlier:** connect to the Pi's LAN address on port `8927`.
+   - **WindowsSpin (2.2.6 recommended):** connect to the Pi's LAN address on port `8927`.
 3. Click **Play audio check** in RotorHazard.
 
 The service stays on the Pi; players can run on other LAN devices. Keep port `8766` local and allow clients to reach port `8927`. Use the Pi's LAN address in remote players, not `127.0.0.1`.
@@ -116,7 +116,7 @@ This same image supports two different roles — pick one.
 1. Deploy the cloud instance as above (`cp .env.example .env`, generate a token, `docker compose up -d`).
 2. In RotorHazard, set **Sendspin service URL** to the cloud instance's HTTP(S) API base URL, for example `https://audio.example.com` behind an HTTPS reverse proxy (direct HTTP uses port `8766` by default). This must be the Race Voice `sendspin-service` API, not a player WebSocket URL or an arbitrary Sendspin server.
 3. Enter the cloud instance's `SENDSPIN_API_TOKEN` wherever a token field is required, without the `Bearer` prefix.
-4. Open the cloud player (`/`) or connect WindowsSpin **2.2.6 or earlier** to that server's Sendspin endpoint (port `8927` by default).
+4. Open the cloud player (`/`) or connect WindowsSpin (2.2.6 recommended) to that server's Sendspin endpoint (port `8927` by default).
 5. Run **Play audio check** in RotorHazard.
 
 #### Local + relay (keep the local primary, also stream to the cloud)
@@ -224,7 +224,7 @@ The service supports `aiosendspin` 10.x and stores its server identity and pairi
 
 Each service advances its own audio programme even when no players are connected. A first listener joining during the audio check hears the remaining track at its current position. Audio that has already ended is not replayed, and **Stop audio** or a race-context change cancels unattended playback too. For a cloud relay, update the cloud service to receive this behavior; updating only the local primary does not update the relay receiver.
 
-For Sendspin for Windows, use **2.2.6 or earlier** for now. Newer versions require pairing support that Race Voice does not yet provide; the service refuses these versions and logs the supported maximum. The bundled browser player remains supported.
+For Sendspin for Windows, **2.2.6 is currently recommended**. The bundled browser player is also available.
 
 ### Sync modes
 
@@ -244,7 +244,7 @@ Use **Sync** for most race-day setups. Switch to **Quality** if playback resets 
 
 ### WindowsSpin
 
-[Sendspin for Windows 2.2.6](https://github.com/chrisuthe/windowsSpin/releases/tag/v2.2.6) is the recommended Windows release; the supported maximum is **2.2.6**. Configure it with the `sendspin-service` host and port (`8927` by default). It will receive the same synchronized audio as the browser player. Keep this version installed until Race Voice adds support for newer Windows clients. The same version limit applies to local and cloud-relay connections.
+[Sendspin for Windows 2.2.6](https://github.com/chrisuthe/windowsSpin/releases/tag/v2.2.6) is currently recommended. Configure it with the `sendspin-service` host and port (`8927` by default). It will receive the same synchronized audio as the browser player.
 
 ## Settings
 

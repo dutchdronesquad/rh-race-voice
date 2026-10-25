@@ -8,7 +8,7 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 The first listener can now join an audio check already in progress, including on a cloud relay that had no listeners when the track started. Playback joins the current position; finished or stopped audio is not replayed. Update the cloud service as well as the local service to apply this fix to cloud listeners.
 
-Sendspin for Windows is temporarily limited to **2.2.6 or earlier**. The service refuses newer Windows versions with a clear log message while their pairing support remains unavailable. Use Windows 2.2.6 or the bundled browser player.
+Sendspin for Windows **2.2.6 is currently recommended**; the setup guide links directly to this release.
 
 ## [2.0.0] - 2026-09-16
 

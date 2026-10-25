@@ -107,30 +107,13 @@ class SendspinStartupTests(unittest.IsolatedAsyncioTestCase):
                 await SendSpinServer._admit_player(server, "other-player")
                 server.trust_unpaired.assert_not_awaited()
 
-    async def test_rejects_windows_versions_above_supported_maximum(self) -> None:
-        """The temporary cap applies regardless of encryption or pairing state."""
-        for version in ("2.2.7", "3.0.0", "v3.0.0-beta.1", "10.0.0"):
-            with self.subTest(version=version):
-                server = Mock(trust_unpaired=AsyncMock())
-                client = server.get_client.return_value
-                client.info.device_info.product_name = "Sendspin for Windows"
-                client.info.device_info.software_version = version
-                client.connection.disconnect = AsyncMock()
-                with self.assertLogs(
-                    "sendspin_service.playback.sendspin", level="WARNING"
-                ) as logs:
-                    await SendSpinServer._admit_player(server, "windows-player")
-                self.assertIn("supported maximum", " ".join(logs.output))
-                self.assertIn("2.2.6", " ".join(logs.output))
-                client.connection.disconnect.assert_awaited_once_with(
-                    retry_connection=False
-                )
-                server.trust_unpaired.assert_not_awaited()
-
-    async def test_preserves_supported_windows_and_other_clients(self) -> None:
-        """Admit Windows 2.2.6 and do not cap unrelated product versions."""
+    async def test_admission_does_not_depend_on_product_version(self) -> None:
+        """Player product/version metadata must not restrict admission."""
         for product, version in (
             ("Sendspin for Windows", "2.2.6"),
+            ("Sendspin for Windows", "2.2.7"),
+            ("Sendspin for Windows", "3.0.0"),
+            ("Sendspin for Windows", "10.0.0"),
             ("WindowsSpin", "2.2.5"),
             ("Race Voice Browser Player", "3.0.0"),
             ("Other Sendspin client", "10.0.0"),

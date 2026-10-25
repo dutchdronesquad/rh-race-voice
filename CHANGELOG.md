@@ -6,6 +6,8 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 ## [Unreleased]
 
+The active heat's prepared callsigns and lap numbers now take priority in the RAM cache. Other prepared voices, pilot names and countdown phrases cannot displace them when the active heat fits within the existing memory limits. Heat changes update the preference without generating speech or deleting reusable audio. Update the primary Sendspin service for this improvement.
+
 A normal race finish now lets the winner and final callouts complete instead of clearing all audio at `RACE_STOP`. The stream returns to idle when its queued audio finishes. **Stop audio**, race aborts and heat changes still clear audio, and starting another race also clears the previous race's speech even when the heat stays the same.
 
 New announcements wait for their race-state update to be acknowledged before being sent, avoiding a race between separate HTTP connections that could lose the winner or reconnect the publisher unnecessarily. Capturing events stays nonblocking and original expiry deadlines remain unchanged. Update the RotorHazard plugin for these fixes.

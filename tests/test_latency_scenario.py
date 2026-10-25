@@ -53,6 +53,9 @@ class Worker:
         self.audio = b"RIFF-stub"
         self._lock = asyncio.Lock()
 
+    def prioritize_audio(self, _requests: list[dict]) -> None:
+        """No real cache is used in the blocked-inference scenario."""
+
     async def request(self, payload: dict, **_kwargs: object) -> dict:
         """Simulate the supervisor boundary without loading a model in tests."""
         async with self._lock:

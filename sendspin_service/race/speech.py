@@ -38,6 +38,17 @@ class SpeechEngine:
         self._laps = LapCalloutSegments(locale_for_model=_locale)
         self._clock = ClockCallouts(locale_for_model=_locale)
 
+    def prioritize_heat(self, settings: dict, pilot_names: list[str]) -> None:
+        """Protect resident heat names/numbers without doing disk or inference work."""
+        self.worker.prioritize_audio(
+            [
+                self._request(settings, segment)
+                for segment in self._laps.precache_segments(
+                    pilot_names, settings["model"]
+                )
+            ]
+        )
+
     def segments(self, event: RaceEvent, model: str) -> tuple[CalloutSegment, ...]:
         """Preserve RH phonetic time and name, with service-localized lap numbers."""
         if event.kind == EventKind.TONE:

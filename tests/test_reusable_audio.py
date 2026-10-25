@@ -124,6 +124,47 @@ class ReusableAudioTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.request(text="Bravo,"))["count"], 4)
         self.assertLessEqual(self.worker._audio_cache_bytes, 500)
 
+    async def test_active_heat_survives_other_reusable_audio_pressure(self) -> None:
+        """Background names/countdowns cannot evict a resident active pilot."""
+        self.worker.prioritize_audio([REQUEST])
+        first = await self.request()
+        for number in range(6):
+            await self.request(text=f"Countdown {number}", subdir="precache/clock")
+        self.assertIs((await self.request())["audio"], first["audio"])
+        self.assertLessEqual(self.worker._audio_cache_bytes, 500)
+
+    async def test_full_protected_cache_does_not_admit_background_entries(self) -> None:
+        """Even a more recent non-heat entry loses to both protected entries."""
+        self.worker.prioritize_audio([REQUEST, {**REQUEST, "text": "Bravo,"}])
+        first = await self.request()
+        second = await self.request(text="Bravo,")
+        await self.request(text="Countdown", subdir="precache/clock")
+        self.assertIs((await self.request())["audio"], first["audio"])
+        self.assertIs((await self.request(text="Bravo,"))["audio"], second["audio"])
+        self.assertEqual(len(self.worker._audio_cache), 2)
+
+    async def test_heat_switch_releases_previous_names_without_clearing_them(
+        self,
+    ) -> None:
+        """Preference changes do not synthesize or clear reusable disk/RAM audio."""
+        self.worker.prioritize_audio([REQUEST])
+        old = await self.request()
+        new = await self.request(text="Bravo,")
+        self.worker.prioritize_audio([{**REQUEST, "text": "Bravo,"}])
+        self.assertIs((await self.request())["audio"], old["audio"])
+        await self.request(text="Countdown", subdir="precache/clock")
+        self.assertIs((await self.request(text="Bravo,"))["audio"], new["audio"])
+        self.assertFalse((await self.request()).get("memory_cache_hit", False))
+
+    async def test_large_heat_still_obeys_byte_and_entry_limits(self) -> None:
+        """Protecting too many pilots cannot turn the cache into unbounded memory."""
+        requests = [{**REQUEST, "text": f"Pilot {number},"} for number in range(8)]
+        self.worker.prioritize_audio(requests)
+        for request in requests:
+            await self.request(text=request["text"])
+        self.assertLessEqual(self.worker._audio_cache_bytes, 500)
+        self.assertEqual(len(self.worker._audio_cache), 2)
+
     async def test_dynamic_lap_times_do_not_consume_reusable_audio_memory(self) -> None:
         """Unique lap times must not evict all pilot names during a race."""
         first = await self.request()

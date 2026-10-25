@@ -4,13 +4,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import time
 import unittest
 from dataclasses import replace
-from unittest.mock import AsyncMock
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import AsyncMock, patch
 
 from sendspin_service.race.race_protocol import EventKind, RaceEvent
 from sendspin_service.race.speech import SpeechEngine
+from sendspin_service.synthesis.synthesis import SynthesisWorker
 from tests.test_race_protocol import event_payload
 
 SETTINGS = {"model": "nl_NL-pim-medium", "speed": 1, "noise": 0.667, "noise_w": 0.8}
@@ -61,6 +66,96 @@ class ServiceSpeechTests(unittest.IsolatedAsyncioTestCase):
                 is_current=lambda: True,
             )
             self.assertEqual(self.worker.request.call_args.args[0], request)
+
+    async def test_background_work_cannot_slip_between_live_lap_segments(self) -> None:
+        """Use the real supervisor queue to isolate the cause of extra lap delay."""
+        root = Path(self.enterContext(TemporaryDirectory()))
+        worker = SynthesisWorker(root)
+        self.addAsyncCleanup(worker.close)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        queued = asyncio.Event()
+        executed = []
+        requests = []
+        request = worker.request
+
+        async def observe(payload: dict, **kwargs: object) -> dict:
+            requests.append(payload["text"])
+            if len(requests) == 5:
+                queued.set()
+            return await request(payload, **kwargs)
+
+        async def execute(encoded: bytes) -> dict:
+            text = json.loads(encoded)["text"]
+            executed.append(text)
+            if text == "background active":
+                entered.set()
+                await release.wait()
+            return {"audio": text.encode(), "cache_hit": True}
+
+        self.enterContext(patch.object(worker, "request", side_effect=observe))
+        self.enterContext(patch.object(worker, "_execute", side_effect=execute))
+        deadline = time.monotonic() + 5
+        active = asyncio.create_task(
+            worker.request(
+                {"text": "background active"}, deadline=deadline, priority=10
+            )
+        )
+        await asyncio.wait_for(entered.wait(), 1)
+        background = asyncio.create_task(
+            worker.request(
+                {"text": "background queued"}, deadline=deadline, priority=10
+            )
+        )
+        live = asyncio.create_task(
+            SpeechEngine(worker).synthesize(
+                self.event,
+                SETTINGS,
+                deadline=deadline,
+                priority=3,
+                is_current=lambda: True,
+            )
+        )
+        await asyncio.wait_for(queued.wait(), 1)
+        release.set()
+        audio = await live
+        await asyncio.gather(active, background)
+        self.assertEqual(
+            executed,
+            [
+                "background active",
+                "Klaas,",
+                "Ronde 4",
+                "twenty three point four five",
+                "background queued",
+            ],
+        )
+        self.assertEqual(audio, tuple(text.encode() for text in executed[1:4]))
+
+    async def test_failed_segment_cancels_other_callout_subscribers(self) -> None:
+        """One failed part cannot leave background work or partial spoken output."""
+        cancelled = []
+
+        async def fail_lap(payload: dict, **_kwargs: object) -> dict:
+            if payload["subdir"] == "precache/laps":
+                raise RuntimeError("failed lap")
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.append(payload["text"])
+            return {}  # pragma: no cover
+
+        self.worker.request.side_effect = fail_lap
+        with self.assertRaises(RuntimeError) as raised:  # noqa: PT027
+            await self.engine.synthesize(
+                self.event,
+                SETTINGS,
+                deadline=time.monotonic() + 5,
+                priority=3,
+                is_current=lambda: True,
+            )
+        self.assertEqual(str(raised.exception), "failed lap")
+        self.assertCountEqual(cancelled, ["Klaas,", "twenty three point four five"])
 
     async def test_tone_never_calls_worker(self) -> None:
         """Signals stay actionable during a stopped/hung Piper process."""

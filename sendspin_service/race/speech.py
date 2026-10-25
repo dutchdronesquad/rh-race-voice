@@ -66,10 +66,10 @@ class SpeechEngine:
         on_segment: Callable[[dict], None] | None = None,
     ) -> tuple[bytes, ...]:
         """Do not return partial/obsolete speech after expiry, stop or heat changes."""
-        audio = []
-        for segment in self.segments(event, settings["model"]):
+
+        async def generate(segment: CalloutSegment) -> bytes | None:
             if not is_current() or time.monotonic() >= deadline:
-                return ()
+                return None
             result = await self.worker.request(
                 self._request(settings, segment),
                 deadline=deadline,
@@ -78,8 +78,28 @@ class SpeechEngine:
             if on_segment is not None:
                 on_segment(result)
             if not is_current() or time.monotonic() >= deadline:
-                return ()
-            audio.append(result["audio"])
+                return None
+            return result["audio"]
+
+        # Queue the complete callout before awaiting its first segment. The
+        # worker still runs one operation at a time, but queued background
+        # preparation can no longer slip between these live segments.
+        tasks = [
+            asyncio.create_task(generate(segment))
+            for segment in self.segments(event, settings["model"])
+        ]
+        try:
+            audio = await asyncio.gather(*tasks)
+        finally:
+            # gather does not cancel siblings when one request fails. Release
+            # every subscriber so failed/obsolete callouts leave no queued work.
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if not is_current() or time.monotonic() >= deadline:
+            return ()
+        if any(segment is None for segment in audio):
+            return ()
         return tuple(audio)
 
     async def prepare(

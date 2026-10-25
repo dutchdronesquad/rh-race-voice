@@ -310,6 +310,12 @@ Cache behavior:
 
 ## Troubleshooting
 
+### Delayed lap announcements
+
+The service prepares the complete pilot-name, lap-number and lap-time announcement before sending it to playback. Select the heat and voice settings, then use **Prepare pre-cache** and wait for its completion message before racing. This prepares reusable names and lap numbers; each new lap time still needs synthesis. Repeat preparation for newly selected pilots or changed voice settings. Clearing the TTS cache removes this preparation.
+
+Queued announcements and player buffering also add delay. In the browser player's **Diagnostics**, check output latency and time-sync state. To investigate persistent delays, record the approximate time from a gate crossing to the start of speech, whether the delay occurs on the first lap or every lap, and service logs from the same period (`journalctl -u sendspin-service --since "5 minutes ago" --no-pager`). See [latency telemetry](latency-validation.md) for event and synthesis timing details.
+
 ### Port conflicts
 
 The `.deb` service and Docker variant both use TCP ports `8766` (HTTP API) and `8927` (Sendspin) by default. If you start both on the same machine, the second deployment can fail with `Address already in use` or `port is already allocated`.

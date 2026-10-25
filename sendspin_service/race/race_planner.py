@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import io
 import logging
 import threading
 import time
+import wave
 from dataclasses import dataclass, field, replace
+from functools import cached_property
 from typing import TYPE_CHECKING, Protocol
 
 from sendspin_service.playback.audio_queue import Priority, WavItem
@@ -71,12 +74,27 @@ class CalloutPlan:
         """Use the same semantic priority at preparation and every output."""
         return priority_for(self.event)
 
+    @cached_property
+    def duration_s(self) -> float:
+        """Read WAV headers once to bound queued speech by audible duration."""
+        duration = 0.0
+        for data in self.audio:
+            try:
+                with wave.open(io.BytesIO(data), "rb") as wav:
+                    duration += wav.getnframes() / wav.getframerate()
+            except (EOFError, wave.Error):
+                # Playback already skips unreadable WAVs. Count/byte bounds
+                # still apply when a clip's duration cannot be determined.
+                continue
+        return duration
+
 
 @dataclass
 class _Preparation:
     plan: CalloutPlan
     settings: dict
     cancelled: bool = False
+    enqueued_at: float = field(default_factory=time.monotonic)
 
 
 class PreparationPlanner:
@@ -125,7 +143,18 @@ class PreparationPlanner:
             self._pending = [
                 p for p in self._pending if p.plan.priority != Priority.LAP
             ]
-        if self._active and _preempts(plan.priority, self._active.plan.priority):
+        active = self._active
+        supersedes_active = (
+            active is not None
+            and plan.priority == active.plan.priority == Priority.LAP
+            and plan.event.pilot_id is not None
+            and plan.event.pilot_id == active.plan.event.pilot_id
+        )
+        if (
+            active
+            and not active.cancelled
+            and (_preempts(plan.priority, active.plan.priority) or supersedes_active)
+        ):
             self._active.cancelled = True
             if self._inference is not None:
                 self._inference.cancel()
@@ -220,6 +249,11 @@ class PreparationPlanner:
                     if self._closed:
                         raise
                 except Exception:
+                    telemetry.record(
+                        item.plan.event.event_id,
+                        "output_dropped",
+                        reason="synthesis_failed",
+                    )
                     logger.exception(
                         "Race Voice preparation failed: %s", item.plan.event.event_id
                     )
@@ -229,7 +263,11 @@ class PreparationPlanner:
 
     async def _prepare(self, item: _Preparation) -> None:
         plan = item.plan
-        telemetry.record(plan.event.event_id, "synthesis_start")
+        telemetry.record(
+            plan.event.event_id,
+            "synthesis_start",
+            wait_ms=round((time.monotonic() - item.enqueued_at) * 1000, 1),
+        )
         try:
             audio = await self._speech.synthesize(
                 plan.event,
@@ -347,12 +385,13 @@ class SendspinPlaybackSink:
 class _Playback:
     plan: CalloutPlan
     cancelled: threading.Event = field(default_factory=threading.Event)
+    enqueued_at: float = field(default_factory=time.monotonic)
 
 
 class PlaybackPlanner:
     """Apply priority and cancellation independently for one destination/selection."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         sink: PlaybackSink,
         *,
@@ -360,15 +399,24 @@ class PlaybackPlanner:
         destination: str,
         max_pending: int = 32,
         max_bytes: int = 8 * 1024 * 1024,
+        max_laps: int = 4,
+        max_lap_audio_s: float = 4.0,
     ) -> None:
         """Bound both queue count and retained audio, independent of other outputs."""
-        if max_pending < 1 or max_bytes < 1:
+        if (
+            max_pending < 1
+            or max_bytes < 1
+            or max_laps < 1
+            or not (0 < max_lap_audio_s < float("inf"))
+        ):
             raise ValueError("Playback limits must be positive")
         self._sink = sink
         self._is_current = is_current
         self._destination = destination
         self._max_pending = max_pending
         self._max_bytes = max_bytes
+        self._max_laps = max_laps
+        self._max_lap_audio_s = max_lap_audio_s
         self._pending: list[_Playback] = []
         self._active: _Playback | None = None
         self._last_priority: Priority | None = None
@@ -444,6 +492,11 @@ class PlaybackPlanner:
                 ),
             )
             self._record_superseded(superseded)
+        backlog = (
+            self._bound_lap_backlog(plan, pending)
+            if plan.priority == Priority.LAP
+            else []
+        )
         # Reserve some memory for a signal while ordinary speech is still buffered.
         limit = self._max_bytes
         if plan.priority != Priority.SIGNAL:
@@ -455,6 +508,13 @@ class PlaybackPlanner:
             size = active_size + sum(len(data) for data in plan.audio)
             size += sum(len(data) for p in pending for data in p.plan.audio)
             if len(pending) < self._max_pending and size <= limit:
+                for dropped in backlog:
+                    telemetry.record(
+                        dropped.plan.event.event_id,
+                        "output_dropped",
+                        reason="lap_backlog",
+                        destination=self._destination,
+                    )
                 return pending
             replaceable = [
                 p
@@ -479,6 +539,25 @@ class PlaybackPlanner:
                 reason="evicted",
                 destination=self._destination,
             )
+
+    def _bound_lap_backlog(
+        self, plan: CalloutPlan, pending: list[_Playback]
+    ) -> list[_Playback]:
+        """Keep recent laps without retaining many seconds of prepared old speech."""
+        laps = sorted(
+            (p for p in pending if p.plan.priority == Priority.LAP),
+            key=lambda p: p.plan.order,
+        )
+        duration_s = plan.duration_s + sum(p.plan.duration_s for p in laps)
+        dropped = []
+        while laps and (
+            len(laps) >= self._max_laps or duration_s > self._max_lap_audio_s
+        ):
+            oldest = laps.pop(0)
+            duration_s -= oldest.plan.duration_s
+            pending.remove(oldest)
+            dropped.append(oldest)
+        return dropped
 
     def _record_superseded(self, superseded: list[_Playback]) -> None:
         for item in superseded:
@@ -548,6 +627,13 @@ class PlaybackPlanner:
                     continue
                 self._active = item
                 self._last_priority = item.plan.priority
+                telemetry.record(
+                    item.plan.event.event_id,
+                    "playback_start",
+                    wait_ms=round((time.monotonic() - item.enqueued_at) * 1000, 1),
+                    duration_ms=round(item.plan.duration_s * 1000, 1),
+                    destination=self._destination,
+                )
                 try:
                     await self._sink.play(item.plan, item.cancelled)
                 except Exception:

@@ -235,9 +235,7 @@ class DenseLapBurstScenarioTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(played_counts.values()), 5)
         self.assertLess(sum(played_counts.values()), len(event_ids))
 
-    async def test_slow_output_retains_recent_complete_laps_without_blocking_ingest(
-        self,
-    ) -> None:
+    async def _slow_output_burst(self, pilot_count: int) -> list[dict]:
         """Drive real WAV durations through HTTP, speech and a blocked playback sink."""
         self.worker.audio = wav_audio(0.5)  # Three segments: 1.5s per callout.
         release = threading.Event()
@@ -250,7 +248,7 @@ class DenseLapBurstScenarioTests(unittest.IsolatedAsyncioTestCase):
 
         self.backend.play.side_effect = play
         with self.assertLogs("sendspin_service.telemetry", level="INFO") as captured:
-            for sequence in range(1, PILOT_COUNT + 1):
+            for sequence in range(1, pilot_count + 1):
                 event = self._lap_event(sequence, pilot_id=sequence)
                 response = await self.client.post("/v2/events", json=event)
                 self.assertEqual(response.status, 202)
@@ -272,21 +270,34 @@ class DenseLapBurstScenarioTests(unittest.IsolatedAsyncioTestCase):
                         json.loads(entry.getMessage())["stage"] == "output_played"
                         for entry in captured.records
                     )
-                    == 3
+                    == min(pilot_count, 5)
                 )
             )
 
-        records = [json.loads(entry.getMessage()) for entry in captured.records]
-        played = [r["event_id"] for r in records if r["stage"] == "output_played"]
-        self.assertEqual(played, [f"{self.session_id}:{n}" for n in (1, 7, 8)])
-        drops = [r for r in records if r["stage"] == "output_dropped"]
-        self.assertEqual(len(drops), 5)
-        self.assertTrue(all(r["reason"] == "lap_backlog" for r in drops))
         for call in self.backend.play.call_args_list:
             self.assertEqual(len(call.args[0]), 3)
             self.assertTrue(
                 all(clip.data == self.worker.audio for clip in call.args[0])
             )
+        return [json.loads(entry.getMessage()) for entry in captured.records]
+
+    async def test_slow_output_retains_recent_complete_laps_without_blocking_ingest(
+        self,
+    ) -> None:
+        """An actual overflow retains four pending pilots and the active callout."""
+        records = await self._slow_output_burst(PILOT_COUNT)
+        played = [r["event_id"] for r in records if r["stage"] == "output_played"]
+        self.assertEqual(played, [f"{self.session_id}:{n}" for n in (1, 5, 6, 7, 8)])
+        drops = [r for r in records if r["stage"] == "output_dropped"]
+        self.assertEqual(len(drops), 3)
+        self.assertTrue(all(r["reason"] == "lap_backlog" for r in drops))
+
+    async def test_four_different_pilots_are_all_played_in_passage_order(self) -> None:
+        """A normal four-pilot burst must not silently skip pilot two."""
+        records = await self._slow_output_burst(4)
+        played = [r["event_id"] for r in records if r["stage"] == "output_played"]
+        self.assertEqual(played, [f"{self.session_id}:{n}" for n in range(1, 5)])
+        self.assertFalse(any(r["stage"] == "output_dropped" for r in records))
 
 
 if __name__ == "__main__":

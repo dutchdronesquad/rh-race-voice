@@ -6,6 +6,8 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 ## [Unreleased]
 
+Four pilots crossing close together no longer lose the second pilot's lap callout merely because the waiting speech exceeds four seconds. Each output retains up to four waiting lap callouts in passage order; memory limits, original expiry deadlines and replacement of an older waiting lap for the same pilot still apply. Update each Sendspin playback service for this fix.
+
 Early lap speech now starts only when the voice model is actually warm. Prepared callsigns and lap numbers alone no longer trigger an early start that could leave a long model-loading pause before the time. Preparation logs report model warmth and how many heat segments are resident, including a warning if the fast path is not fully ready. These checks are internal; update the primary Sendspin service.
 
 The active heat's prepared callsigns and lap numbers now take priority in the RAM cache. Other prepared voices, pilot names and countdown phrases cannot displace them when the active heat fits within the existing memory limits. Heat changes update the preference without generating speech or deleting reusable audio. Update the primary Sendspin service for this improvement.
@@ -18,7 +20,7 @@ Laps below RotorHazard's configured minimum lap time no longer request TTS or en
 
 Lap announcements now speak the pilot's callsign before the lap number and time, falling back to the phonetic name only when the callsign is empty. Pre-cache preparation uses the same name preference. Update the RotorHazard plugin to receive this change.
 
-Busy-race speech now keeps a shorter backlog of recent laps. Each output retains at most four waiting lap callouts and normally four seconds of waiting lap speech, dropping the oldest when overloaded. A single longer callout remains complete, and new laps do not interrupt speech already playing. Newer laps also cancel preparation of the same pilot's obsolete lap, and cancelled worker requests immediately release queue space.
+Busy-race speech now keeps a shorter backlog of recent laps. Each output retains at most four waiting lap callouts, dropping the oldest when overloaded. Callouts remain complete, and new laps do not interrupt speech already playing. Newer laps also cancel preparation of the same pilot's obsolete lap, and cancelled worker requests immediately release queue space.
 
 Queued pre-cache work no longer starts between the name, lap number and time of a live announcement. New timing logs distinguish preparation and playback queue waits from the planned Sendspin start delay. Update the primary Sendspin service for synthesis changes and each playback service for its queue limit. Actual audible latency still depends on the race hardware and connected players.
 

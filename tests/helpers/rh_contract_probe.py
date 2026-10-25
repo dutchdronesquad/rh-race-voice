@@ -6,6 +6,7 @@ from gevent import monkey
 
 monkey.patch_all()
 
+import json
 import sys
 import unittest
 from contextlib import nullcontext
@@ -15,6 +16,7 @@ from unittest.mock import Mock, patch
 
 import gevent
 from flask import Flask
+from gevent.fileobject import FileObjectPosix
 
 source = Path(sys.argv.pop(1))
 sys.path[:0] = [str(source / "src/server"), str(source / "src/interface")]
@@ -95,7 +97,7 @@ class Runtime:
         config = SimpleNamespace(
             migrations=[],
             get_item=lambda section, _name: (
-                0 if section == "LOGGING" else "{m}:{s}.{d}"
+                0 if section == "LOGGING" else "{m} {s}.{d}"
             ),
         )
         self.context = SimpleNamespace(
@@ -189,5 +191,49 @@ class ContractTests(unittest.TestCase):
         wait_for(lambda: self.runtime.adapter._generation > generation)
 
 
+def publish(url: str) -> None:
+    """Serve parent-controlled race actions over the real plugin HTTP publisher."""
+    runtime = Runtime(url)
+    try:
+        runtime.startup()
+        wait_for(runtime.adapter._publisher._ready)
+        sys.stdout.write(json.dumps({"ready": True}) + "\n")
+        sys.stdout.flush()
+        with FileObjectPosix(sys.stdin, "r", close=False) as commands:
+            for line in commands:
+                command = json.loads(line)
+                action = command["action"]
+                if action == "lap":
+                    runtime.lap(
+                        command["pilot"],
+                        command.get("lap", 1),
+                        command.get("milliseconds", 12345),
+                    )
+                elif action == "finish":
+                    runtime.context.events.trigger(Evt.RACE_STOP)
+                    runtime.context.rhui.emit_phonetic_text(
+                        "The winner is Pilot 1", winner_flag=True
+                    )
+                elif action == "abort":
+                    generation = runtime.adapter._generation
+                    runtime.context.events.trigger(Evt.RACE_ABORT)
+                    wait_for(
+                        lambda previous=generation: (
+                            runtime.adapter._generation > previous
+                        )
+                    )
+                else:
+                    message = f"Unknown test action: {action}"
+                    raise ValueError(message)
+                wait_for(lambda: not runtime.adapter._publisher._pending)
+                sys.stdout.write(json.dumps({"action": action}) + "\n")
+                sys.stdout.flush()
+    finally:
+        runtime.adapter.close()
+
+
 if __name__ == "__main__":
-    unittest.main()
+    if len(sys.argv) > 1 and sys.argv[1] == "--publish":
+        publish(sys.argv[2])
+    else:
+        unittest.main()

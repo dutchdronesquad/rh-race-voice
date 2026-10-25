@@ -44,10 +44,10 @@ jobs:
           version: "latest"
           python-version: ${{ env.DEFAULT_PYTHON }}
           enable-cache: true
-      - name: Test actual RH APIs and emitted payloads
+      - name: Test actual RH APIs and end-to-end Sendspin delivery
         run: >-
           uv run --locked --group rh-contract --extra sendspin-service --no-dev
-          python -m unittest tests.test_rh_contract -v
+          python -m unittest tests.test_rh_contract tests.test_rh_sendspin_chain -v
 
   service:
     name: Service regression tests

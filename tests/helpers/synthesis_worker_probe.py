@@ -36,10 +36,13 @@ def main() -> None:
             )
         if data.get("mock_audio") and data.get("operation") == "synthesize":
             root = Path(sys.argv[1])
-            path = root / "probe.wav"
+            path = root / f"probe-{count}.wav"
             with wave.open(str(path), "wb") as wav:
-                wav.setparams((1, 2, 8000, 0, "NONE", "not compressed"))
-                wav.writeframes(count.to_bytes(2, "little") * 80)
+                rate = data.get("sample_rate", 8000)
+                wav.setparams((1, 2, rate, 0, "NONE", "not compressed"))
+                marker = data.get("pcm_marker", count)
+                frames = data.get("frames", 80)
+                wav.writeframes(marker.to_bytes(2, "little") * frames)
             reply["result"].update(
                 path=str(path),
                 cache_hit=False,

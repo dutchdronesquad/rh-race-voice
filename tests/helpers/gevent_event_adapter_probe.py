@@ -272,6 +272,90 @@ class AdapterTests(unittest.TestCase):
         )
         self.assertFalse(self.rh.db.option_set.call_args_list == [])
 
+    def test_lap_prefers_callsign_and_falls_back_to_phonetic(self) -> None:
+        """Use the callsign consistently, including whitespace-only fallback cases."""
+        self.connect()
+        cases = (
+            ("Alpha", "Alfa", "Alpha"),
+            ("Alpha", None, "Alpha"),
+            ("Alpha", "  ", "Alpha"),
+            (None, "Alfa", "Alfa"),
+            ("", "Alfa", "Alfa"),
+            ("  ", "Alfa", "Alfa"),
+            (None, None, ""),
+        )
+        for index, (callsign, name, expected) in enumerate(cases, start=1):
+            with self.subTest(callsign=callsign, name=name):
+                payload = {
+                    "pilot_id": 7,
+                    "pilot": name,
+                    "callsign": callsign,
+                    "lap": index,
+                    "phonetic": "twenty seconds",
+                }
+                self.assertIs(self.adapter._lap(payload), payload)
+                self.assertEqual(payload["pilot"], name)
+                wait_for(lambda: len(self.service.events) == index)  # noqa: B023
+                self.assertEqual(
+                    self.service.events[-1]["payload"]["pilot_name"],
+                    expected,
+                )
+
+    def test_precache_roster_uses_same_callsign_fallback_as_live_laps(self) -> None:
+        """Prepare the preferred callsign even when a phonetic name is also set."""
+        self.connect()
+        self.assertEqual(self.service.state["pilots"][0]["spoken_name"], "Alpha")
+        self.pilot.callsign = "   "
+        self.adapter._refresh()
+        wait_for(self.adapter._publisher._ready)
+        self.assertEqual(self.service.state["pilots"][0]["spoken_name"], "Alfa")
+
+    def test_laps_below_current_minimum_never_reach_publisher(self) -> None:
+        """Use raw milliseconds, include the boundary, and pick up setting changes."""
+        self.connect()
+        cases = (
+            ("15", 14999.999, False),
+            ("15", 15000, True),
+            ("15", 15000.001, True),
+            (15, 12000, False),
+            (10, 12000, True),
+            (0, 250, True),
+            ("", 12000, True),
+            (None, 12000, True),
+            (15, None, True),
+        )
+        for minimum, raw_time, should_publish in cases:
+            with self.subTest(minimum=minimum, raw_time=raw_time):
+                self.options["MinLapSec"] = minimum
+                payload = {
+                    "pilot_id": 7,
+                    "callsign": "Alpha",
+                    "lap": 2,
+                    "raw_time": raw_time,
+                    "phonetic": "fifteen seconds",
+                }
+                original = dict(payload)
+                with patch.object(
+                    self.adapter._publisher, "submit", return_value=True
+                ) as submit:
+                    self.assertIs(self.adapter._lap(payload), payload)
+                self.assertEqual(payload, original)
+                self.assertEqual(submit.call_count, int(should_publish))
+
+    def test_holeshot_and_absent_lap_number_stay_silent(self) -> None:
+        """RH may omit the lap number after a pilot finishes; never emit a lap then."""
+        self.connect()
+        for lap in (0, None):
+            with (
+                self.subTest(lap=lap),
+                patch.object(
+                    self.adapter._publisher, "submit", return_value=True
+                ) as submit,
+            ):
+                payload = {"lap": lap, "raw_time": 20000, "phonetic": "twenty seconds"}
+                self.assertIs(self.adapter._lap(payload), payload)
+                submit.assert_not_called()
+
     def test_stop_bypasses_blocked_audio_and_keeps_hub_responsive(self) -> None:
         """A delayed event reply cannot hold the latest control snapshot hostage."""
         self.connect()
@@ -912,13 +996,30 @@ class AdapterTests(unittest.TestCase):
 
 def integration(url: str) -> None:
     """Use the actual aiohttp service supplied by the parent test process."""
-    adapter, _rh, _options, _pilot = make_adapter(url)
+    adapter, _rh, options, _pilot = make_adapter(url)
+    options["MinLapSec"] = "15"
     channel = JsonChannel("")
     try:
         adapter._startup()
         wait_for(adapter._publisher._ready)
         adapter._lap(
-            {"pilot_id": 7, "pilot": "Alfa", "lap": 3, "phonetic": "twenty seconds"}
+            {
+                "pilot_id": 8,
+                "callsign": "Too short",
+                "lap": 2,
+                "raw_time": 14999.999,
+                "phonetic": "under minimum",
+            }
+        )
+        adapter._lap(
+            {
+                "pilot_id": 7,
+                "pilot": "",
+                "callsign": "Alpha",
+                "lap": 3,
+                "raw_time": 20000,
+                "phonetic": "twenty seconds",
+            }
         )
         wait_for(lambda: channel.request(url, "GET", "/test/playback")[1]["count"] >= 1)
         adapter._staged({"pi_starts_at_s": time.monotonic() + 1})

@@ -159,10 +159,14 @@ class RaceEventAdapter:
                 continue
             pilot = self._rhapi.db.pilot_by_id(slot.pilot_id)
             if pilot is not None:
+                spoken_name = (
+                    str(pilot.callsign or "").strip()
+                    or str(pilot.phonetic or "").strip()
+                )
                 pilots[pilot.id] = {
                     "pilot_id": pilot.id,
                     "callsign": str(pilot.callsign or pilot.id)[:128],
-                    "spoken_name": str(pilot.phonetic or pilot.callsign or "")[:256],
+                    "spoken_name": spoken_name[:256],
                     "node": slot.node_index,
                 }
         if len(pilots) > 256:
@@ -252,17 +256,33 @@ class RaceEventAdapter:
         )
 
     def _lap(self, payload: dict) -> dict:
-        if payload.get("lap", 0) > 0:
+        lap = payload.get("lap")
+        if (
+            type(lap) is int
+            and lap > 0
+            and not self._lap_below_minimum(payload.get("raw_time"))
+        ):
             self._emit(
                 "lap",
                 {
                     "pilot_id": payload.get("pilot_id"),
-                    "pilot_name": str(payload.get("pilot") or ""),
+                    "pilot_name": str(payload.get("callsign") or "").strip()
+                    or str(payload.get("pilot") or "").strip(),
                     "lap": payload["lap"],
                     "text": str(payload.get("phonetic") or ""),
                 },
             )
         return payload
+
+    def _lap_below_minimum(self, raw_time: Any) -> bool:
+        """Compare RH's unrounded milliseconds with its current minimum seconds."""
+        if not _is_valid_time(raw_time):
+            return False
+        try:
+            minimum_ms = float(self._option("MinLapSec", 0)) * 1000
+        except (TypeError, ValueError):
+            return False
+        return math.isfinite(minimum_ms) and minimum_ms > 0 and raw_time < minimum_ms
 
     def _voice(self, payload: dict) -> dict:
         if isinstance(payload.get("text"), str) and payload["text"].strip():

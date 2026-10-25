@@ -72,8 +72,14 @@ class EventAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(backend.play.call_count, 2)
         clips = backend.play.call_args_list[0].args[0]
         self.assertEqual(len(clips), 3)
-        self.assertEqual(worker.calls[0]["text"], "Alfa,")
+        self.assertEqual(worker.calls[0]["text"], "Alpha,")
         self.assertEqual(worker.calls[2]["text"], "twenty seconds")
+        self.assertFalse(
+            any(
+                call.get("text") in {"Too short,", "under minimum"}
+                for call in worker.calls
+            )
+        )
         self.assertGreater(len(worker.calls), 3)
         self.assertEqual(worker.calls[-1]["operation"], "clear")
         self.assertTrue(

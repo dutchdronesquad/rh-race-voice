@@ -198,9 +198,11 @@ Race Voice hooks into two RotorHazard filter events and generates the following 
 
 Lap 0 (first crossing without a completed lap) does not produce a callout. Winner callouts are generated from the RotorHazard phonetic text filter, which fires when RotorHazard determines the race winner.
 
+Lap announcements below RotorHazard's **Minimum Lap Time** (`MinLapSec`) are suppressed before they reach the service or its synthesis/playback queues. Race Voice compares the unrounded lap time, so a lap exactly at the minimum is still announced. A minimum of `0` disables this check. Changes to the minimum apply on the next passage. This only suppresses the spoken lap announcement; RotorHazard's own minimum-lap behavior still determines how the crossing affects race results.
+
 Countdown callouts are generated when a race is scheduled via the RotorHazard schedule panel. They are cancelled automatically if the schedule is replaced or cancelled before the race starts.
 
-The callsign used in a lap callout is the pilot's **phonetic name** if set, otherwise the **callsign**. Set phonetic names in the RotorHazard pilot list for better pronunciation with the selected voice model.
+Lap callouts prefer the pilot's **callsign**, falling back to the **phonetic name** when the callsign is empty. Pre-cache preparation uses the same preference. Whitespace-only names count as empty.
 
 ## Browser Player
 

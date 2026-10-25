@@ -6,6 +6,8 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 ## [Unreleased]
 
+Cloud listeners can disconnect and reconnect during an audio check and continue at the current position, even when they were the only listener. Finished, stopped or cancelled audio is not replayed. Update the cloud Sendspin service to receive this fix.
+
 ## [2.0.2] - 2026-10-25
 
 ### Clearer cache feedback

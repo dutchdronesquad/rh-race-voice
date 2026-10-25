@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import logging
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import aiohttp
@@ -60,7 +61,9 @@ class RaceRelaySink:
         self._session: aiohttp.ClientSession | None = None
         self._clock_measured_at: float | None = None
 
-    async def play(self, plan: CalloutPlan, cancelled: threading.Event) -> None:
+    async def play(  # noqa: C901
+        self, plan: CalloutPlan, cancelled: threading.Event
+    ) -> None:
         """Upload cache-miss audio, then forward the event by content reference."""
         event_id = plan.event.event_id
         if cancelled.is_set() or plan.deadline <= time.monotonic():
@@ -71,6 +74,10 @@ class RaceRelaySink:
                 destination=self._destination,
             )
             return
+        if plan.completion is not None:
+            plan = await self._complete_plan(plan)
+            if plan is None:
+                return
         for attempt in range(_MAX_ATTEMPTS):
             try:
                 await self._ensure_clock()
@@ -117,6 +124,22 @@ class RaceRelaySink:
                     event_id, "output_played", destination=self._destination
                 )
                 return
+
+    async def _complete_plan(self, plan: CalloutPlan) -> CalloutPlan | None:
+        """Keep relay/1 delivery atomic while local playback can start its prefix."""
+        try:
+            audio = await plan.complete_audio()
+        except TimeoutError:
+            audio = ()
+        if audio:
+            return replace(plan, audio=audio, completion=None)
+        telemetry.record(
+            plan.event.event_id,
+            "output_dropped",
+            reason="synthesis_incomplete",
+            destination=self._destination,
+        )
+        return None
 
     async def push_context(self, context: Context) -> None:
         """Tell the relay which context is current, so it can reject stale events."""

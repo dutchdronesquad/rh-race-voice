@@ -16,6 +16,8 @@ Queued pre-cache work no longer starts between the name, lap number and time of 
 
 **Prepare pre-cache** now also warms the voice model when every WAV file already exists. This moves model initialization out of the first new lap announcement. Reusable names, lap numbers and countdown phrases are retained in a bounded RAM cache, avoiding repeated worker requests and WAV reads. The voice engine also spends less CPU time spinning between callouts. These efficiency changes require an update of the primary Sendspin service.
 
+Prepared callsigns and lap numbers can now start local playback while the new lap time is still being generated. The time is appended within the same announcement, without another pilot speaking in between. Run **Prepare pre-cache** before racing to enable this fast path after a restart. Player synchronization and existing speech still affect audible latency. Cloud relay continues to receive each complete announcement.
+
 Cloud listeners can disconnect and reconnect during an audio check and continue at the current position, even when they were the only listener. Finished, stopped or cancelled audio is not replayed. Update the cloud Sendspin service to receive this fix.
 
 ## [2.0.2] - 2026-10-25

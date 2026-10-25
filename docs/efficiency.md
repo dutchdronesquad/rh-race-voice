@@ -46,10 +46,22 @@ uv run --extra sendspin-service python -m tools.benchmark_race_voice \
 
 The benchmark creates temporary cache directories and symlinks the supplied ONNX/config files. It compares the same worker with RAM reuse disabled and enabled. Each new time is unique within that run, so generation cannot silently turn into a disk-cache hit. It also starts fresh workers against existing reusable WAVs, with and without model warmup, and measures the first new lap time. Results include environment versions and distinguish cache lookup time, worker-command count, setup time and lap preparation time. Run it separately from tests or other CPU-intensive work. Native timing is noisy; fewer worker commands are a direct work reduction, not proof of an equal reduction in total latency.
 
+## First audio availability with prepared laps
+
+A follow-up run on the same host/model exercised thirty unique new lap times with the early local prefix path. Raw results are in [the progressive-lap measurement artifact](measurements/2026-10-25-progressive-laps.json). The disk-only variant had no early prefixes; the RAM variant exposed its prefix before the time finished on all thirty laps.
+
+| Work measured | Median | 95th percentile |
+| --- | ---: | ---: |
+| First audio ready, disk-only complete preparation | 217.8 ms | 235.3 ms |
+| First audio ready, prepared RAM prefix | 0.734 ms | 3.885 ms |
+| Complete announcement ready, RAM prefix path | 229.9 ms | 311.8 ms |
+
+This removes waiting for new time synthesis from the first-audio path. It does not speed up that synthesis: the complete-announcement measurements varied, and no throughput improvement is established here. These figures stop at the speech engine's audio-ready callback; they exclude event delivery, output queueing, Sendspin scheduling and player buffering. Deterministic tests separately verify that local backend submission happens while time synthesis is blocked, that other pilots cannot interleave, and that stop, signal, failure and expiry paths discard the continuation.
+
 ## Remaining limits
 
 Initial subprocess imports and model setup took about 2.4 seconds in the exploratory runs. A new time phrase took about 0.22 seconds on this host. RAM reuse removes repeated file/pipe work; it does not remove the neural synthesis required for a new lap time. The model must still be prepared after a service restart if first-lap responsiveness matters.
 
 Speech duration also limits throughput. For example, three-second announcements allow at most twenty complete announcements per minute even if synthesis takes no time. If crossings exceed that rate, shorter announcements or deliberately dropping older speech are necessary. The queue limits retain recent callouts and preserve the full active announcement; they cannot make overlapping speech intelligible.
 
-A possible later latency improvement is starting a cached name/number while the time is being generated. That needs a reserved callout slot, protection against interleaving pilots, stop/expiry handling and audible validation of stalls. The current implementation still prepares each complete announcement before playback. Real race traces and player diagnostics are needed to distinguish remaining synthesis delay from playback backlog and player buffering.
+The local playback path now starts a resident cached name/number prefix while the time is being generated. It reserves the same callout slot for the time, shields shared synthesis from individual output cancellation, and retains stop/expiry handling. Cold or disk-only prefixes still wait for complete preparation; cloud relay also waits for the complete announcement. The benchmark reports `first_audio_ready` separately from complete preparation, and `early_cached_prefixes` counts how often this path was exercised. This measures availability to playback, not actual sound. Sendspin normally schedules at least 250 ms ahead for player synchronization, and a slow or failed time synthesis can still cause a pause or incomplete spoken callout. Real race traces, player diagnostics and audible validation are needed to establish gate-to-speaker latency.

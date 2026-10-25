@@ -55,7 +55,7 @@ class SpeechEngine:
         """Use the same localized phrases as manual countdown preparation."""
         return _locale(model)["race_schedule"][str(seconds)]
 
-    async def synthesize(  # noqa: PLR0913
+    async def synthesize(  # noqa: C901, PLR0913
         self,
         event: RaceEvent,
         settings: dict,
@@ -64,10 +64,11 @@ class SpeechEngine:
         priority: int,
         is_current: Callable[[], bool],
         on_segment: Callable[[dict], None] | None = None,
+        on_prefix: Callable[[tuple[bytes, ...]], None] | None = None,
     ) -> tuple[bytes, ...]:
         """Do not return partial/obsolete speech after expiry, stop or heat changes."""
 
-        async def generate(segment: CalloutSegment) -> bytes | None:
+        async def generate(segment: CalloutSegment) -> dict | None:
             if not is_current() or time.monotonic() >= deadline:
                 return None
             result = await self.worker.request(
@@ -79,15 +80,33 @@ class SpeechEngine:
                 on_segment(result)
             if not is_current() or time.monotonic() >= deadline:
                 return None
-            return result["audio"]
+            return result
 
         # Queue the complete callout before awaiting its first segment. The
         # worker still runs one operation at a time, but queued background
         # preparation can no longer slip between these live segments.
-        tasks = [
-            asyncio.create_task(generate(segment))
-            for segment in self.segments(event, settings["model"])
-        ]
+        segments = self.segments(event, settings["model"])
+        tasks = [asyncio.create_task(generate(segment)) for segment in segments]
+
+        async def publish_prefix() -> None:
+            prefix = await asyncio.gather(*tasks[:-1])
+            if (
+                on_prefix is not None
+                and not tasks[-1].done()
+                and is_current()
+                and time.monotonic() < deadline
+                and all(result and result.get("memory_cache_hit") for result in prefix)
+            ):
+                on_prefix(tuple(result["audio"] for result in prefix))
+
+        publisher = (
+            asyncio.create_task(publish_prefix())
+            if on_prefix is not None
+            and event.kind == EventKind.LAP
+            and len(tasks) > 1
+            and segments[-1].subdir == "tmp"
+            else None
+        )
         try:
             audio = await asyncio.gather(*tasks)
         finally:
@@ -95,12 +114,15 @@ class SpeechEngine:
             # every subscriber so failed/obsolete callouts leave no queued work.
             for task in tasks:
                 task.cancel()
+            if publisher is not None:
+                publisher.cancel()
+                await asyncio.gather(publisher, return_exceptions=True)
             await asyncio.gather(*tasks, return_exceptions=True)
         if not is_current() or time.monotonic() >= deadline:
             return ()
         if any(segment is None for segment in audio):
             return ()
-        return tuple(audio)
+        return tuple(result["audio"] for result in audio)
 
     async def prepare(
         self,

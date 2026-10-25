@@ -32,8 +32,36 @@ class ServiceSpeechTests(unittest.IsolatedAsyncioTestCase):
             "cache_hit": True,
             "ready": True,
         }
+
+        async def status(_model: str, requests: list[dict]) -> dict:
+            return {"model_warm": True, "resident": [True] * len(requests)}
+
+        self.worker.audio_status.side_effect = status
         self.engine = SpeechEngine(self.worker)
         self.event = RaceEvent.parse(event_payload())
+
+    async def test_explicit_preparation_logs_actual_residency_without_more_tts(
+        self,
+    ) -> None:
+        """Internal diagnostics report ready and capacity-limited cache states."""
+        for resident, level in ((True, "INFO"), (False, "WARNING")):
+
+            async def status(_model: str, requests: list[dict], ready=resident) -> dict:  # noqa: ANN001
+                return {"model_warm": True, "resident": [ready] * len(requests)}
+
+            self.worker.audio_status.side_effect = status
+            self.worker.request.reset_mock()
+            with self.assertLogs(
+                "sendspin_service.race.speech", level=level
+            ) as captured:
+                progress = [
+                    p
+                    async for p in self.engine.prepare(
+                        SETTINGS, ["Klaas"], is_current=lambda: True
+                    )
+                ]
+            self.assertIn(f"early_lap_speech_ready={resident}", captured.output[-1])
+            self.assertEqual(self.worker.request.await_count, progress[-1]["total"] + 1)
 
     async def test_lap_retains_name_localized_number_and_phonetic_time(self) -> None:
         """Routing identity is independent from the spoken-name segment."""

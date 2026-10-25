@@ -6,6 +6,8 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 ## [Unreleased]
 
+Early lap speech now starts only when the voice model is actually warm. Prepared callsigns and lap numbers alone no longer trigger an early start that could leave a long model-loading pause before the time. Preparation logs report model warmth and how many heat segments are resident, including a warning if the fast path is not fully ready. These checks are internal; update the primary Sendspin service.
+
 The active heat's prepared callsigns and lap numbers now take priority in the RAM cache. Other prepared voices, pilot names and countdown phrases cannot displace them when the active heat fits within the existing memory limits. Heat changes update the preference without generating speech or deleting reusable audio. Update the primary Sendspin service for this improvement.
 
 A normal race finish now lets the winner and final callouts complete instead of clearing all audio at `RACE_STOP`. The stream returns to idle when its queued audio finishes. **Stop audio**, race aborts and heat changes still clear audio, and starting another race also clears the previous race's speech even when the heat stays the same.

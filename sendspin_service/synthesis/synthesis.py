@@ -82,6 +82,7 @@ class SynthesisWorker:
         self._audio_cache_bytes = 0
         self._cache_epoch = 0
         self._preferred_audio: set[str] = set()
+        self._warm_model: tuple[str, tuple] | None = None
 
     def prioritize_audio(self, requests: list[dict]) -> None:
         """Prefer the active heat's reusable segments without generating any audio."""
@@ -89,6 +90,38 @@ class SynthesisWorker:
             json.dumps(request, sort_keys=True, allow_nan=False, ensure_ascii=False)
             for request in requests
         }
+
+    async def audio_status(self, model: str, requests: list[dict]) -> dict:
+        """Inspect actual residency and model warmth without starting the worker."""
+        epoch = self._cache_epoch
+        signature = await asyncio.to_thread(self._model_signature, model)
+        resident = []
+        for request in requests:
+            key = json.dumps(
+                request, sort_keys=True, allow_nan=False, ensure_ascii=False
+            )
+            cached = self._audio_cache.get(key)
+            resident.append(
+                not self._closed
+                and epoch == self._cache_epoch
+                and signature is not None
+                and cached is not None
+                and cached.model == model
+                and cached.signature == signature
+            )
+        return {
+            "model_warm": self._model_is_warm(model, signature),
+            "resident": resident,
+        }
+
+    def _model_is_warm(self, model: str, signature: tuple | None) -> bool:
+        return (
+            not self._closed
+            and self._process is not None
+            and self._process.returncode is None
+            and signature is not None
+            and self._warm_model == (model, signature)
+        )
 
     async def request(
         self,
@@ -182,6 +215,7 @@ class SynthesisWorker:
                 "audio": cached.audio,
                 "cache_hit": True,
                 "memory_cache_hit": True,
+                "model_warm": self._model_is_warm(cached.model, signature),
                 "duration_ms": 0,
             }
         del self._audio_cache[key]
@@ -302,7 +336,20 @@ class SynthesisWorker:
                 if not job.waiters:
                     job.result.cancel()
                     continue
+                payload = json.loads(job.request)
+                if payload.get("operation") in {"synthesize", "warmup"} and (
+                    self._warm_model is not None
+                    and self._warm_model[0] != payload.get("model")
+                ):
+                    self._warm_model = None
                 result = await self._execute(job.request)
+                if payload.get("operation") in {"synthesize", "warmup"}:
+                    signature = result.get("model_signature")
+                    self._warm_model = (
+                        (payload["model"], tuple(tuple(s) for s in signature))
+                        if result.get("model_ready") is True and signature is not None
+                        else None
+                    )
                 job.result.set_result(result)
             except asyncio.CancelledError:
                 job.result.set_exception(
@@ -373,6 +420,7 @@ class SynthesisWorker:
         return audio
 
     async def _stop_process(self) -> None:
+        self._warm_model = None
         self._invalidate_audio()
         process, self._process = self._process, None
         if process is None:

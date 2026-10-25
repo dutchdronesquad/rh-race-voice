@@ -133,6 +133,43 @@ class ReusableAudioTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs((await self.request())["audio"], first["audio"])
         self.assertLessEqual(self.worker._audio_cache_bytes, 500)
 
+    async def test_readiness_never_starts_worker_and_distinguishes_cold_cached_audio(
+        self,
+    ) -> None:
+        """A cached WAV is not evidence that an inference session is warm."""
+        status = await self.worker.audio_status(REQUEST["model"], [REQUEST])
+        self.assertEqual(status, {"model_warm": False, "resident": [False]})
+        self.assertIsNone(self.worker._process)
+        await self.request()
+        status = await self.worker.audio_status(REQUEST["model"], [REQUEST])
+        self.assertEqual(status, {"model_warm": False, "resident": [True]})
+        await self.request(operation="warmup")
+        status = await self.worker.audio_status(REQUEST["model"], [REQUEST])
+        self.assertEqual(status, {"model_warm": True, "resident": [True]})
+        await self.request(operation="clear", subdir="")
+        status = await self.worker.audio_status(REQUEST["model"], [REQUEST])
+        self.assertEqual(status, {"model_warm": True, "resident": [False]})
+
+    async def test_model_change_and_worker_failure_remove_ready_status(self) -> None:
+        """Model replacement and failed workers cannot leave a ready badge."""
+        await self.request(operation="warmup")
+        await self.request()
+        self.model.write_bytes(b"replaced model contents")
+        status = await self.worker.audio_status(REQUEST["model"], [REQUEST])
+        self.assertEqual(status, {"model_warm": False, "resident": [False]})
+        with self.assertRaises(WorkerUnavailableError):  # noqa: PT027
+            await self.worker.request({"crash": True}, deadline=time.monotonic() + 5)
+        status = await self.worker.audio_status(REQUEST["model"], [REQUEST])
+        self.assertEqual(status, {"model_warm": False, "resident": [False]})
+
+    async def test_idle_worker_exit_cannot_leave_the_model_marked_warm(self) -> None:
+        """Notice a dead idle subprocess even before another request discovers it."""
+        await self.request(operation="warmup")
+        self.worker._process.terminate()
+        await self.worker._process.wait()
+        status = await self.worker.audio_status(REQUEST["model"], [REQUEST])
+        self.assertFalse(status["model_warm"])
+
     async def test_full_protected_cache_does_not_admit_background_entries(self) -> None:
         """Even a more recent non-heat entry loses to both protected entries."""
         self.worker.prioritize_audio([REQUEST, {**REQUEST, "text": "Bravo,"}])

@@ -141,6 +141,7 @@ class RaceIngest:
             for name, destination in self._destinations.items()
         }
         speech = SpeechEngine(worker)
+        self._speech = speech
         self._cache = CacheCommands(speech, self._clear)
         self._preparation = PreparationPlanner(
             speech,
@@ -218,6 +219,7 @@ class RaceIngest:
             if self._state is not None:
                 self._cache.clear_temporary(self._state["voice"])
             self._state = None
+            self._worker.prioritize_audio([])
             self._state_json = ""
             self._clock = self._probe = None
         if not retry or self._blocked:
@@ -261,6 +263,10 @@ class RaceIngest:
             raise web.HTTPConflict(reason=outcome.value)
         self._state = json.loads(encoded)
         self._state_json = encoded
+        self._speech.prioritize_heat(
+            self._state["voice"],
+            [p["spoken_name"] or p["callsign"] for p in self._state["pilots"]],
+        )
         if old != context:
             self._cache.cancel()
         if old is not None and (

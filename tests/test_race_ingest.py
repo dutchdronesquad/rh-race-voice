@@ -52,6 +52,11 @@ class Worker:
         self.calls = []
         self.closed = False
         self._lock = asyncio.Lock()
+        self.preferred = []
+
+    def prioritize_audio(self, requests: list[dict]) -> None:
+        """Record current heat cache policy independently of synthesis."""
+        self.preferred = requests
 
     async def request(self, payload: dict, **_kwargs: object) -> dict:
         """Simulate the supervisor boundary without loading a model in HTTP tests."""
@@ -176,6 +181,29 @@ class RaceIngestTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(deadline, event["expires_at"] + 0.1)
         self.assertIsNone(target)
         self.assertEqual(volume, 1)
+
+    async def test_snapshot_prioritizes_heat_audio_without_synthesis(self) -> None:
+        """Roster and voice changes replace preference without a pre-cache job."""
+        self.snapshot["pilots"] = [
+            {"pilot_id": 7, "callsign": "Alpha", "spoken_name": "Alpha"}
+        ]
+        self.snapshot["context"]["revision"] += 1
+        response = await self.client.put("/v2/state", json=self.snapshot)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            [request["text"] for request in self.worker.preferred],
+            [*(f"Lap {number}" for number in range(1, 7)), "Alpha,"],
+        )
+        self.assertEqual(self.worker.calls, [])
+        self.snapshot["pilots"][0]["spoken_name"] = "Bravo"
+        self.snapshot["voice"]["speed"] = 1.2
+        self.snapshot["context"]["revision"] += 1
+        self.snapshot["context"]["generation"] += 1
+        response = await self.client.put("/v2/state", json=self.snapshot)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(self.worker.preferred[-1]["text"], "Bravo,")
+        self.assertTrue(all(p["speed"] == 1.2 for p in self.worker.preferred))
+        self.assertEqual(self.worker.calls, [])
 
     async def test_tone_bypasses_blocked_lap_synthesis(self) -> None:
         """A beep is sent while Piper is still preparing a lap."""

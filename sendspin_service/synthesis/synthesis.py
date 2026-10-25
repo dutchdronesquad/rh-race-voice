@@ -81,6 +81,14 @@ class SynthesisWorker:
         self._audio_cache: OrderedDict[str, _CachedAudio] = OrderedDict()
         self._audio_cache_bytes = 0
         self._cache_epoch = 0
+        self._preferred_audio: set[str] = set()
+
+    def prioritize_audio(self, requests: list[dict]) -> None:
+        """Prefer the active heat's reusable segments without generating any audio."""
+        self._preferred_audio = {
+            json.dumps(request, sort_keys=True, allow_nan=False, ensure_ascii=False)
+            for request in requests
+        }
 
     async def request(
         self,
@@ -223,7 +231,16 @@ class SynthesisWorker:
             len(self._audio_cache) >= self._max_cache_entries
             or self._audio_cache_bytes + len(audio) > self._max_cache_bytes
         ):
-            _, evicted = self._audio_cache.popitem(last=False)
+            victim = next(
+                (key for key in self._audio_cache if key not in self._preferred_audio),
+                None,
+            )
+            if victim is None:
+                if key not in self._preferred_audio:
+                    return
+                # A heat larger than the budget still obeys the hard bounds.
+                victim = next(iter(self._audio_cache))
+            evicted = self._audio_cache.pop(victim)
             self._audio_cache_bytes -= len(evicted.audio)
         self._audio_cache[key] = _CachedAudio(model, signature, audio)
         self._audio_cache_bytes += len(audio)

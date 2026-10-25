@@ -319,6 +319,9 @@ class RaceRelayFanOutTests(unittest.IsolatedAsyncioTestCase):
 class _Worker:
     """Unused synthesis worker double; these tests submit CalloutPlans directly."""
 
+    def prioritize_audio(self, _requests: list[dict]) -> None:
+        """No synthesis or cache exists in this routing test double."""
+
     async def request(self, payload: dict, **_kwargs: object) -> dict:
         raise NotImplementedError
 

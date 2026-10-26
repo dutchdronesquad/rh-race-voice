@@ -21,7 +21,7 @@ sendspin-service = [
 [dependency-groups]
 rh-contract = [
   "flask==3.1.*",
-  "flask-socketio==5.6.*",
+  "flask-socketio==5.7.*",
   "sqlalchemy==2.0.*",
   "requests==2.34.*",
   "gevent-websocket==0.10.*",

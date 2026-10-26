@@ -22,7 +22,7 @@ sendspin-service = [
 rh-contract = [
   "flask==3.1.*",
   "flask-socketio==5.7.*",
-  "sqlalchemy==2.0.*",
+  "sqlalchemy==2.1.*",
   "requests==2.34.*",
   "gevent-websocket==0.10.*",
   "pyserial==3.5.*",

@@ -8,8 +8,15 @@ import json
 import math
 import sys
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from custom_plugins.race_voice.const import VOICE_MODELS
+
+_REUSABLE_SUBDIRS = frozenset(
+    {"precache/pilots", "precache/laps", "precache/clock", "precache/schedule"}
+)
 
 
 class WorkerUnavailableError(RuntimeError):
@@ -28,12 +35,21 @@ class _Job:
     request: bytes = field(compare=False)
     result: asyncio.Future = field(compare=False)
     waiters: int = field(default=0, compare=False)
+    running: bool = field(default=False, compare=False)
+    cache_epoch: int = field(default=0, compare=False)
+
+
+@dataclass(frozen=True)
+class _CachedAudio:
+    model: str
+    signature: tuple
+    audio: bytes
 
 
 class SynthesisWorker:
     """Share identical in-flight jobs and keep blocking work outside asyncio."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         root: Path,
         *,
@@ -41,10 +57,14 @@ class SynthesisWorker:
         max_waiters: int = 64,
         operation_timeout: float = 120,
         worker_module: str = "sendspin_service.synthesis.synthesis_worker",
+        max_cache_bytes: int = 8 * 1024 * 1024,
+        max_cache_entries: int = 128,
     ) -> None:
         """Configure a worker; construction does not load a model or spawn a child."""
         if max_pending < 1 or max_waiters < 1 or operation_timeout <= 0:
             raise ValueError("Worker limits must be positive")
+        if max_cache_bytes < 0 or max_cache_entries < 1:
+            raise ValueError("Audio cache limits must be nonnegative/positive")
         self._root = root.resolve()
         self._max_waiters = max_waiters
         self._timeout = operation_timeout
@@ -56,6 +76,52 @@ class SynthesisWorker:
         self._order = 0
         self._waiters = 0
         self._closed = False
+        self._max_cache_bytes = max_cache_bytes
+        self._max_cache_entries = max_cache_entries
+        self._audio_cache: OrderedDict[str, _CachedAudio] = OrderedDict()
+        self._audio_cache_bytes = 0
+        self._cache_epoch = 0
+        self._preferred_audio: set[str] = set()
+        self._warm_model: tuple[str, tuple] | None = None
+
+    def prioritize_audio(self, requests: list[dict]) -> None:
+        """Prefer the active heat's reusable segments without generating any audio."""
+        self._preferred_audio = {
+            json.dumps(request, sort_keys=True, allow_nan=False, ensure_ascii=False)
+            for request in requests
+        }
+
+    async def audio_status(self, model: str, requests: list[dict]) -> dict:
+        """Inspect actual residency and model warmth without starting the worker."""
+        epoch = self._cache_epoch
+        signature = await asyncio.to_thread(self._model_signature, model)
+        resident = []
+        for request in requests:
+            key = json.dumps(
+                request, sort_keys=True, allow_nan=False, ensure_ascii=False
+            )
+            cached = self._audio_cache.get(key)
+            resident.append(
+                not self._closed
+                and epoch == self._cache_epoch
+                and signature is not None
+                and cached is not None
+                and cached.model == model
+                and cached.signature == signature
+            )
+        return {
+            "model_warm": self._model_is_warm(model, signature),
+            "resident": resident,
+        }
+
+    def _model_is_warm(self, model: str, signature: tuple | None) -> bool:
+        return (
+            not self._closed
+            and self._process is not None
+            and self._process.returncode is None
+            and signature is not None
+            and self._warm_model == (model, signature)
+        )
 
     async def request(
         self,
@@ -75,6 +141,25 @@ class SynthesisWorker:
         encoded = (key + "\n").encode()
         if len(encoded) > 32_768:
             raise ValueError("Synthesis request is too large")
+        if payload.get("operation") == "clear" and not payload.get("subdir"):
+            self._invalidate_audio(payload.get("model"))
+        if key in self._audio_cache:
+            cached = await self._cached_result(key, deadline)
+            if cached is not None:
+                return cached
+        return await self._await_job(
+            payload, key, encoded, deadline=deadline, priority=priority
+        )
+
+    async def _await_job(
+        self,
+        payload: dict,
+        key: str,
+        encoded: bytes,
+        *,
+        deadline: float,
+        priority: int,
+    ) -> dict:
         job = self._jobs.get(key)
         if job is None:
             if self._queue.full():
@@ -83,7 +168,14 @@ class SynthesisWorker:
             future = asyncio.get_running_loop().create_future()
             # A cancelled/expired caller may leave no observer for a worker failure.
             future.add_done_callback(_observe_failure)
-            job = _Job(priority, self._order, key, encoded, future)
+            job = _Job(
+                priority,
+                self._order,
+                key,
+                encoded,
+                future,
+                cache_epoch=self._cache_epoch,
+            )
             self._jobs[key] = job
             self._queue.put_nowait(job)
         elif priority < job.priority:
@@ -94,10 +186,118 @@ class SynthesisWorker:
             self._runner = asyncio.create_task(self._run(), name="race-voice-synthesis")
         try:
             async with asyncio.timeout(max(0, deadline - time.monotonic())):
-                return dict(await asyncio.shield(job.result))
+                result = dict(await asyncio.shield(job.result))
+            self._remember_result(key, payload, result, job.cache_epoch)
+            return result
         finally:
             job.waiters -= 1
             self._waiters -= 1
+            if not job.waiters and not job.running and not job.result.done():
+                self._discard_pending(job)
+
+    async def _cached_result(self, key: str, deadline: float) -> dict | None:
+        cached = self._audio_cache[key]
+        # Metadata checks stay off the loop, even for an in-memory hit. Keep
+        # them under the same subscriber and deadline bounds as inference.
+        self._waiters += 1
+        try:
+            async with asyncio.timeout(max(0, deadline - time.monotonic())):
+                signature = await asyncio.to_thread(self._model_signature, cached.model)
+        finally:
+            self._waiters -= 1
+        if self._closed:
+            raise WorkerUnavailableError("Synthesis worker is closed")
+        if self._audio_cache.get(key) is not cached:
+            return None  # A clear/restart/eviction happened during the metadata check.
+        if signature == cached.signature:
+            self._audio_cache.move_to_end(key)
+            return {
+                "audio": cached.audio,
+                "cache_hit": True,
+                "memory_cache_hit": True,
+                "model_warm": self._model_is_warm(cached.model, signature),
+                "duration_ms": 0,
+            }
+        del self._audio_cache[key]
+        self._audio_cache_bytes -= len(cached.audio)
+        return None
+
+    def _remember_result(
+        self, key: str, payload: dict, result: dict, epoch: int
+    ) -> None:
+        signature = result.pop("model_signature", None)
+        if (
+            self._max_cache_bytes
+            and signature is not None
+            and epoch == self._cache_epoch
+            and payload.get("operation") == "synthesize"
+            and payload.get("subdir") in _REUSABLE_SUBDIRS
+            and payload.get("model") in VOICE_MODELS
+        ):
+            self._remember_audio(
+                key, payload["model"], tuple(tuple(s) for s in signature), result
+            )
+
+    def _model_signature(self, model: str) -> tuple | None:
+        paths = (
+            self._root / "models" / f"{model}{suffix}"
+            for suffix in (".onnx", ".onnx.json")
+        )
+        try:
+            return tuple(
+                (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+                for path in paths
+                for stat in (path.stat(),)
+            )
+        except OSError:
+            return None
+
+    def _remember_audio(
+        self, key: str, model: str, signature: tuple, result: dict
+    ) -> None:
+        audio = result.get("audio")
+        if not isinstance(audio, bytes) or len(audio) > self._max_cache_bytes:
+            return
+        previous = self._audio_cache.pop(key, None)
+        if previous is not None:
+            self._audio_cache_bytes -= len(previous.audio)
+        while self._audio_cache and (
+            len(self._audio_cache) >= self._max_cache_entries
+            or self._audio_cache_bytes + len(audio) > self._max_cache_bytes
+        ):
+            victim = next(
+                (key for key in self._audio_cache if key not in self._preferred_audio),
+                None,
+            )
+            if victim is None:
+                if key not in self._preferred_audio:
+                    return
+                # A heat larger than the budget still obeys the hard bounds.
+                victim = next(iter(self._audio_cache))
+            evicted = self._audio_cache.pop(victim)
+            self._audio_cache_bytes -= len(evicted.audio)
+        self._audio_cache[key] = _CachedAudio(model, signature, audio)
+        self._audio_cache_bytes += len(audio)
+
+    def _invalidate_audio(self, model: str | None = None) -> None:
+        self._cache_epoch += 1
+        for key, cached in list(self._audio_cache.items()):
+            if model is None or cached.model == model:
+                del self._audio_cache[key]
+                self._audio_cache_bytes -= len(cached.audio)
+
+    def _discard_pending(self, job: _Job) -> None:
+        """Free admission immediately when a queued operation loses its last caller."""
+        pending = []
+        while not self._queue.empty():
+            item = self._queue.get_nowait()
+            self._queue.task_done()
+            if item is not job:
+                pending.append(item)
+        for item in pending:
+            self._queue.put_nowait(item)
+        self._jobs.pop(job.key, None)
+        job.result.cancel()
 
     def _promote(self, job: _Job, priority: int) -> None:
         job.priority = priority
@@ -111,6 +311,7 @@ class SynthesisWorker:
     async def close(self) -> None:
         """Cancel pending work and reap the child; safe to call more than once."""
         self._closed = True
+        self._invalidate_audio()
         if self._runner is not None:
             self._runner.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -130,11 +331,25 @@ class SynthesisWorker:
     async def _run(self) -> None:
         while True:
             job = await self._queue.get()
+            job.running = True
             try:
                 if not job.waiters:
                     job.result.cancel()
                     continue
+                payload = json.loads(job.request)
+                if payload.get("operation") in {"synthesize", "warmup"} and (
+                    self._warm_model is not None
+                    and self._warm_model[0] != payload.get("model")
+                ):
+                    self._warm_model = None
                 result = await self._execute(job.request)
+                if payload.get("operation") in {"synthesize", "warmup"}:
+                    signature = result.get("model_signature")
+                    self._warm_model = (
+                        (payload["model"], tuple(tuple(s) for s in signature))
+                        if result.get("model_ready") is True and signature is not None
+                        else None
+                    )
                 job.result.set_result(result)
             except asyncio.CancelledError:
                 job.result.set_exception(
@@ -205,6 +420,8 @@ class SynthesisWorker:
         return audio
 
     async def _stop_process(self) -> None:
+        self._warm_model = None
+        self._invalidate_audio()
         process, self._process = self._process, None
         if process is None:
             return

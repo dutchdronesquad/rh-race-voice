@@ -1,0 +1,65 @@
+{
+  "environment": {
+    "architecture": "x86_64",
+    "logical_cpus": 4,
+    "python": "3.13.3",
+    "piper_tts": "1.8.0",
+    "onnxruntime": "1.31.0"
+  },
+  "model": "nl_NL-pim-medium",
+  "scope": "Speech preparation only; excludes HTTP, playback and player latency",
+  "disk": {
+    "ram_cache_bytes": 0,
+    "cold_first_name_ms": 2458.928,
+    "uncached_lap_preparation": {
+      "samples": 30,
+      "p50_ms": 217.806,
+      "p95_ms": 235.266
+    },
+    "first_audio_ready": {
+      "samples": 30,
+      "p50_ms": 217.806,
+      "p95_ms": 235.266
+    },
+    "early_cached_prefixes": 0,
+    "uncached_lap_worker_jobs": 90,
+    "cached_name_and_lap_pair": {
+      "samples": 100,
+      "p50_ms": 1.865,
+      "p95_ms": 2.079
+    },
+    "cached_pair_worker_jobs": 200
+  },
+  "ram": {
+    "ram_cache_bytes": 8388608,
+    "cold_first_name_ms": 2407.247,
+    "uncached_lap_preparation": {
+      "samples": 30,
+      "p50_ms": 229.865,
+      "p95_ms": 311.754
+    },
+    "first_audio_ready": {
+      "samples": 30,
+      "p50_ms": 0.734,
+      "p95_ms": 3.885
+    },
+    "early_cached_prefixes": 30,
+    "uncached_lap_worker_jobs": 30,
+    "cached_name_and_lap_pair": {
+      "samples": 100,
+      "p50_ms": 0.456,
+      "p95_ms": 0.609
+    },
+    "cached_pair_worker_jobs": 0
+  },
+  "cached_restart": {
+    "cached_wavs_only": {
+      "setup_ms": 356.686,
+      "first_lap_preparation_ms": 2245.461
+    },
+    "model_warmed": {
+      "setup_ms": 2440.783,
+      "first_lap_preparation_ms": 221.304
+    }
+  }
+}

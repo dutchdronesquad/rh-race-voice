@@ -19,7 +19,7 @@ from aiohttp.test_utils import TestServer
 from aiosendspin.client.client import SendspinClient
 from aiosendspin.models.core import DeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
-from aiosendspin.models.types import AudioCodec, Roles
+from aiosendspin.models.types import AudioCodec, GoodbyeReason, Roles
 from aiosendspin.noise.keys import Identity
 from aiosendspin.noise.trust_store import InMemoryClientPairingStore
 from aiosendspin.server import AudioFormat
@@ -121,6 +121,135 @@ class FirstListenerTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.15)
         self.assertEqual(self.audio, [])
         self.assertIsNone(self.backend._stream)
+
+    async def test_only_listener_reconnects_during_programme(self) -> None:
+        """Explicitly disconnecting the last player must not discard the track."""
+        client = await self.connect()
+        playback = asyncio.create_task(
+            asyncio.to_thread(self.backend.play, [_wav(2.5)])
+        )
+        await asyncio.wait_for(self.received.wait(), timeout=2)
+        await client.disconnect(GoodbyeReason.USER_REQUEST)
+        await asyncio.sleep(0.3)
+        self.audio.clear()
+        self.received.clear()
+        await client.connect(str(self.http.make_url("/sendspin")))
+        await asyncio.wait_for(self.received.wait(), timeout=2)
+        self.assertGreaterEqual(int.from_bytes(self.audio[0][:2], "little"), 4)
+        self.assertTrue(await asyncio.wait_for(playback, timeout=3))
+
+    async def test_new_identity_joins_after_last_listener_leaves(self) -> None:
+        """Reloading a tab can create a different SDK client and group."""
+        client = await self.connect()
+        playback = asyncio.create_task(asyncio.to_thread(self.backend.play, [_wav(2)]))
+        await asyncio.wait_for(self.received.wait(), timeout=2)
+        await client.disconnect()
+        await asyncio.sleep(0.3)
+        self.audio.clear()
+        self.received.clear()
+        await self.connect()
+        await asyncio.wait_for(self.received.wait(), timeout=2)
+        self.assertGreaterEqual(int.from_bytes(self.audio[0][:2], "little"), 4)
+        self.assertTrue(await asyncio.wait_for(playback, timeout=3))
+
+    async def test_reconnect_recovers_already_buffered_audio(self) -> None:
+        """Short clips also survive after play() finished queueing their PCM."""
+        client = await self.connect()
+        target = time.monotonic() + 1
+        self.assertTrue(
+            await asyncio.to_thread(self.backend.play, [_wav(0.8)], play_at=target)
+        )
+        start_us = self.backend._retained_audio[0].start_us
+        await client.disconnect()
+        await asyncio.sleep(0.1)
+        self.audio.clear()
+        self.timestamps.clear()
+        self.received.clear()
+        await client.connect(str(self.http.make_url("/sendspin")))
+        await asyncio.wait_for(self.received.wait(), timeout=1)
+        expected_sample = max(1, (self.timestamps[0] - start_us) // 100_000 + 1)
+        self.assertLessEqual(
+            abs(int.from_bytes(self.audio[0][:2], "little") - expected_sample), 1
+        )
+
+    async def test_repeated_reconnect_keeps_original_position(self) -> None:
+        """Multiple dropouts cannot reset the retained track's logical start."""
+        client = await self.connect()
+        playback = asyncio.create_task(asyncio.to_thread(self.backend.play, [_wav(3)]))
+        await asyncio.wait_for(self.received.wait(), timeout=2)
+        previous = 0
+        for _ in range(2):
+            await client.disconnect()
+            await asyncio.sleep(0.25)
+            self.audio.clear()
+            self.received.clear()
+            await client.connect(str(self.http.make_url("/sendspin")))
+            await asyncio.wait_for(self.received.wait(), timeout=2)
+            sample = int.from_bytes(self.audio[0][:2], "little")
+            self.assertGreater(sample, previous)
+            previous = sample
+        self.assertTrue(await asyncio.wait_for(playback, timeout=3))
+
+    async def test_reconnect_after_programme_end_stays_silent(self) -> None:
+        """Retaining a stream must not make a completed test sound restart."""
+        client = await self.connect()
+        self.assertTrue(await asyncio.to_thread(self.backend.play, [_wav(0.3)]))
+        await client.disconnect()
+        await asyncio.sleep(0.7)
+        self.audio.clear()
+        self.received.clear()
+        await client.connect(str(self.http.make_url("/sendspin")))
+        await asyncio.sleep(0.2)
+        self.assertEqual(self.audio, [])
+
+    async def test_stop_while_disconnected_discards_retained_audio(self) -> None:
+        """Stop/context changes must invalidate audio before a player comes back."""
+        client = await self.connect()
+        playback = asyncio.create_task(asyncio.to_thread(self.backend.play, [_wav(2)]))
+        await asyncio.wait_for(self.received.wait(), timeout=2)
+        await client.disconnect()
+        await asyncio.wait_for(playback, timeout=1)
+        await self.backend._stop_stream()
+        self.audio.clear()
+        self.received.clear()
+        await client.connect(str(self.http.make_url("/sendspin")))
+        await asyncio.sleep(0.2)
+        self.assertEqual(self.audio, [])
+
+    async def test_cancel_while_disconnected_discards_retained_audio(self) -> None:
+        """Planner cancellation applies to buffered audio kept for reconnect too."""
+        client = await self.connect()
+        cancelled = threading.Event()
+        self.assertTrue(
+            await asyncio.to_thread(self.backend.play, [_wav(0.8)], cancelled=cancelled)
+        )
+        await client.disconnect()
+        cancelled.set()
+        self.audio.clear()
+        self.received.clear()
+        await client.connect(str(self.http.make_url("/sendspin")))
+        await asyncio.sleep(0.2)
+        self.assertEqual(self.audio, [])
+
+    async def test_reconnect_preserves_future_scheduled_target(self) -> None:
+        """Recreating transport cannot bring a staging tone forward in time."""
+        client = await self.connect()
+        target = time.monotonic() + 0.8
+        expected_us = self.backend._server.clock.now_us() + round(
+            (target - time.monotonic()) * 1_000_000
+        )
+        self.assertTrue(
+            await asyncio.to_thread(self.backend.play, [_wav(0.3)], play_at=target)
+        )
+        await client.disconnect()
+        await asyncio.sleep(0.1)
+        self.audio.clear()
+        self.timestamps.clear()
+        self.received.clear()
+        await client.connect(str(self.http.make_url("/sendspin")))
+        await asyncio.wait_for(self.received.wait(), timeout=1)
+        self.assertEqual(int.from_bytes(self.audio[0][:2], "little"), 1)
+        self.assertLess(abs(self.timestamps[0] - expected_us), 50_000)
 
     async def test_expired_audio_is_not_retained(self) -> None:
         """An event already too old to start must not wait for a listener."""

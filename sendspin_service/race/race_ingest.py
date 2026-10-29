@@ -8,6 +8,7 @@ import logging
 import math
 import time
 import uuid
+from functools import partial
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -105,6 +106,19 @@ def _pilot_id(pilot: object) -> int:
     return pilot_id
 
 
+def _change_reason(previous: dict | None, current: dict) -> str:
+    if previous is not None:
+        for key, reason in (
+            ("competition_id", "competition_changed"),
+            ("heat_id", "heat_changed"),
+        ):
+            if previous["context"][key] != current["context"][key]:
+                return reason
+        if previous["voice"] != current["voice"]:
+            return "voice_changed"
+    return "state_changed"
+
+
 class RaceIngest:
     """Own admission and cancellation on the HTTP loop; never wait for inference."""
 
@@ -141,7 +155,8 @@ class RaceIngest:
             for name, destination in self._destinations.items()
         }
         speech = SpeechEngine(worker)
-        self._cache = CacheCommands(speech, self._clear)
+        self._speech = speech
+        self._cache = CacheCommands(speech, partial(self._clear, reason="cache_clear"))
         self._preparation = PreparationPlanner(
             speech,
             assets=assets,
@@ -153,10 +168,20 @@ class RaceIngest:
         return not self._blocked and self._gate.is_current(event)
 
     def _ready(self, plan: CalloutPlan) -> None:
+        if not self._outputs:
+            telemetry.record(
+                plan.event.event_id, "output_dropped", reason="no_destinations"
+            )
         for name, output in self._outputs.items():
             try:
                 accepted = self._destinations[name].accepts(plan)
             except Exception:
+                telemetry.record(
+                    plan.event.event_id,
+                    "output_dropped",
+                    reason="filter_failed",
+                    destination=name,
+                )
                 # A bad filter must only cost this one destination, not the
                 # rest of the fan-out or the whole preparation pipeline task.
                 logger.exception(
@@ -166,6 +191,12 @@ class RaceIngest:
                 )
                 continue
             if not accepted:
+                telemetry.record(
+                    plan.event.event_id,
+                    "output_filtered",
+                    reason="selection",
+                    destination=name,
+                )
                 continue
             if output.submit(plan):
                 telemetry.record(
@@ -218,10 +249,11 @@ class RaceIngest:
             if self._state is not None:
                 self._cache.clear_temporary(self._state["voice"])
             self._state = None
+            self._worker.prioritize_audio([])
             self._state_json = ""
             self._clock = self._probe = None
         if not retry or self._blocked:
-            await self._clear()
+            await self._clear(reason="session_changed")
         return self.owner()
 
     def _require_session(self, data: dict) -> None:
@@ -261,6 +293,10 @@ class RaceIngest:
             raise web.HTTPConflict(reason=outcome.value)
         self._state = json.loads(encoded)
         self._state_json = encoded
+        self._speech.prioritize_heat(
+            self._state["voice"],
+            [p["spoken_name"] or p["callsign"] for p in self._state["pilots"]],
+        )
         if old != context:
             self._cache.cancel()
         if old is not None and (
@@ -269,7 +305,7 @@ class RaceIngest:
         ):
             self._cache.clear_temporary(old_state["voice"])
         if old is None or old.generation != context.generation or self._blocked:
-            await self._clear()
+            await self._clear(reason=_change_reason(old_state, data))
         self._arm_schedule()
         return {"outcome": outcome.value}
 
@@ -284,12 +320,14 @@ class RaceIngest:
         """Expose bounded progress without waiting for the worker."""
         return self._cache.status(command_id)
 
-    async def _clear(self) -> None:
+    async def _clear(self, *, reason: str = "state_changed") -> None:
         self._changing = self._blocked = True
         self._schedule.cancel()
-        self._preparation.invalidate()
+        self._preparation.invalidate(reason=reason)
         try:
-            await asyncio.gather(*(output.flush() for output in self._outputs.values()))
+            await asyncio.gather(
+                *(output.flush(reason=reason) for output in self._outputs.values())
+            )
             if self._on_context_change is not None and self._gate.context is not None:
                 await self._on_context_change(self._gate.context)
             self._blocked = False
@@ -387,7 +425,14 @@ class RaceIngest:
         self._require_session(data)
         event = RaceEvent.parse(data)
         telemetry.record(
-            event.event_id, "received", kind=event.kind.value, origin="event"
+            event.event_id,
+            "received",
+            kind=event.kind.value,
+            origin="event",
+            pilot_id=event.pilot_id,
+            lap=event.lap,
+            heat_id=event.context.heat_id,
+            generation=event.context.generation,
         )
         if self._blocked:
             raise web.HTTPConflict(reason="Output clear failed; retry state update")

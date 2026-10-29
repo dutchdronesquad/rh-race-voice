@@ -6,11 +6,12 @@ import asyncio
 import hashlib
 import logging
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import aiohttp
 
-from . import telemetry
+from .race_planner import record_output
 
 if TYPE_CHECKING:
     import threading
@@ -60,17 +61,23 @@ class RaceRelaySink:
         self._session: aiohttp.ClientSession | None = None
         self._clock_measured_at: float | None = None
 
-    async def play(self, plan: CalloutPlan, cancelled: threading.Event) -> None:
+    async def play(  # noqa: C901
+        self, plan: CalloutPlan, cancelled: threading.Event
+    ) -> None:
         """Upload cache-miss audio, then forward the event by content reference."""
         event_id = plan.event.event_id
         if cancelled.is_set() or plan.deadline <= time.monotonic():
-            telemetry.record(
-                event_id,
+            record_output(
+                plan,
                 "output_dropped",
                 reason="cancelled" if cancelled.is_set() else "expired",
                 destination=self._destination,
             )
             return
+        if plan.completion is not None:
+            plan = await self._complete_plan(plan)
+            if plan is None:
+                return
         for attempt in range(_MAX_ATTEMPTS):
             try:
                 await self._ensure_clock()
@@ -78,8 +85,8 @@ class RaceRelaySink:
                 missing = await self._announce(hashes, plan.audio)
                 for content_id, data in zip(hashes, plan.audio, strict=True):
                     if cancelled.is_set():
-                        telemetry.record(
-                            event_id,
+                        record_output(
+                            plan,
                             "output_dropped",
                             reason="cancelled",
                             destination=self._destination,
@@ -88,8 +95,8 @@ class RaceRelaySink:
                     if content_id in missing:
                         await self._upload(content_id, data)
                 if cancelled.is_set():
-                    telemetry.record(
-                        event_id,
+                    record_output(
+                        plan,
                         "output_dropped",
                         reason="cancelled",
                         destination=self._destination,
@@ -103,8 +110,8 @@ class RaceRelaySink:
                     logger.warning(
                         "Sendspin relay: failed to deliver %s", event_id, exc_info=True
                     )
-                    telemetry.record(
-                        event_id,
+                    record_output(
+                        plan,
                         "output_dropped",
                         reason="relay_error",
                         destination=self._destination,
@@ -113,10 +120,24 @@ class RaceRelaySink:
                 await asyncio.sleep(_RETRY_DELAY_S)
                 continue
             else:
-                telemetry.record(
-                    event_id, "output_played", destination=self._destination
-                )
+                record_output(plan, "output_played", destination=self._destination)
                 return
+
+    async def _complete_plan(self, plan: CalloutPlan) -> CalloutPlan | None:
+        """Keep relay/1 delivery atomic while local playback can start its prefix."""
+        try:
+            audio = await plan.complete_audio()
+        except TimeoutError:
+            audio = ()
+        if audio:
+            return replace(plan, audio=audio, completion=None)
+        record_output(
+            plan,
+            "output_dropped",
+            reason="synthesis_incomplete",
+            destination=self._destination,
+        )
+        return None
 
     async def push_context(self, context: Context) -> None:
         """Tell the relay which context is current, so it can reject stale events."""

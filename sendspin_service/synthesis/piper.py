@@ -227,6 +227,14 @@ class PiperSynthesizer:
                 sess_options.intra_op_num_threads = max(
                     1, min(2, (os.cpu_count() or 2) - 1)
                 )
+                # Keep the persistent pool responsive without spending the
+                # runtime's full spin window burning CPU between callouts.
+                sess_options.add_session_config_entry(
+                    "session.intra_op.spin_duration_us", "1000"
+                )
+                sess_options.add_session_config_entry(
+                    "session.intra_op.spin_backoff_max", "8"
+                )
                 self._voice = PiperVoice(
                     config=PiperConfig.from_dict(config_dict),
                     session=self._run_native(

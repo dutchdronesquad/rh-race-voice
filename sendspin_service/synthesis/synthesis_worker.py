@@ -30,6 +30,7 @@ class WorkerSynthesizer(PiperSynthesizer):
         super().__init__(root / "models", root / "tts", logger.info)
         self._revision = ""
         self._model_revisions: dict[tuple, str] = {}
+        self.model_signature: tuple = ()
 
     def _run_native[T](
         self, function: Callable[..., T], *args: Any, **kwargs: Any
@@ -64,6 +65,7 @@ class WorkerSynthesizer(PiperSynthesizer):
             self._voice = None
             self._loaded_model = None
         self._revision = revision
+        self.model_signature = tuple(signature[1:] for signature in signatures)
 
     def cache_key(self, text: str, params: SynthesisParams) -> str:
         """Keep case, synthesis tuning, engine version and model contents distinct."""
@@ -125,7 +127,12 @@ def execute(tts: WorkerSynthesizer, data: dict) -> dict:
         return {"cleared": count}
     tts.select_revision(model)
     if data["operation"] == "warmup":
-        return {"ready": tts.prepare_model(model, params)}
+        ready = tts.prepare_model(model, params)
+        return {
+            "ready": ready,
+            "model_ready": ready,
+            "model_signature": tts.model_signature,
+        }
     result = tts.synthesize_to_cache(
         data["text"], model, params, subdir=data.get("subdir", "")
     )
@@ -135,6 +142,8 @@ def execute(tts: WorkerSynthesizer, data: dict) -> dict:
         "path": str(result.wav_path),
         "cache_hit": result.cache_hit,
         "duration_ms": result.duration_ms,
+        "model_signature": tts.model_signature,
+        "model_ready": tts._voice is not None and tts._loaded_model == model,  # noqa: SLF001
     }
 
 

@@ -144,6 +144,48 @@ class RaceRelaySinkTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.server.events[0]["version"], RELAY_VERSION)
         self.assertEqual(self.server.assets_requests[0]["version"], RELAY_VERSION)
 
+    async def test_progressive_local_plan_is_relayed_as_one_complete_event(
+        self,
+    ) -> None:
+        """The existing cloud protocol must never receive a prefix-only lap."""
+        completion = asyncio.get_running_loop().create_future()
+        callout = replace(_plan(1, audio=(b"callsign", b"lap")), completion=completion)
+        task = asyncio.create_task(self.sink.play(callout, threading.Event()))
+        await asyncio.sleep(0)
+        self.assertEqual(self.server.events, [])
+        self.assertEqual(self.server.uploads, [])
+        audio = (b"callsign", b"lap", b"time")
+        completion.set_result(audio)
+        await task
+        self.assertEqual(len(self.server.events), 1)
+        self.assertEqual(
+            self.server.uploads, [hashlib.sha256(data).hexdigest() for data in audio]
+        )
+
+    async def test_failed_progressive_plan_is_never_relayed(self) -> None:
+        """Failed time synthesis must not turn into a successful partial cloud event."""
+        completion = asyncio.get_running_loop().create_future()
+        completion.set_result(())
+        await self.sink.play(
+            replace(_plan(1, audio=(b"callsign",)), completion=completion),
+            threading.Event(),
+        )
+        self.assertEqual(self.server.events, [])
+        self.assertEqual(self.server.uploads, [])
+
+    async def test_cancelled_progressive_plan_does_not_wait_for_synthesis(self) -> None:
+        """An already-stopped output must not wait on another output's live time."""
+        completion = asyncio.get_running_loop().create_future()
+        cancelled = threading.Event()
+        cancelled.set()
+        async with asyncio.timeout(1):
+            await self.sink.play(
+                replace(_plan(1, audio=(b"callsign",)), completion=completion),
+                cancelled,
+            )
+        self.assertFalse(completion.done())
+        self.assertEqual(self.server.events, [])
+
     async def test_cancellation_before_upload_skips_delivery(self) -> None:
         """A plan cancelled up front never reaches the network."""
         cancelled = threading.Event()
@@ -276,6 +318,9 @@ class RaceRelayFanOutTests(unittest.IsolatedAsyncioTestCase):
 
 class _Worker:
     """Unused synthesis worker double; these tests submit CalloutPlans directly."""
+
+    def prioritize_audio(self, _requests: list[dict]) -> None:
+        """No synthesis or cache exists in this routing test double."""
 
     async def request(self, payload: dict, **_kwargs: object) -> dict:
         raise NotImplementedError

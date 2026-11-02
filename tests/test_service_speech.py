@@ -4,13 +4,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import time
 import unittest
 from dataclasses import replace
-from unittest.mock import AsyncMock
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import AsyncMock, patch
 
 from sendspin_service.race.race_protocol import EventKind, RaceEvent
 from sendspin_service.race.speech import SpeechEngine
+from sendspin_service.synthesis.synthesis import SynthesisWorker
 from tests.test_race_protocol import event_payload
 
 SETTINGS = {"model": "nl_NL-pim-medium", "speed": 1, "noise": 0.667, "noise_w": 0.8}
@@ -22,9 +27,41 @@ class ServiceSpeechTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         """Supply an already-admitted event and a worker returning pinned bytes."""
         self.worker = AsyncMock()
-        self.worker.request.return_value = {"audio": b"wav", "cache_hit": True}
+        self.worker.request.return_value = {
+            "audio": b"wav",
+            "cache_hit": True,
+            "ready": True,
+        }
+
+        async def status(_model: str, requests: list[dict]) -> dict:
+            return {"model_warm": True, "resident": [True] * len(requests)}
+
+        self.worker.audio_status.side_effect = status
         self.engine = SpeechEngine(self.worker)
         self.event = RaceEvent.parse(event_payload())
+
+    async def test_explicit_preparation_logs_actual_residency_without_more_tts(
+        self,
+    ) -> None:
+        """Internal diagnostics report ready and capacity-limited cache states."""
+        for resident, level in ((True, "INFO"), (False, "WARNING")):
+
+            async def status(_model: str, requests: list[dict], ready=resident) -> dict:  # noqa: ANN001
+                return {"model_warm": True, "resident": [ready] * len(requests)}
+
+            self.worker.audio_status.side_effect = status
+            self.worker.request.reset_mock()
+            with self.assertLogs(
+                "sendspin_service.race.speech", level=level
+            ) as captured:
+                progress = [
+                    p
+                    async for p in self.engine.prepare(
+                        SETTINGS, ["Klaas"], is_current=lambda: True
+                    )
+                ]
+            self.assertIn(f"early_lap_speech_ready={resident}", captured.output[-1])
+            self.assertEqual(self.worker.request.await_count, progress[-1]["total"] + 1)
 
     async def test_lap_retains_name_localized_number_and_phonetic_time(self) -> None:
         """Routing identity is independent from the spoken-name segment."""
@@ -48,7 +85,7 @@ class ServiceSpeechTests(unittest.IsolatedAsyncioTestCase):
         prepared = [
             call.args[0]
             for call in self.worker.request.call_args_list
-            if call.args[0]["subdir"] == "precache/clock"
+            if call.args[0].get("subdir") == "precache/clock"
         ]
         self.assertGreater(len(prepared), 5)
         for request in prepared:
@@ -61,6 +98,96 @@ class ServiceSpeechTests(unittest.IsolatedAsyncioTestCase):
                 is_current=lambda: True,
             )
             self.assertEqual(self.worker.request.call_args.args[0], request)
+
+    async def test_background_work_cannot_slip_between_live_lap_segments(self) -> None:
+        """Use the real supervisor queue to isolate the cause of extra lap delay."""
+        root = Path(self.enterContext(TemporaryDirectory()))
+        worker = SynthesisWorker(root)
+        self.addAsyncCleanup(worker.close)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        queued = asyncio.Event()
+        executed = []
+        requests = []
+        request = worker.request
+
+        async def observe(payload: dict, **kwargs: object) -> dict:
+            requests.append(payload["text"])
+            if len(requests) == 5:
+                queued.set()
+            return await request(payload, **kwargs)
+
+        async def execute(encoded: bytes) -> dict:
+            text = json.loads(encoded)["text"]
+            executed.append(text)
+            if text == "background active":
+                entered.set()
+                await release.wait()
+            return {"audio": text.encode(), "cache_hit": True}
+
+        self.enterContext(patch.object(worker, "request", side_effect=observe))
+        self.enterContext(patch.object(worker, "_execute", side_effect=execute))
+        deadline = time.monotonic() + 5
+        active = asyncio.create_task(
+            worker.request(
+                {"text": "background active"}, deadline=deadline, priority=10
+            )
+        )
+        await asyncio.wait_for(entered.wait(), 1)
+        background = asyncio.create_task(
+            worker.request(
+                {"text": "background queued"}, deadline=deadline, priority=10
+            )
+        )
+        live = asyncio.create_task(
+            SpeechEngine(worker).synthesize(
+                self.event,
+                SETTINGS,
+                deadline=deadline,
+                priority=3,
+                is_current=lambda: True,
+            )
+        )
+        await asyncio.wait_for(queued.wait(), 1)
+        release.set()
+        audio = await live
+        await asyncio.gather(active, background)
+        self.assertEqual(
+            executed,
+            [
+                "background active",
+                "Klaas,",
+                "Ronde 4",
+                "twenty three point four five",
+                "background queued",
+            ],
+        )
+        self.assertEqual(audio, tuple(text.encode() for text in executed[1:4]))
+
+    async def test_failed_segment_cancels_other_callout_subscribers(self) -> None:
+        """One failed part cannot leave background work or partial spoken output."""
+        cancelled = []
+
+        async def fail_lap(payload: dict, **_kwargs: object) -> dict:
+            if payload["subdir"] == "precache/laps":
+                raise RuntimeError("failed lap")
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.append(payload["text"])
+            return {}  # pragma: no cover
+
+        self.worker.request.side_effect = fail_lap
+        with self.assertRaises(RuntimeError) as raised:  # noqa: PT027
+            await self.engine.synthesize(
+                self.event,
+                SETTINGS,
+                deadline=time.monotonic() + 5,
+                priority=3,
+                is_current=lambda: True,
+            )
+        self.assertEqual(str(raised.exception), "failed lap")
+        self.assertCountEqual(cancelled, ["Klaas,", "twenty three point four five"])
 
     async def test_tone_never_calls_worker(self) -> None:
         """Signals stay actionable during a stopped/hung Piper process."""
@@ -116,14 +243,30 @@ class ServiceSpeechTests(unittest.IsolatedAsyncioTestCase):
                 current = False
         self.assertEqual(progress[-1]["generated"], 0)
         self.assertEqual(progress[-1]["reused"], 2)
-        self.assertEqual(self.worker.request.await_count, 2)
+        self.assertEqual(self.worker.request.await_count, 3)
+        self.assertEqual(
+            self.worker.request.call_args_list[0].args[0],
+            {**SETTINGS, "operation": "warmup"},
+        )
         self.assertTrue(
             all(
                 call.args[0]["operation"] == "synthesize"
                 and call.kwargs["priority"] == 10
-                for call in self.worker.request.call_args_list
+                for call in self.worker.request.call_args_list[1:]
             )
         )
+
+    async def test_cached_preparation_cannot_succeed_when_model_warmup_fails(
+        self,
+    ) -> None:
+        """Existing WAVs alone must not produce a misleading ready notification."""
+        self.worker.request.return_value = {"ready": False}
+        with self.assertRaises(RuntimeError):  # noqa: PT027
+            async for _ in self.engine.prepare(
+                SETTINGS, ["Klaas"], is_current=lambda: True
+            ):
+                self.fail("Failed warmup produced preparation progress")
+        self.worker.request.assert_awaited_once()
 
 
 if __name__ == "__main__":

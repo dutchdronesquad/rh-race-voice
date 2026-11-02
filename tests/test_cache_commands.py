@@ -88,7 +88,7 @@ class CacheCommandTests(unittest.IsolatedAsyncioTestCase):
             executed.append(payload)
             if payload.get("text") == "active":
                 await release.wait()
-            return {"audio": b"wav", "cache_hit": True, "cleared": 1}
+            return {"audio": b"wav", "cache_hit": True, "cleared": 1, "ready": True}
 
         self.worker._execute = execute
         active = asyncio.create_task(
@@ -115,5 +115,6 @@ class CacheCommandTests(unittest.IsolatedAsyncioTestCase):
         await prepared.aclose()
         await until(self.cache._cleanup.done)
         self.assertEqual(executed[1]["text"], "live")
-        self.assertEqual(executed[2]["operation"], "synthesize")
+        self.assertEqual(executed[2]["operation"], "warmup")
         self.assertEqual(executed[3]["operation"], "clear")
+        self.assertEqual(executed[4]["operation"], "synthesize")

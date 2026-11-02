@@ -272,6 +272,90 @@ class AdapterTests(unittest.TestCase):
         )
         self.assertFalse(self.rh.db.option_set.call_args_list == [])
 
+    def test_lap_prefers_callsign_and_falls_back_to_phonetic(self) -> None:
+        """Use the callsign consistently, including whitespace-only fallback cases."""
+        self.connect()
+        cases = (
+            ("Alpha", "Alfa", "Alpha"),
+            ("Alpha", None, "Alpha"),
+            ("Alpha", "  ", "Alpha"),
+            (None, "Alfa", "Alfa"),
+            ("", "Alfa", "Alfa"),
+            ("  ", "Alfa", "Alfa"),
+            (None, None, ""),
+        )
+        for index, (callsign, name, expected) in enumerate(cases, start=1):
+            with self.subTest(callsign=callsign, name=name):
+                payload = {
+                    "pilot_id": 7,
+                    "pilot": name,
+                    "callsign": callsign,
+                    "lap": index,
+                    "phonetic": "twenty seconds",
+                }
+                self.assertIs(self.adapter._lap(payload), payload)
+                self.assertEqual(payload["pilot"], name)
+                wait_for(lambda: len(self.service.events) == index)  # noqa: B023
+                self.assertEqual(
+                    self.service.events[-1]["payload"]["pilot_name"],
+                    expected,
+                )
+
+    def test_precache_roster_uses_same_callsign_fallback_as_live_laps(self) -> None:
+        """Prepare the preferred callsign even when a phonetic name is also set."""
+        self.connect()
+        self.assertEqual(self.service.state["pilots"][0]["spoken_name"], "Alpha")
+        self.pilot.callsign = "   "
+        self.adapter._refresh()
+        wait_for(self.adapter._publisher._ready)
+        self.assertEqual(self.service.state["pilots"][0]["spoken_name"], "Alfa")
+
+    def test_laps_below_current_minimum_never_reach_publisher(self) -> None:
+        """Use raw milliseconds, include the boundary, and pick up setting changes."""
+        self.connect()
+        cases = (
+            ("15", 14999.999, False),
+            ("15", 15000, True),
+            ("15", 15000.001, True),
+            (15, 12000, False),
+            (10, 12000, True),
+            (0, 250, True),
+            ("", 12000, True),
+            (None, 12000, True),
+            (15, None, True),
+        )
+        for minimum, raw_time, should_publish in cases:
+            with self.subTest(minimum=minimum, raw_time=raw_time):
+                self.options["MinLapSec"] = minimum
+                payload = {
+                    "pilot_id": 7,
+                    "callsign": "Alpha",
+                    "lap": 2,
+                    "raw_time": raw_time,
+                    "phonetic": "fifteen seconds",
+                }
+                original = dict(payload)
+                with patch.object(
+                    self.adapter._publisher, "submit", return_value=True
+                ) as submit:
+                    self.assertIs(self.adapter._lap(payload), payload)
+                self.assertEqual(payload, original)
+                self.assertEqual(submit.call_count, int(should_publish))
+
+    def test_holeshot_and_absent_lap_number_stay_silent(self) -> None:
+        """RH may omit the lap number after a pilot finishes; never emit a lap then."""
+        self.connect()
+        for lap in (0, None):
+            with (
+                self.subTest(lap=lap),
+                patch.object(
+                    self.adapter._publisher, "submit", return_value=True
+                ) as submit,
+            ):
+                payload = {"lap": lap, "raw_time": 20000, "phonetic": "twenty seconds"}
+                self.assertIs(self.adapter._lap(payload), payload)
+                submit.assert_not_called()
+
     def test_stop_bypasses_blocked_audio_and_keeps_hub_responsive(self) -> None:
         """A delayed event reply cannot hold the latest control snapshot hostage."""
         self.connect()
@@ -322,7 +406,9 @@ class AdapterTests(unittest.TestCase):
         for _ in range(50):
             self.adapter._voice({"text": "Announcement"})
         self.assertEqual(len(publisher._pending), 33)
-        self.adapter._staged({"pi_starts_at_s": time.monotonic() + 1})
+        self.adapter._emit(
+            "tone", {"asset": "buzzer"}, ttl=1, target=time.monotonic() + 1
+        )
         self.assertEqual(len(publisher._pending), 32)
         self.assertFalse(any(item["kind"] == "lap" for item in publisher._pending))
         wait_for(lambda: bool(self.service.events))
@@ -499,8 +585,10 @@ class AdapterTests(unittest.TestCase):
         wait_for(lambda: len(self.service.events) == 1)
         self.assertEqual(self.service.events[0]["payload"]["text"], "After restart")
 
-    def test_audio_dispatch_does_not_wait_for_state_ack(self) -> None:
-        """A tone/lap must not queue behind an unrelated, still-in-flight state PUT."""
+    def test_audio_capture_is_nonblocking_but_dispatch_waits_for_state_ack(
+        self,
+    ) -> None:
+        """A lap is captured immediately but cannot overtake its required snapshot."""
         self.connect()
         self.service.state_release.clear()
         self.rh.race.heat = 2
@@ -510,9 +598,12 @@ class AdapterTests(unittest.TestCase):
         self.adapter._lap(
             {"lap": 1, "pilot_id": 7, "pilot": "Alfa", "phonetic": "four seconds"}
         )
-        wait_for(lambda: len(self.service.events) == 1)
+        gevent.sleep(0.03)
+        self.assertFalse(self.service.events)
+        self.assertTrue(self.adapter._publisher._pending)
         self.assertFalse(self.adapter._publisher._ready())
         self.service.state_release.set()
+        wait_for(lambda: len(self.service.events) == 1)
 
     def test_audio_waits_for_first_full_handshake_before_sending(self) -> None:
         """A fresh session must not race ahead of its own first state PUT.
@@ -638,23 +729,76 @@ class AdapterTests(unittest.TestCase):
         wait_for(self.adapter._publisher._ready)
         self.assertGreater(self.adapter._generation, generation)
 
-    def test_race_stop_tears_down_audio_after_a_normal_finish(self) -> None:
-        """A normally-finished race must not leave the stream marked playing.
-
-        RACE_STOP is RH's only event for an ordinary race end (no abort
-        involved) -- without wiring it, nothing ever told the service the
-        race was over, and the stream had no way back to idle except a
-        timeout.
-        """
+    def test_normal_race_finish_retains_the_winner_instead_of_stopping_speech(
+        self,
+    ) -> None:
+        """RH can declare a winner before or after RACE_STOP; neither may clear it."""
         self.connect()
         generation = self.adapter._generation
         registered = {
             call.args[0]: call.args[1] for call in self.rh.events.on.call_args_list
         }
-        stop_handler = registered[Evt.RACE_STOP]
-        stop_handler({})
+        self.assertNotIn(Evt.RACE_STOP, registered)
+        for text in ("Winner is Alpha", "Winner is Bravo"):
+            self.adapter._voice({"text": text, "winner_flag": True})
+        self.assertEqual(self.adapter._generation, generation)
+        wait_for(lambda: len(self.service.events) == 2)
+        self.assertTrue(all(e["payload"]["winner_flag"] for e in self.service.events))
+
+    def test_winner_waits_for_new_state_ack_without_disconnect_or_duplicate(
+        self,
+    ) -> None:
+        """An end-of-race winner must not race the stop/state PUT on another socket."""
+        self.connect()
+        publisher = self.adapter._publisher
+        session = publisher._session
+        self.service.state_release.clear()
+        self.adapter.stop_audio()
+        self.adapter._voice({"text": "Winner is Alpha", "winner_flag": True})
+        gevent.sleep(0.05)
+        self.assertEqual(self.service.events, [])
+        self.assertEqual(len(publisher._pending), 1)
+        self.assertEqual(publisher._session, session)
+        self.service.state_release.set()
+        wait_for(lambda: len(self.service.events) == 1)
+        self.assertEqual(self.service.events[0]["payload"]["text"], "Winner is Alpha")
+        self.assertEqual(publisher._session, session)
+        self.assertEqual(
+            self.service.events[0]["context"], self.service.state["context"]
+        )
+
+    def test_next_race_same_heat_invalidates_previous_winner_and_pending_laps(
+        self,
+    ) -> None:
+        """Draining a normal finish must not carry old speech into the next start."""
+        self.connect()
+        self.adapter._voice({"text": "Old winner", "winner_flag": True})
+        previous = self.adapter._generation
+        self.adapter._staged({"pi_starts_at_s": time.monotonic() + 2})
+        self.assertGreater(self.adapter._generation, previous)
+        wait_for(lambda: len(self.service.events) == 1)
+        self.assertEqual(self.service.events[0]["kind"], "tone")
+        self.assertEqual(
+            self.service.events[0]["context"], self.service.state["context"]
+        )
+
+    def test_event_expiry_is_not_extended_while_waiting_for_state_ack(self) -> None:
+        """Waiting for a snapshot must not replay speech after its original deadline."""
+        self.connect()
+        self.service.state_release.clear()
+        self.adapter.stop_audio()
+        self.assertTrue(
+            self.adapter._publisher.submit(
+                "voice",
+                {"text": "Winner is Alpha", "winner_flag": True},
+                expires_at=time.monotonic() + 0.01,
+            )
+        )
+        gevent.sleep(0.03)
+        self.service.state_release.set()
         wait_for(self.adapter._publisher._ready)
-        self.assertGreater(self.adapter._generation, generation)
+        wait_for(lambda: not self.adapter._publisher._pending)
+        self.assertEqual(self.service.events, [])
 
     def test_http_response_size_is_bounded_and_connection_recovers(self) -> None:
         """A bad service reply cannot allocate unbounded memory or poison reuse."""
@@ -912,21 +1056,55 @@ class AdapterTests(unittest.TestCase):
 
 def integration(url: str) -> None:
     """Use the actual aiohttp service supplied by the parent test process."""
-    adapter, _rh, _options, _pilot = make_adapter(url)
+    adapter, _rh, options, _pilot = make_adapter(url)
+    options["MinLapSec"] = "15"
     channel = JsonChannel("")
     try:
         adapter._startup()
         wait_for(adapter._publisher._ready)
         adapter._lap(
-            {"pilot_id": 7, "pilot": "Alfa", "lap": 3, "phonetic": "twenty seconds"}
+            {
+                "pilot_id": 8,
+                "callsign": "Too short",
+                "lap": 2,
+                "raw_time": 14999.999,
+                "phonetic": "under minimum",
+            }
+        )
+        adapter._lap(
+            {
+                "pilot_id": 7,
+                "pilot": "",
+                "callsign": "Alpha",
+                "lap": 3,
+                "raw_time": 20000,
+                "phonetic": "twenty seconds",
+            }
         )
         wait_for(lambda: channel.request(url, "GET", "/test/playback")[1]["count"] >= 1)
-        adapter._staged({"pi_starts_at_s": time.monotonic() + 1})
+        adapter._lap(
+            {
+                "pilot_id": 7,
+                "callsign": "Alpha",
+                "lap": None,
+                "raw_time": 20000,
+                "phonetic": "post-finish lap",
+            }
+        )
+        adapter._voice(
+            {
+                "text": "Winner is Alpha",
+                "domain": "race_winner",
+                "winner_flag": True,
+            }
+        )
         wait_for(lambda: channel.request(url, "GET", "/test/playback")[1]["count"] >= 2)
+        adapter._staged({"pi_starts_at_s": time.monotonic() + 1})
+        wait_for(lambda: channel.request(url, "GET", "/test/playback")[1]["count"] >= 3)
         adapter.stop_audio()
         wait_for(adapter._publisher._ready)
         adapter._race_schedule({"scheduled_at": time.monotonic() + 6})
-        wait_for(lambda: channel.request(url, "GET", "/test/playback")[1]["count"] >= 3)
+        wait_for(lambda: channel.request(url, "GET", "/test/playback")[1]["count"] >= 4)
         adapter.stop_audio()
         wait_for(adapter._publisher._ready)
         adapter.prepare_cache()

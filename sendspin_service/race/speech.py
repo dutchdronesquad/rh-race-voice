@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -23,6 +24,7 @@ _LOCALES = json.loads(
         Path(__file__).resolve().parents[2] / "custom_plugins/race_voice/locales.json"
     ).read_text(encoding="utf-8")
 )
+logger = logging.getLogger(__name__)
 
 
 def _locale(model: str) -> dict:
@@ -37,6 +39,37 @@ class SpeechEngine:
         self.worker = worker
         self._laps = LapCalloutSegments(locale_for_model=_locale)
         self._clock = ClockCallouts(locale_for_model=_locale)
+
+    def prioritize_heat(self, settings: dict, pilot_names: list[str]) -> None:
+        """Protect resident heat names/numbers without doing disk or inference work."""
+        self.worker.prioritize_audio(
+            [
+                self._request(settings, segment)
+                for segment in self._laps.precache_segments(
+                    pilot_names, settings["model"]
+                )
+            ]
+        )
+
+    async def readiness(self, settings: dict, pilot_names: list[str]) -> dict:
+        """Inspect reusable heat audio without triggering generation or warmup."""
+        segments = list(self._laps.precache_segments(pilot_names, settings["model"]))
+        status = await self.worker.audio_status(
+            settings["model"],
+            [self._request(settings, segment) for segment in segments],
+        )
+        groups = {}
+        for name, subdir in (
+            ("callsigns", "precache/pilots"),
+            ("laps", "precache/laps"),
+        ):
+            matches = [
+                resident
+                for segment, resident in zip(segments, status["resident"], strict=True)
+                if segment.subdir == subdir
+            ]
+            groups[name] = {"ready": sum(matches), "total": len(matches)}
+        return {"model_warm": status["model_warm"], **groups}
 
     def segments(self, event: RaceEvent, model: str) -> tuple[CalloutSegment, ...]:
         """Preserve RH phonetic time and name, with service-localized lap numbers."""
@@ -55,7 +88,7 @@ class SpeechEngine:
         """Use the same localized phrases as manual countdown preparation."""
         return _locale(model)["race_schedule"][str(seconds)]
 
-    async def synthesize(  # noqa: PLR0913
+    async def synthesize(  # noqa: C901, PLR0913
         self,
         event: RaceEvent,
         settings: dict,
@@ -64,12 +97,13 @@ class SpeechEngine:
         priority: int,
         is_current: Callable[[], bool],
         on_segment: Callable[[dict], None] | None = None,
+        on_prefix: Callable[[tuple[bytes, ...]], None] | None = None,
     ) -> tuple[bytes, ...]:
         """Do not return partial/obsolete speech after expiry, stop or heat changes."""
-        audio = []
-        for segment in self.segments(event, settings["model"]):
+
+        async def generate(segment: CalloutSegment) -> dict | None:
             if not is_current() or time.monotonic() >= deadline:
-                return ()
+                return None
             result = await self.worker.request(
                 self._request(settings, segment),
                 deadline=deadline,
@@ -78,9 +112,55 @@ class SpeechEngine:
             if on_segment is not None:
                 on_segment(result)
             if not is_current() or time.monotonic() >= deadline:
-                return ()
-            audio.append(result["audio"])
-        return tuple(audio)
+                return None
+            return result
+
+        # Queue the complete callout before awaiting its first segment. The
+        # worker still runs one operation at a time, but queued background
+        # preparation can no longer slip between these live segments.
+        segments = self.segments(event, settings["model"])
+        tasks = [asyncio.create_task(generate(segment)) for segment in segments]
+
+        async def publish_prefix() -> None:
+            prefix = await asyncio.gather(*tasks[:-1])
+            if (
+                on_prefix is not None
+                and not tasks[-1].done()
+                and is_current()
+                and time.monotonic() < deadline
+                and all(
+                    result
+                    and result.get("memory_cache_hit")
+                    and result.get("model_warm") is True
+                    for result in prefix
+                )
+            ):
+                on_prefix(tuple(result["audio"] for result in prefix))
+
+        publisher = (
+            asyncio.create_task(publish_prefix())
+            if on_prefix is not None
+            and event.kind == EventKind.LAP
+            and len(tasks) > 1
+            and segments[-1].subdir == "tmp"
+            else None
+        )
+        try:
+            audio = await asyncio.gather(*tasks)
+        finally:
+            # gather does not cancel siblings when one request fails. Release
+            # every subscriber so failed/obsolete callouts leave no queued work.
+            for task in tasks:
+                task.cancel()
+            if publisher is not None:
+                publisher.cancel()
+                await asyncio.gather(publisher, return_exceptions=True)
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if not is_current() or time.monotonic() >= deadline:
+            return ()
+        if any(segment is None for segment in audio):
+            return ()
+        return tuple(result["audio"] for result in audio)
 
     async def prepare(
         self,
@@ -92,6 +172,19 @@ class SpeechEngine:
         """Manually fill missing phrases, yielding progress between jobs."""
         if len(pilot_names) > 256:
             raise ValueError("Too many pilots to prepare")
+        if not is_current():
+            return
+        # Valid cached WAVs do not load Piper. Explicit preparation must also
+        # warm the model, or the first new lap time still pays its startup cost.
+        warmup = await self.worker.request(
+            {**settings, "operation": "warmup"},
+            deadline=time.monotonic() + 120,
+            priority=10,
+        )
+        if not is_current():
+            return
+        if warmup.get("ready") is not True:
+            raise RuntimeError("Voice model warmup failed")
         model = settings["model"]
         phrases = [
             CalloutSegment(p.text, p.subdir)
@@ -122,6 +215,24 @@ class SpeechEngine:
                 "reused": reused,
             }
             await asyncio.sleep(0)
+        if is_current():
+            status = await self.readiness(settings, pilot_names)
+            if is_current():
+                ready = status["model_warm"] and all(
+                    status[name]["ready"] == status[name]["total"]
+                    for name in ("callsigns", "laps")
+                )
+                logger.log(
+                    logging.INFO if ready else logging.WARNING,
+                    "Race Voice heat preparation: model_warm=%s, callsigns=%d/%d, "
+                    "lap_numbers=%d/%d, early_lap_speech_ready=%s",
+                    status["model_warm"],
+                    status["callsigns"]["ready"],
+                    status["callsigns"]["total"],
+                    status["laps"]["ready"],
+                    status["laps"]["total"],
+                    ready,
+                )
 
     @staticmethod
     def _request(settings: dict, segment: CalloutSegment) -> dict:

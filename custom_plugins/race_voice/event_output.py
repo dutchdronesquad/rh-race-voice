@@ -245,17 +245,11 @@ class EventPublisher:
         )
 
     def can_send_audio(self) -> bool:
-        """Check whether this session has done its first full handshake.
+        """Capture fresh audio while a connected session's new state is pending.
 
-        Unlike _ready(), this does not wait for every subsequent state PUT
-        to be acknowledged -- the server's own admission already validates
-        context freshness per event, so gating audio dispatch on the
-        *latest* ack only adds latency (e.g. right at heat start, when
-        state changes are frequent) without a correctness benefit. But the
-        server must have received *some* state and a clock mapping for
-        this session at least once (_handshake_complete), or every event
-        is rejected as stale_context / needing a clock exchange -- which
-        tears the connection down and is far worse than the wait.
+        Dispatch separately waits for that state acknowledgement. Otherwise an
+        event can overtake its snapshot on the independent audio connection and
+        be lost to a need_snapshot/stale_context rejection.
         """
         return bool(
             not self._closed
@@ -471,7 +465,7 @@ class EventPublisher:
             while not self._closed:
                 self._audio_wake.wait()
                 self._audio_wake.clear()
-                while self._pending and self.can_send_audio():
+                while self._pending and self._ready():
                     event = min(self._pending, key=_priority)
                     self._pending.remove(event)
                     if event["expires_at"] <= time.monotonic():

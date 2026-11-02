@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -26,6 +27,7 @@ from unittest.mock import Mock, patch
 from aiohttp.test_utils import TestClient, TestServer
 
 from sendspin_service.server import SendspinService, ServiceConfig, _create_app
+from tests.test_race_planner import wav_audio
 
 VOICE = {
     "model": "en_GB-alan-medium",
@@ -48,13 +50,19 @@ class Worker:
         self.release.set()
         self.calls = []
         self.closed = False
+        self.audio = b"RIFF-stub"
+        self._lock = asyncio.Lock()
+
+    def prioritize_audio(self, _requests: list[dict]) -> None:
+        """No real cache is used in the blocked-inference scenario."""
 
     async def request(self, payload: dict, **_kwargs: object) -> dict:
         """Simulate the supervisor boundary without loading a model in tests."""
-        self.calls.append(payload)
-        self.started.set()
-        await self.release.wait()
-        return {"audio": b"RIFF-stub", "cache_hit": False, "duration_ms": 5}
+        async with self._lock:
+            self.calls.append(payload)
+            self.started.set()
+            await self.release.wait()
+            return {"audio": self.audio, "cache_hit": False, "duration_ms": 5}
 
     async def close(self) -> None:
         """Record application cleanup."""
@@ -178,7 +186,15 @@ class DenseLapBurstScenarioTests(unittest.IsolatedAsyncioTestCase):
                 response = await self.client.post("/v2/events", json=event)
                 self.assertEqual(response.status, 202)
             self.worker.release.set()
-            await until(lambda: self.backend.play.call_count == 5)
+            await until(
+                lambda: (
+                    sum(
+                        json.loads(entry.getMessage())["stage"] == "output_played"
+                        for entry in captured.records
+                    )
+                    == 5
+                )
+            )
 
         records = [json.loads(entry.getMessage()) for entry in captured.records]
         by_event: dict[str, list[dict]] = {}
@@ -218,6 +234,70 @@ class DenseLapBurstScenarioTests(unittest.IsolatedAsyncioTestCase):
         # silently played twice or lost.
         self.assertEqual(sum(played_counts.values()), 5)
         self.assertLess(sum(played_counts.values()), len(event_ids))
+
+    async def _slow_output_burst(self, pilot_count: int) -> list[dict]:
+        """Drive real WAV durations through HTTP, speech and a blocked playback sink."""
+        self.worker.audio = wav_audio(0.5)  # Three segments: 1.5s per callout.
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def play(*_args: object, **_kwargs: object) -> bool:
+            if not release.wait(5):
+                raise TimeoutError("Test did not release playback")
+            return True
+
+        self.backend.play.side_effect = play
+        with self.assertLogs("sendspin_service.telemetry", level="INFO") as captured:
+            for sequence in range(1, pilot_count + 1):
+                event = self._lap_event(sequence, pilot_id=sequence)
+                response = await self.client.post("/v2/events", json=event)
+                self.assertEqual(response.status, 202)
+                await until(
+                    lambda event_id=event["event_id"]: any(
+                        json.loads(entry.getMessage())["event_id"] == event_id
+                        and json.loads(entry.getMessage())["stage"]
+                        == "output_scheduled"
+                        for entry in captured.records
+                    )
+                )
+                if sequence == 1:
+                    await until(lambda: self.backend.play.call_count == 1)
+            self.assertEqual(self.backend.play.call_count, 1)
+            release.set()
+            await until(
+                lambda: (
+                    sum(
+                        json.loads(entry.getMessage())["stage"] == "output_played"
+                        for entry in captured.records
+                    )
+                    == min(pilot_count, 5)
+                )
+            )
+
+        for call in self.backend.play.call_args_list:
+            self.assertEqual(len(call.args[0]), 3)
+            self.assertTrue(
+                all(clip.data == self.worker.audio for clip in call.args[0])
+            )
+        return [json.loads(entry.getMessage()) for entry in captured.records]
+
+    async def test_slow_output_retains_recent_complete_laps_without_blocking_ingest(
+        self,
+    ) -> None:
+        """An actual overflow retains four pending pilots and the active callout."""
+        records = await self._slow_output_burst(PILOT_COUNT)
+        played = [r["event_id"] for r in records if r["stage"] == "output_played"]
+        self.assertEqual(played, [f"{self.session_id}:{n}" for n in (1, 5, 6, 7, 8)])
+        drops = [r for r in records if r["stage"] == "output_dropped"]
+        self.assertEqual(len(drops), 3)
+        self.assertTrue(all(r["reason"] == "lap_backlog" for r in drops))
+
+    async def test_four_different_pilots_are_all_played_in_passage_order(self) -> None:
+        """A normal four-pilot burst must not silently skip pilot two."""
+        records = await self._slow_output_burst(4)
+        played = [r["event_id"] for r in records if r["stage"] == "output_played"]
+        self.assertEqual(played, [f"{self.session_id}:{n}" for n in range(1, 5)])
+        self.assertFalse(any(r["stage"] == "output_dropped" for r in records))
 
 
 if __name__ == "__main__":

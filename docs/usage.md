@@ -198,9 +198,13 @@ Race Voice hooks into two RotorHazard filter events and generates the following 
 
 Lap 0 (first crossing without a completed lap) does not produce a callout. Winner callouts are generated from the RotorHazard phonetic text filter, which fires when RotorHazard determines the race winner.
 
+A normal race finish lets the winner and remaining final callouts complete. The Sendspin stream returns to idle after its queued audio finishes. **Stop audio**, a race abort, a heat change or staging the next race clears old audio immediately; staging also does this when the same heat is raced again. Race Voice uses RotorHazard's winner decision and does not generate a winner announcement for a tie, an undecided result or a race format that does not declare a winner.
+
+Lap announcements below RotorHazard's **Minimum Lap Time** (`MinLapSec`) are suppressed before they reach the service or its synthesis/playback queues. Race Voice compares the unrounded lap time, so a lap exactly at the minimum is still announced. A minimum of `0` disables this check. Changes to the minimum apply on the next passage. This only suppresses the spoken lap announcement; RotorHazard's own minimum-lap behavior still determines how the crossing affects race results.
+
 Countdown callouts are generated when a race is scheduled via the RotorHazard schedule panel. They are cancelled automatically if the schedule is replaced or cancelled before the race starts.
 
-The callsign used in a lap callout is the pilot's **phonetic name** if set, otherwise the **callsign**. Set phonetic names in the RotorHazard pilot list for better pronunciation with the selected voice model.
+Lap callouts prefer the pilot's **callsign**, falling back to the **phonetic name** when the callsign is empty. Pre-cache preparation uses the same preference. Whitespace-only names count as empty.
 
 ## Browser Player
 
@@ -264,7 +268,7 @@ Use **Sync** for most race-day setups. Switch to **Quality** if playback resets 
 - **Play audio check**: Plays a bundled demo WAV without synthesizing TTS. Confirms `sendspin-service` is reachable and clients receive audio even if no voice model is loaded yet.
 - **Stop audio**: Immediately stops all queued and active audio on the Sendspin service. Useful when a callout needs to be cut mid-playback.
 - **Clear TTS cache**: Removes all generated WAV files. Use after a voice model change to avoid stale audio from the previous model.
-- **Prepare pre-cache**: Manually fills missing or invalid race-clock, current-heat pilot, lap-number, and schedule segments for the selected voice settings. Valid files are reused. Startup never prepares audio automatically. To regenerate everything, use **Clear TTS cache**, wait for the **TTS cache cleared** completion message, then use **Prepare pre-cache**.
+- **Prepare pre-cache**: Warms the selected Piper model and fills missing or invalid race-clock, current-heat pilot, lap-number, and schedule segments. Valid files are reused and reusable WAV bytes are retained within a bounded RAM cache. Warming the model also happens when all WAV files already exist, so the first new lap time does not have to load the model after preparation completes. Startup never prepares audio automatically. To regenerate everything, use **Clear TTS cache**, wait for the **TTS cache cleared** completion message, then use **Prepare pre-cache**.
 
 Cache operations show notifications when queued, started and completed. Preparation finishes with **Pre-cache is ready** and the preparation totals. Only one cache operation runs at a time; pressing another cache button while one is active shows its current operation and progress. Failures, cancellation and an unconfirmed result produce separate alerts.
 
@@ -307,6 +311,12 @@ Cache behavior:
 - If no Sendspin browser player is connected, generated audio is dropped and logged.
 
 ## Troubleshooting
+
+### Delayed lap announcements
+
+Select the heat and voice settings, then use **Prepare pre-cache** and wait for its completion message before racing. This warms the voice model and prepares reusable callsigns and lap numbers. When those segments are resident in RAM, local playback can start them while the new lap time is still being generated. The time is appended in the same callout slot, so another pilot cannot speak between the callsign and its time. Without resident prepared segments, the service prepares the complete announcement first. Cloud relay always receives the complete announcement. Repeat preparation after a restart, for newly selected pilots or changed voice settings. Clearing the TTS cache removes this preparation.
+
+Queued announcements and player buffering also add delay. In the browser player's **Diagnostics**, check output latency and time-sync state. To investigate persistent delays, record the approximate time from a gate crossing to the start of speech, whether the delay occurs on the first lap or every lap, and service logs from the same period (`journalctl -u sendspin-service --since "5 minutes ago" --no-pager`). See [latency telemetry](latency-validation.md) for event and synthesis timing details.
 
 ### Port conflicts
 

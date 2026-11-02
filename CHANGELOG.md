@@ -6,6 +6,35 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-10-29
+
+### Faster lap announcements
+
+**Prepare pre-cache** now warms the voice model even when all audio files already exist, and keeps reusable callsigns, lap numbers and countdown phrases in memory. The active heat's callsigns and lap numbers take priority in that cache.
+
+With the model warm and the required segments in memory, local playback can begin the callsign and lap number while the new lap time is still being generated. The time follows within the same announcement, without another pilot speaking in between. Cloud relay continues to receive each complete announcement.
+
+Run **Prepare pre-cache** before racing, including after a service restart or changes to pilots or voice settings. Live lap announcements also take precedence over queued pre-cache work. Audible latency still depends on the race hardware and connected players.
+
+### More reliable race audio
+
+- Each output keeps up to four waiting lap callouts in passage order, allowing four pilots crossing close together to be announced even when their combined speech exceeds four seconds. Under heavier load, newer laps replace older waiting calls for the same pilot or the oldest waiting lap. Expiry and memory limits still apply; new laps do not interrupt speech already playing.
+- A normal race finish lets the winner and final callouts complete. **Stop audio**, race aborts, heat changes and staging the next race still clear old audio, including when racing the same heat again.
+- Announcements wait for the service to acknowledge their race-state update, preventing a delivery race that could lose the winner announcement or cause an unnecessary reconnect.
+- Cloud listeners can disconnect and reconnect during an audio check and resume at the current position, even when they were the only listener. Finished, stopped or cancelled audio is not replayed.
+
+### Callsigns and minimum lap time
+
+Lap announcements now prefer the pilot's **callsign**, falling back to the phonetic name when it is empty. Pre-cache preparation uses the same preference.
+
+Laps below RotorHazard's **Minimum Lap Time** no longer generate speech or enter the audio queues. Laps exactly at the minimum are still announced, and setting changes apply on the next passage.
+
+### Diagnostics and updating
+
+Service logs now explain why callouts expire, are replaced, are cancelled or fail, and report whether the voice model and prepared heat segments are ready for early playback. Playback acceptance in the logs does not confirm sound at the speaker.
+
+Update the RotorHazard plugin and primary Sendspin service to receive all changes. Update each separate playback or cloud relay service for the queue, diagnostics and reconnect fixes.
+
 ## [2.0.2] - 2026-10-25
 
 ### Clearer cache feedback

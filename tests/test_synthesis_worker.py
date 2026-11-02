@@ -10,6 +10,7 @@ import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from sendspin_service.synthesis.synthesis import (
     SynthesisBusyError,
@@ -135,6 +136,37 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await countdown)["count"], 2)
         self.assertEqual((await lap)["count"], 3)
         self.assertEqual((await background)["count"], 2)
+
+    async def test_abandoned_pending_jobs_release_capacity_before_active_finishes(
+        self,
+    ) -> None:
+        """A cancelled lap must not keep a fresh signal out of a full worker queue."""
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        executed = []
+
+        async def execute(payload: bytes) -> dict:
+            executed.append(payload)
+            if len(executed) == 1:
+                entered.set()
+                await release.wait()
+            return {"count": len(executed)}
+
+        self.enterContext(patch.object(self.worker, "_execute", side_effect=execute))
+        active = self.submit({"text": "active"})
+        await asyncio.wait_for(entered.wait(), 1)
+        abandoned = [self.submit({"text": str(number)}) for number in range(2)]
+        await asyncio.sleep(0)
+        for task in abandoned:
+            task.cancel()
+        await asyncio.gather(*abandoned, return_exceptions=True)
+        signal = self.submit({"text": "fresh signal"}, priority=-1)
+        await asyncio.sleep(0)
+        self.assertFalse(signal.done(), "Fresh signal was rejected before inference")
+        release.set()
+        await active
+        self.assertEqual((await signal)["count"], 2)
+        self.assertEqual(len(executed), 2)
 
 
 if __name__ == "__main__":

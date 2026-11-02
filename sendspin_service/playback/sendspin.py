@@ -60,6 +60,13 @@ class _WavClip:
     duration_s: float
 
 
+@dataclass(frozen=True)
+class _RetainedAudio:
+    start_us: int
+    clip: _WavClip
+    options: _StreamOptions
+
+
 class _SendspinClock(Protocol):
     def now_us(self) -> int:
         """Return the current Sendspin monotonic clock in microseconds."""
@@ -134,6 +141,7 @@ class SendSpinServer:
         self._next_play_start_us: int | None = None
         self._idle_stop_task: asyncio.Task[None] | None = None
         self._playback_generation = 0
+        self._retained_audio: list[_RetainedAudio] = []
 
     def start(self) -> None:
         """Start the Sendspin server in a background daemon thread."""
@@ -328,9 +336,28 @@ class SendSpinServer:
 
     def _on_client_event(self, server: AioSendspinServer, event: SendspinEvent) -> None:
         if isinstance(event, ClientConnectedEvent):
-            task = asyncio.create_task(self._admit_player(server, event.client_id))
+            task = asyncio.create_task(self._connect_player(server, event.client_id))
             self._client_tasks.add(task)
             task.add_done_callback(self._client_tasks.discard)
+
+    async def _connect_player(self, server: AioSendspinServer, client_id: str) -> None:
+        await self._admit_player(server, client_id)
+        # ConnectedEvent announces transport attachment, before client/state
+        # makes the player eligible for streaming.
+        deadline = time.monotonic() + _STARTUP_TIMEOUT_S
+        while True:
+            client = server.get_client(client_id)
+            if client is None or client.connection is None:
+                return
+            if client.is_connected:
+                break
+            if time.monotonic() >= deadline:
+                return
+            await asyncio.sleep(_LATE_JOIN_SYNC_INTERVAL_S)
+        lock = self._stream_lock
+        if lock is not None:
+            async with lock:
+                await self._resume_retained_audio_locked()
 
     @staticmethod
     async def _admit_player(server: AioSendspinServer, client_id: str) -> None:
@@ -375,6 +402,7 @@ class SendSpinServer:
 
     async def _stop_stream_locked(self, *, stop_all_client_groups: bool) -> None:
         self._cancel_idle_stop()
+        self._retained_audio.clear()
         server = self._server
         group = self._stream_group
         self._stream = None
@@ -412,7 +440,8 @@ class SendSpinServer:
             while True:
                 if self._stream_group is not group:
                     return
-                await self._sync_connected_clients(group)
+                if self._stream is not None and not self._stream.is_stopped:
+                    await self._sync_connected_clients(group)
                 delay_s = (play_end_us - clock.now_us()) / 1_000_000 + _IDLE_DRAIN_S
                 if delay_s <= 0:
                     break
@@ -434,6 +463,7 @@ class SendSpinServer:
     ) -> None:
         """Immediately interrupt active playback, even while audio is being queued."""
         self._playback_generation += 1
+        self._retained_audio.clear()
         self._cancel_idle_stop()
         server = self._server
         stream = self._stream
@@ -504,6 +534,8 @@ class SendSpinServer:
             if unattended_start_us is None:
                 return False
 
+        await self._resume_retained_audio_locked()
+
         ensure_started = time.monotonic()
         group, stream = await self._ensure_stream()
         if group is None or stream is None:
@@ -517,6 +549,13 @@ class SendSpinServer:
         play_start_us, stream_options = self._resolve_play_start(
             play_at, now_us, group, volume, cancelled, duration_s
         )
+        if play_at is None:
+            logger.info(
+                "Sendspin playback %s: start in %.1fms, audio %.1fms",
+                clips[0].name,
+                (play_start_us - now_us) / 1000,
+                duration_s * 1000,
+            )
         if unattended_start_us is not None:
             # The programme was already advancing without listeners. Join its
             # current position, including the new player's startup lead time.
@@ -533,10 +572,22 @@ class SendSpinServer:
             )
             return False
         commit_start_us = self._bridge_gap_with_silence(clips, play_start_us)
+        self._retained_audio = [
+            item
+            for item in self._retained_audio
+            if item.start_us + round(item.clip.duration_s * 1_000_000) > now_us
+        ]
+        retained_end_us = commit_start_us
+        for clip in clips:
+            self._retained_audio.append(
+                _RetainedAudio(retained_end_us, clip, stream_options)
+            )
+            retained_end_us += round(clip.duration_s * 1_000_000)
 
         async def sync_clients() -> int:
             return await self._sync_connected_clients(group)
 
+        generation = self._playback_generation
         try:
             queue_started = time.monotonic()
             play_end_us, streamed_count, client_count = await self._queue_wav_paths(
@@ -559,11 +610,68 @@ class SendSpinServer:
                 self._schedule_idle_stop(server.clock, group, play_end_us)
                 return True
         except StreamStoppedError:
-            logger.info("Sendspin service: Sendspin stream stopped")
-            self._stream = None
-            self._stream_group = None
-            self._next_play_start_us = None
+            if generation == self._playback_generation and not (
+                cancelled is not None and cancelled.is_set()
+            ):
+                # The SDK destroys the stream when its last player leaves. Keep
+                # the admitted timeline, including already buffered audio, until
+                # it ends or an explicit stop/context change invalidates it.
+                self._next_play_start_us = retained_end_us
+                self._schedule_idle_stop(server.clock, group, retained_end_us)
+                logger.info("Sendspin service: retaining audio for reconnect")
+                return True
         return False
+
+    async def _resume_retained_audio_locked(self) -> None:
+        """Rebuild a destroyed stream at the current position, never at track start."""
+        server = self._server
+        if server is None or not server.connected_clients:
+            return
+        if self._stream is not None and not self._stream.is_stopped:
+            return
+        now_us = server.clock.now_us()
+        pending = [
+            item
+            for item in self._retained_audio
+            if item.start_us + round(item.clip.duration_s * 1_000_000) > now_us
+            and not (
+                item.options.cancelled is not None and item.options.cancelled.is_set()
+            )
+        ]
+        if not pending:
+            return
+        generation = self._playback_generation
+        self._cancel_idle_stop()
+        group, stream = await self._ensure_stream()
+        if group is None or stream is None:
+            return
+        resume_us = server.clock.now_us() + _group_lead_time_us(group)
+        play_end_us = resume_us
+
+        async def sync_clients() -> int:
+            return await self._sync_connected_clients(group)
+
+        try:
+            for item in pending:
+                start_us = max(item.start_us, resume_us)
+                clips = _skip_elapsed_audio([item.clip], start_us - item.start_us)
+                if not clips:
+                    continue
+                play_end_us, _, _ = await self._queue_wav_paths(
+                    stream,
+                    clips,
+                    play_start_us=start_us,
+                    sync_clients=sync_clients,
+                    options=item.options,
+                )
+        except StreamStoppedError:
+            play_end_us = max(
+                item.start_us + round(item.clip.duration_s * 1_000_000)
+                for item in pending
+            )
+        if generation == self._playback_generation:
+            self._next_play_start_us = play_end_us
+            self._schedule_idle_stop(server.clock, group, play_end_us)
 
     async def _wait_for_first_listener(
         self,
@@ -856,7 +964,7 @@ async def _stream_wav(
 
     for offset in range(0, len(pcm_data), chunk_bytes):
         if stream.is_stopped:
-            return play_start_us, play_end_us, client_count
+            raise StreamStoppedError
         client_count = await sync_clients()
         if play_start_us is None:
             # Only throttle continuation chunks. The first chunk of an
@@ -865,9 +973,9 @@ async def _stream_wav(
             # can take up to 1s per call, so skipping it here keeps that
             # announcement prompt regardless of how full the buffer is.
             await stream.sleep_to_limit_buffer(max_buffer_us=options.max_buffer_us)
-        if stream.is_stopped or (
-            options.cancelled is not None and options.cancelled.is_set()
-        ):
+        if stream.is_stopped:
+            raise StreamStoppedError
+        if options.cancelled is not None and options.cancelled.is_set():
             return play_start_us, None, client_count
         chunk = pcm_data[offset : offset + chunk_bytes]
         stream.prepare_audio(chunk, audio_format, channel_id=MAIN_CHANNEL)

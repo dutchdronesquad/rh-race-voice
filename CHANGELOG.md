@@ -6,6 +6,14 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 ## [Unreleased]
 
+### Medium-quality voices
+
+High-quality models are no longer available for race callouts. Existing Cori High, Lessac High and Thorsten High selections automatically move to the corresponding Medium voice when RotorHazard starts or restores those settings. The new selection is saved and an operator notification asks for pre-cache preparation.
+
+Update the RotorHazard plugin and primary voice service together. Run **Prepare pre-cache** before racing so the replacement model can be downloaded and warmed while internet access is available. Existing downloaded High models and caches are left on disk.
+
+### Continuous race audio
+
 Lap announcements now wait until the complete name, lap number and time are ready before starting local playback. This avoids a mid-sentence pause when time synthesis takes longer than the cached introduction. Announcements can start slightly later; reusable audio remains cached.
 
 Cloud relay uploads available cached lap segments while the time is being prepared, then sends one complete announcement. This overlaps transfer with synthesis without publishing partial callouts.

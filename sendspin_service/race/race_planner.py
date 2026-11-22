@@ -514,6 +514,7 @@ class SendspinPlaybackSink:
                 data=data,
                 event_id=plan.event.event_id,
                 destination=self._destination,
+                segment_index=index,
             )
             for index, data in enumerate(audio)
         ]

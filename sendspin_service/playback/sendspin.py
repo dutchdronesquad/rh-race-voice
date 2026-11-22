@@ -68,6 +68,7 @@ class _WavClip:
     duration_s: float
     event_id: str | None = None
     destination: str | None = None
+    segment_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1063,6 +1064,7 @@ async def _stream_wav(  # noqa: C901, PLR0913
             clip.event_id,
             "sendspin_chunks",
             destination=clip.destination,
+            segment_index=clip.segment_index,
             chunk_gap_ms=round(max_gap_us / 1000, 3),
             min_lead_ms=round(min_lead_us / 1000, 3)
             if min_lead_us is not None
@@ -1207,6 +1209,7 @@ def _read_wav(item: WavItem) -> _WavClip | None:
                 duration_s=frame_count / sample_rate,
                 event_id=item.event_id,
                 destination=item.destination,
+                segment_index=item.segment_index,
             )
     except Exception:
         logger.exception("Sendspin service: cannot read WAV: %s", item.name)

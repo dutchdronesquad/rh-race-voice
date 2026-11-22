@@ -87,5 +87,7 @@ jobs:
         run: npm run lint
       - name: Test player diagnostics
         run: npm test
+      - name: Build standalone player
+        run: npm run build
       - name: 🚀 Build player
         run: npm run build:plugin

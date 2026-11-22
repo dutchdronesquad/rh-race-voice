@@ -114,6 +114,10 @@ class ProgressiveLapTests(unittest.IsolatedAsyncioTestCase):
             await until(lambda: self.backend.play.call_count == 1)
             await until(lambda: self.output._active is None)
         self.assertEqual(self.played_audio(), [(*self.prefix, self.tail)])
+        self.assertEqual(
+            [clip.segment_index for clip in self.backend.play.call_args.args[0]],
+            [0, 1, 2],
+        )
         self.assertEqual(len(self.plans), 1)
         stages = [
             json.loads(record.getMessage())["stage"] for record in captured.records

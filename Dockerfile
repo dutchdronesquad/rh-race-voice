@@ -73,4 +73,4 @@ EXPOSE 8766 8927
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/health', timeout=3).read()"
 
-CMD ["python", "-m", "sendspin_service"]
+CMD ["python", "-m", "sendspin_service", "serve"]

@@ -327,7 +327,9 @@ def _body_limit_mb(value: int) -> int:
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> ServiceConfig:
-    parser = argparse.ArgumentParser(description="Run the Sendspin playback service")
+    parser = argparse.ArgumentParser(
+        prog="sendspin-service serve", description="Run the Sendspin playback service"
+    )
     parser.add_argument(
         "--host",
         default=_env_str("SENDSPIN_INGEST_HOST", DEFAULT_API_HOST),

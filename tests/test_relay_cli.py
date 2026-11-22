@@ -193,7 +193,7 @@ runpy.run_module('sendspin_service', run_name='__main__')
         self.assertIn("disabled", result.stdout)
 
     def test_service_arguments_reach_the_server(self) -> None:
-        """The default invocation still launches the service with its arguments."""
+        """Only the explicit serve command launches the service."""
         with patch("sendspin_service.server.main", return_value=0) as server_main:
-            self.assertEqual(main(["--ingest-port", "8766"]), 0)
-        server_main.assert_called_once_with(["--ingest-port", "8766"])
+            self.assertEqual(main(["serve", "--port", "8766"]), 0)
+        server_main.assert_called_once_with(["--port", "8766"])

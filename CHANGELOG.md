@@ -6,7 +6,15 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 ## [Unreleased]
 
+### Browser player
+
 The browser player now uses Sendspin JS 6 and the Sendspin 1.0.0-rc1 protocol. It requires an `aiosendspin` 10.x server; update older standalone services before using this player. Server URLs and saved connection settings continue to work, and disconnecting releases the player's audio resources.
+
+### Safer service commands
+
+`sendspin-service` now shows help instead of starting another server. Starting a foreground server requires `sendspin-service serve`; add `serve` to custom startup scripts. The bundled systemd unit and Docker command are updated automatically.
+
+Use `status` to check the running service, `--version` to inspect the installed versions even when it is stopped, and `update` to upgrade a 64-bit Raspberry Pi OS/Debian installation through the existing installer. Updates retain configuration and ask for confirmation before installation and restart.
 
 ## [2.1.0] - 2026-10-29
 

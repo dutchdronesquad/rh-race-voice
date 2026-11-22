@@ -12,13 +12,17 @@ if TYPE_CHECKING:
 def main(argv: Sequence[str] | None = None) -> int:
     """Dispatch management commands before importing the audio/server runtime."""
     args = list(argv) if argv is not None else sys.argv[1:]
+    if args[:1] == ["serve"]:
+        from .server import main as server_main  # noqa: PLC0415
+
+        return server_main(args[1:])
     if args[:1] == ["relay"]:
         from .relay_cli import main as relay_main  # noqa: PLC0415
 
         return relay_main(args[1:])
-    from .server import main as server_main  # noqa: PLC0415
+    from .cli import main as management_main  # noqa: PLC0415
 
-    return server_main(args)
+    return management_main(args)
 
 
 if __name__ == "__main__":

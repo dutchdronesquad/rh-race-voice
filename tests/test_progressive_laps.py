@@ -25,7 +25,7 @@ from tests.test_service_speech import SETTINGS
 
 
 class ProgressiveLapTests(unittest.IsolatedAsyncioTestCase):
-    """A cached callsign may play while synthesis of its time is still blocked."""
+    """Cached prefixes reserve order while playback waits for the complete lap."""
 
     async def asyncSetUp(self) -> None:
         """Keep synthesis and playback controlled without model/network dependencies."""
@@ -95,18 +95,18 @@ class ProgressiveLapTests(unittest.IsolatedAsyncioTestCase):
             for call in self.backend.play.call_args_list
         ]
 
-    async def test_cached_prefix_reaches_playback_before_time_finishes(self) -> None:
-        """The prefix removes neural synthesis from time to first playback request."""
+    async def test_cached_prefix_waits_for_time_before_playback(self) -> None:
+        """A slow time cannot leave the player speaking an incomplete lap."""
         with self.assertLogs("sendspin_service.telemetry", level="INFO") as captured:
             self.submit()
-            await until(lambda: self.backend.play.call_count == 1)
-            self.assertEqual(self.played_audio(), [self.prefix])
+            await until(lambda: len(self.plans) == 1)
+            self.assertEqual(self.played_audio(), [])
             self.assertFalse(self.release.is_set())
             self.assertFalse(self.plans[0].completion.done())
             self.release.set()
-            await until(lambda: self.backend.play.call_count == 2)
+            await until(lambda: self.backend.play.call_count == 1)
             await until(lambda: self.output._active is None)
-        self.assertEqual(self.played_audio(), [self.prefix, (self.tail,)])
+        self.assertEqual(self.played_audio(), [(*self.prefix, self.tail)])
         self.assertEqual(len(self.plans), 1)
         stages = [
             json.loads(record.getMessage())["stage"] for record in captured.records
@@ -144,31 +144,29 @@ class ProgressiveLapTests(unittest.IsolatedAsyncioTestCase):
     async def test_another_pilot_cannot_interleave_with_the_reserved_time(self) -> None:
         """Another pilot must wait until the first callout's time is queued."""
         self.submit()
-        await until(lambda: self.backend.play.call_count == 1)
+        await until(lambda: self.output._active is not None)
         self.output.submit(replace(plan(2, pilot=2), audio=(b"other pilot",)))
         self.release.set()
-        await until(lambda: self.backend.play.call_count == 3)
+        await until(lambda: self.backend.play.call_count == 2)
         self.assertEqual(
-            self.played_audio(), [self.prefix, (self.tail,), (b"other pilot",)]
+            self.played_audio(), [(*self.prefix, self.tail), (b"other pilot",)]
         )
 
     async def test_four_pilot_burst_with_an_active_prefix_preserves_every_callout(
         self,
     ) -> None:
-        """Completing times while the first prefix queues must not evict pilot two."""
-        entered = threading.Event()
+        """Waiting for a complete lap must not evict another pilot in a normal burst."""
         release = threading.Event()
         self.addCleanup(release.set)
 
         def blocked(*_args: object, **_kwargs: object) -> bool:
-            entered.set()
             if not release.wait(5):
                 raise TimeoutError("Test did not release playback")
             return True
 
         self.backend.play.side_effect = blocked
         self.submit(1, pilot=1)
-        await until(entered.is_set)
+        await until(lambda: self.output._active is not None)
         for number in range(2, 5):
             self.submit(number, pilot=number)
         self.release.set()
@@ -177,7 +175,7 @@ class ProgressiveLapTests(unittest.IsolatedAsyncioTestCase):
         release.set()
         await until(lambda: not self.output._pending and self.output._active is None)
         first_id = self.plans[0].event.event_id
-        expected = [f"{first_id}-0.wav", f"{first_id}-2.wav"]
+        expected = [f"{first_id}-0.wav"]
         expected.extend(f"{p.event.event_id}-0.wav" for p in self.plans[1:])
         self.assertEqual(
             [call.args[0][0].name for call in self.backend.play.call_args_list],
@@ -189,37 +187,37 @@ class ProgressiveLapTests(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         """Keep an admitted callout complete even when this pilot crosses again."""
         self.submit()
-        await until(lambda: self.backend.play.call_count == 1)
+        await until(lambda: self.output._active is not None)
         self.submit(2)
         self.release.set()
         await until(lambda: self.preparation._active is None)
         await until(lambda: self.output._active is None)
-        self.assertEqual(self.played_audio()[1], (self.tail,))
+        self.assertEqual(self.played_audio()[0], (*self.prefix, self.tail))
         self.assertTrue(self.plans[0].completion.result())
 
     async def test_stop_during_time_synthesis_never_appends_stale_time(self) -> None:
         """The shared completion must finish empty when a stop invalidates synthesis."""
         self.submit()
-        await until(lambda: self.backend.play.call_count == 1)
+        await until(lambda: self.output._active is not None)
         self.current = False
         self.preparation.invalidate()
         await self.output.flush()
         await until(lambda: self.output._active is None)
         self.release.set()
-        self.assertEqual(self.played_audio(), [self.prefix])
+        self.assertEqual(self.played_audio(), [])
         self.assertEqual(self.plans[0].completion.result(), ())
         self.backend.stop.assert_called()
 
     async def test_failed_time_releases_the_output_slot_without_false_success(
         self,
     ) -> None:
-        """An audible prefix is not a successfully delivered complete lap callout."""
+        """Failed time synthesis must not leave an audible incomplete callout."""
         with (
             self.assertLogs("sendspin_service.telemetry", level="INFO") as captured,
             self.assertLogs("sendspin_service.race.race_planner", level="ERROR"),
         ):
             self.submit()
-            await until(lambda: self.backend.play.call_count == 1)
+            await until(lambda: self.output._active is not None)
             self.fail = True
             self.release.set()
             await until(lambda: self.preparation._active is None)
@@ -229,7 +227,7 @@ class ProgressiveLapTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(stages.count("output_dropped"), 1)
         self.assertNotIn("output_played", stages)
-        self.assertEqual(self.played_audio(), [self.prefix])
+        self.assertEqual(self.played_audio(), [])
 
     async def test_expired_continuation_is_not_appended(self) -> None:
         """A prefix never grants the time a fresh deadline."""
@@ -242,7 +240,7 @@ class ProgressiveLapTests(unittest.IsolatedAsyncioTestCase):
         )
         await self.sink.play(callout, threading.Event())
         self.assertFalse(completion.cancelled())
-        self.assertEqual(self.backend.play.call_count, 1)
+        self.assertEqual(self.backend.play.call_count, 0)
 
     async def test_one_output_cannot_cancel_shared_synthesis(self) -> None:
         """Cancellation of a waiting output leaves the shared completion usable."""
@@ -260,10 +258,10 @@ class ProgressiveLapTests(unittest.IsolatedAsyncioTestCase):
     async def test_race_signal_preempts_prefix_and_discards_pending_time(self) -> None:
         """A reserved callout cannot delay staging tones or revive afterwards."""
         self.submit()
-        await until(lambda: self.backend.play.call_count == 1)
+        await until(lambda: self.output._active is not None)
         self.preparation.submit(plan(2, EventKind.TONE), SETTINGS)
-        await until(lambda: self.backend.play.call_count == 2)
+        await until(lambda: self.backend.play.call_count == 1)
         self.release.set()
         await until(lambda: self.output._active is None)
-        self.assertEqual(self.played_audio(), [self.prefix, (b"beep",)])
+        self.assertEqual(self.played_audio(), [(b"beep",)])
         self.assertEqual(self.plans[0].completion.result(), ())

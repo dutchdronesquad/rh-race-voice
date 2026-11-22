@@ -367,29 +367,7 @@ class RaceSessionTests(unittest.IsolatedAsyncioTestCase):
         async with asyncio.timeout(3):
             while self.worker._jobs:  # noqa: ASYNC110
                 await asyncio.sleep(0.001)
-        self.worker.started.clear()
-        self.worker.release.clear()
-        self.local.entered.clear()
-        self.local.release.clear()
-        active = await self._lap(2, 2)
-        await asyncio.wait_for(self.worker.started.wait(), 3)
-        async with asyncio.timeout(3):
-            while not self.local.entered.is_set():  # noqa: ASYNC110
-                await asyncio.sleep(0.001)
-        waiting = await self._lap(3, 2)
-        await self._state(stop=True)
-        await self._settled([active, waiting])
-        self.assertTrue(
-            all(
-                r.get("reason") == "state_changed"
-                for i in (active, waiting)
-                for r in self._finals(i)
-            )
-        )
-        self.worker.release.set()
-        async with asyncio.timeout(3):
-            while self.worker._jobs:  # noqa: ASYNC110
-                await asyncio.sleep(0.001)
+        await self._stop_with_filtered_lap()
         self.worker.started.clear()
         self.worker.release.clear()
         blocking = await self._lap(1, 3)
@@ -403,6 +381,60 @@ class RaceSessionTests(unittest.IsolatedAsyncioTestCase):
         fresh = await self._send("tone", {"asset": "stage"})
         await self._settled([fresh])
         await self._recover_and_shutdown()
+
+    async def _stop_with_filtered_lap(self) -> None:
+        """Stop active speech without rewriting an already-filtered outcome."""
+        self.worker.started.clear()
+        self.worker.release.clear()
+        self.local.entered.clear()
+        self.local.release.clear()
+        self.selected.entered.clear()
+        self.selected.release.clear()
+        active = await self._lap(2, 2)
+        await asyncio.wait_for(self.worker.started.wait(), 3)
+        # Local playback needs the full lap now; release synthesis to enter
+        # the deliberately blocked backend, then hold the next lap's time.
+        self.worker.release.set()
+        async with asyncio.timeout(3):
+            while not (  # noqa: ASYNC110
+                self.local.entered.is_set() and self.selected.entered.is_set()
+            ):
+                await asyncio.sleep(0.001)
+        self.worker.release.clear()
+        waiting = await self._lap(3, 2)
+        # This pilot is excluded from the selected output. Settle that decision
+        # before stopping so runner speed cannot decide which outcome we test.
+        async with asyncio.timeout(3):
+            while not any(  # noqa: ASYNC110
+                r["stage"] == "output_filtered" for r in self._finals(waiting)
+            ):
+                await asyncio.sleep(0.001)
+        await self._state(stop=True)
+        await self._settled([active, waiting])
+        self.assertCountEqual(
+            [
+                (r.get("destination"), r["stage"], r.get("reason"))
+                for r in self._finals(active)
+            ],
+            [
+                ("local", "output_dropped", "state_changed"),
+                ("selected", "output_dropped", "state_changed"),
+            ],
+        )
+        self.assertCountEqual(
+            [
+                (r.get("destination"), r["stage"], r.get("reason"))
+                for r in self._finals(waiting)
+            ],
+            [
+                ("local", "output_dropped", "state_changed"),
+                ("selected", "output_filtered", "selection"),
+            ],
+        )
+        self.worker.release.set()
+        async with asyncio.timeout(3):
+            while self.worker._jobs:  # noqa: ASYNC110
+                await asyncio.sleep(0.001)
 
     async def _recover_and_shutdown(self) -> None:
         """Explain a worker crash, recover with explicit preparation, then close."""

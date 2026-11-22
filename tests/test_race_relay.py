@@ -18,8 +18,9 @@ import time
 import unittest
 import uuid
 from dataclasses import replace
+from unittest.mock import patch
 
-from aiohttp import web
+from aiohttp import ClientError, web
 from aiohttp.test_utils import TestClient, TestServer
 
 from sendspin_service.race.race_ingest import RaceIngest
@@ -151,9 +152,9 @@ class RaceRelaySinkTests(unittest.IsolatedAsyncioTestCase):
         completion = asyncio.get_running_loop().create_future()
         callout = replace(_plan(1, audio=(b"callsign", b"lap")), completion=completion)
         task = asyncio.create_task(self.sink.play(callout, threading.Event()))
-        await asyncio.sleep(0)
+        await until(lambda: len(self.server.uploads) == 2)
         self.assertEqual(self.server.events, [])
-        self.assertEqual(self.server.uploads, [])
+        self.assertFalse(completion.done())
         audio = (b"callsign", b"lap", b"time")
         completion.set_result(audio)
         await task
@@ -172,6 +173,41 @@ class RaceRelaySinkTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.server.events, [])
         self.assertEqual(self.server.uploads, [])
+
+    async def test_failed_time_after_prefix_upload_never_publishes_event(self) -> None:
+        """Cached assets alone must not make an incomplete callout playable."""
+        completion = asyncio.get_running_loop().create_future()
+        callout = replace(_plan(1, audio=(b"callsign",)), completion=completion)
+        task = asyncio.create_task(self.sink.play(callout, threading.Event()))
+        await until(lambda: len(self.server.uploads) == 1)
+        completion.set_result(())
+        await task
+        self.assertEqual(self.server.events, [])
+
+    async def test_prefix_upload_failure_recovers_during_complete_delivery(
+        self,
+    ) -> None:
+        """Speculative cache failures must not lose a valid complete callout."""
+        completion = asyncio.get_running_loop().create_future()
+        callout = replace(_plan(1, audio=(b"callsign",)), completion=completion)
+        original = self.sink._announce
+        attempts = 0
+
+        async def announce(hashes: list[str], audio: tuple[bytes, ...]) -> set[str]:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise ClientError("Prefix cache unavailable")
+            return await original(hashes, audio)
+
+        with patch.object(self.sink, "_announce", side_effect=announce):
+            task = asyncio.create_task(self.sink.play(callout, threading.Event()))
+            await until(lambda: attempts == 1)
+            completion.set_result((b"callsign", b"time"))
+            await task
+        self.assertEqual(len(self.server.events), 1)
+        self.assertEqual(len(self.server.events[0]["audio_refs"]), 2)
+        self.assertEqual(len(self.server.uploads), 2)
 
     async def test_cancelled_progressive_plan_does_not_wait_for_synthesis(self) -> None:
         """An already-stopped output must not wait on another output's live time."""

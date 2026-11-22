@@ -6,6 +6,10 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 ## [Unreleased]
 
+Lap announcements now wait until the complete name, lap number and time are ready before starting local playback. This avoids a mid-sentence pause when time synthesis takes longer than the cached introduction. Announcements can start slightly later; reusable audio remains cached.
+
+Cloud relay uploads available cached lap segments while the time is being prepared, then sends one complete announcement. This overlaps transfer with synthesis without publishing partial callouts.
+
 ## [2.2.0] - 2026-11-22
 
 Race Voice 2.2.0 makes the standalone service easier to inspect and update on Raspberry Pi and upgrades the browser player to Sendspin JS 6. This release includes two changes to account for when upgrading.

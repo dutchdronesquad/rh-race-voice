@@ -23,10 +23,10 @@ Pending expiry, invalidation, preemption, playback failure, stop-barrier failure
 The service automatically records race-audio diagnostics for as long as it runs, on both primary and relay instances. Put the timer in the field and race normally; there is nothing to enable before a race or to stop afterwards. After an issue, or after the evening, request an export:
 
 ```sh
-sendspin-service diagnostics export --output race-audio-primary.zip
+sendspin-service diagnostics export
 ```
 
-Export leaves recording running. `sendspin-service diagnostics status` reports recording health. The CLI reads the local API URL and `SENDSPIN_API_TOKEN` from `/etc/default/sendspin-service`, with an environment token taking precedence. Use `--env-file PATH` for another configuration or `--url https://audio.example.com` to export from a remote relay. The read-only `/v2/diagnostics/status` and `/export` endpoints use the existing service API authentication; listener controls do not grant export access.
+The ZIP is saved in the current directory as `race-audio-YYYY-MM-DD-HHMMSSZ.zip`, using UTC. Use `--output race-audio-primary.zip` to choose another path or name. Existing files are never overwritten. Export leaves recording running. `sendspin-service diagnostics status` reports recording health. The CLI reads the local API URL and `SENDSPIN_API_TOKEN` from `/etc/default/sendspin-service`, with an environment token taking precedence. Use `--env-file PATH` for another configuration or `--url https://audio.example.com` to export from a remote relay. The read-only `/v2/diagnostics/status` and `/export` endpoints use the existing service API authentication; listener controls do not grant export access.
 
 Records are persisted on disk and kept when the service restarts. The default directory is `diagnostics` beside the race-cache directory, under the service state directory for packaged installations. Override it with `SENDSPIN_DIAGNOSTICS_DIR` or `serve --diagnostics-dir PATH`. The manifest keeps context for the current capture and up to 20 previous captures so restarts remain distinguishable.
 

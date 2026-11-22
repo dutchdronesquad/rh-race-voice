@@ -11,6 +11,7 @@ import os
 import threading
 import unittest
 import zipfile
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
@@ -247,6 +248,20 @@ class DiagnosticApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("manifest.json", unpack(first))
             self.assertEqual(await asyncio.to_thread(main, command), 1)
             self.assertEqual(target.read_bytes(), first)
+            with (
+                patch(
+                    "sendspin_service.diagnostics_cli.Path.cwd", return_value=self.root
+                ),
+                patch("sendspin_service.diagnostics_cli.datetime") as clock,
+            ):
+                clock.now.return_value = datetime(2026, 11, 22, 14, 30, tzinfo=UTC)
+                default_command = ["diagnostics", "export", *common]
+                self.assertEqual(await asyncio.to_thread(main, default_command), 0)
+                default_file = self.root / "race-audio-2026-11-22-143000Z.zip"
+                original = default_file.read_bytes()
+                self.assertIn("manifest.json", unpack(original))
+                self.assertEqual(await asyncio.to_thread(main, default_command), 1)
+                self.assertEqual(default_file.read_bytes(), original)
 
 
 class AutomaticStartupTests(unittest.IsolatedAsyncioTestCase):

@@ -9,6 +9,7 @@ import json
 import os
 import shlex
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
@@ -39,10 +40,15 @@ def main(argv: list[str]) -> int:
         "--url", help="Service API base URL; defaults to local configuration"
     )
     parser.add_argument("--env-file", type=Path, default=ENV_FILE)
-    parser.add_argument("--output", type=Path, help="New ZIP file to write for export")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help=(
+            "Export path; default: race-audio-YYYY-MM-DD-HHMMSSZ.zip "
+            "in current directory (UTC)"
+        ),
+    )
     args = parser.parse_args(argv)
-    if args.action == "export" and args.output is None:
-        parser.error("export requires --output FILE.zip")
     try:
         parts = urlsplit(_health_url(args.url or _local_url(args.env_file)))
         if parts.username is not None or parts.password is not None:
@@ -70,9 +76,12 @@ def main(argv: list[str]) -> int:
         if args.action == "export":
             if content_type != "application/zip" or not data.startswith(b"PK"):
                 raise ValueError("Service did not return a diagnostic ZIP")
-            with args.output.open("xb") as output:
+            output_path = args.output or Path.cwd() / datetime.now(UTC).strftime(
+                "race-audio-%Y-%m-%d-%H%M%SZ.zip"
+            )
+            with output_path.open("xb") as output:
                 output.write(data)
-            print(f"Saved diagnostic recording to {args.output}")
+            print(f"Saved diagnostic recording to {output_path}")
         else:
             print(json.dumps(json.loads(data), indent=2))
     except (OSError, ValueError) as exc:

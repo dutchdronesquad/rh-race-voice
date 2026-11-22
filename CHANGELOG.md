@@ -10,6 +10,8 @@ Lap announcements now wait until the complete name, lap number and time are read
 
 Cloud relay uploads available cached lap segments while the time is being prepared, then sends one complete announcement. This overlaps transfer with synthesis without publishing partial callouts.
 
+Playback buffering now respects connected players that request more preparation time than the default queue limits. This prevents the Sendspin scheduler from inserting silence between chunks of a buzzer or spoken announcement. Minimum buffer requirements and output delay also contribute to startup timing.
+
 ## [2.2.0] - 2026-11-22
 
 Race Voice 2.2.0 makes the standalone service easier to inspect and update on Raspberry Pi and upgrades the browser player to Sendspin JS 6. This release includes two changes to account for when upgrading.

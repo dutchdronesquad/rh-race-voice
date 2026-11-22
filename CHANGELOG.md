@@ -6,6 +6,8 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 ## [Unreleased]
 
+The browser player now uses Sendspin JS 6 and the Sendspin 1.0.0-rc1 protocol. It requires an `aiosendspin` 10.x server; update older standalone services before using this player. Server URLs and saved connection settings continue to work, and disconnecting releases the player's audio resources.
+
 ## [2.1.0] - 2026-10-29
 
 ### Faster lap announcements

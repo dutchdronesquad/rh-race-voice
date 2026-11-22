@@ -1,0 +1,17 @@
+---
+name: Latest RotorHazard
+
+# yamllint disable-line rule:truthy
+on:
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    uses: ./.github/workflows/rotorhazard-contract.yaml
+    with:
+      latest: true

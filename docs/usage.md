@@ -73,6 +73,22 @@ After updating either component, connect a player and run **Play audio check**.
 
 Settings are in `/etc/default/sendspin-service`. Defaults: local HTTP API on `127.0.0.1:8766`, Sendspin player endpoint on `0.0.0.0:8927`. After editing, run `sudo systemctl restart sendspin-service`.
 
+### Service commands on Raspberry Pi
+
+Running `sendspin-service` without arguments shows help. It never starts a second server. Use these commands to inspect and maintain the installed service:
+
+```sh
+sendspin-service status
+sendspin-service --version
+sendspin-service update
+```
+
+`status` queries the running service and shows its version, its `aiosendspin` version and the number of connected players. It reads the local API address from `/etc/default/sendspin-service`, with environment variables taking precedence. Use `status --url https://audio.example.com` for another service or `status --json` for scripts. An unreachable or unhealthy API returns exit code 1; it does not start or restart anything. The installed executable's version is shown separately from the running process version. `--version` (also `version`) works even when the service is stopped and includes the locally installed dependency and Python versions.
+
+`update` uses the bundled Debian installer to select the latest stable release, show the installed and target versions, verify the package checksum, preserve configuration and restart the service. It asks for confirmation and uses `sudo` when installation needs root privileges. Use `update v2.1.0` to select an exact release, or `update --yes` to confirm an unattended update. Exact older releases are clearly labelled as downgrades by the installer. This updater supports the `.deb` installation on 64-bit Raspberry Pi OS or Debian; Docker installations should pull and recreate their container instead.
+
+To run a foreground server manually, use `sendspin-service serve` (or `python -m sendspin_service serve` from a checkout). Server flags follow `serve`, for example `sendspin-service serve --port 8767`. For existing custom scripts or service units, add `serve` to the old startup command. The bundled systemd unit and Docker image already include it. Use `serve --help` for server options.
+
 ```shell
 systemctl status sendspin-service --no-pager
 curl --fail http://127.0.0.1:8766/health
@@ -220,7 +236,7 @@ Multiple devices can connect simultaneously and will receive the same audio in s
 
 The player stores the server URL in the browser's local storage and reconnects automatically if the connection drops.
 
-Race Voice checks each configured Sendspin service's health and installed `aiosendspin` version automatically in the background when RotorHazard starts. Successful checks are logged; problems produce warnings. **Play audio check** queues the test audio directly. The bundled browser player requires `aiosendspin` 9.0.0 or newer; the plugin and service release numbers do not need to match. Passing the minimum-version check does not verify browser connectivity or audio output.
+Race Voice checks each configured Sendspin service's health and installed `aiosendspin` version automatically in the background when RotorHazard starts. Successful checks are logged; problems produce warnings. **Play audio check** queues the test audio directly. The bundled browser player uses Sendspin JS 6 and requires `aiosendspin` 10.0.0 or newer for the Sendspin 1.0.0-rc1 protocol; the plugin and service release numbers do not need to match. Passing the minimum-version check does not verify browser connectivity or audio output.
 
 An older service may not report its `aiosendspin` version. In that case the plugin warns that browser compatibility cannot be verified. A startup warning does not disable later playback attempts. Update the separate `sendspin-service` installation to address a backend version mismatch: updating RotorHazard's venv does not update the service's bundled Python environment. If an update prevents the service from starting, check `journalctl -u sendspin-service` for dependency or startup errors.
 

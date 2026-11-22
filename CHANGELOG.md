@@ -6,6 +6,37 @@ This changelog is intentionally concise. GitHub Releases can carry the fuller ch
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-11-22
+
+Race Voice 2.2.0 makes the standalone service easier to inspect and update on Raspberry Pi and upgrades the browser player to Sendspin JS 6. This release includes two changes to account for when upgrading.
+
+### Upgrading to 2.2.0
+
+- **Explicit service startup:** `sendspin-service` without arguments now shows help. Use `sendspin-service serve` to start a foreground server, with server options after `serve`. Update custom startup scripts and service units accordingly. The bundled systemd unit and Docker command already include this change.
+- **Browser player compatibility:** the new player uses the Sendspin 1.0.0-rc1 protocol and requires an `aiosendspin` 10.x server. Update any older local or cloud service that browser listeners connect to before using the new player. Updating only the RotorHazard plugin does not update those services.
+
+Existing server URLs and saved browser connection settings continue to work. Plugin and service release numbers do not need to match; the server's `aiosendspin` version determines browser protocol compatibility. See the [Usage Guide](docs/usage.md) for installation and upgrade instructions.
+
+### Service management on Raspberry Pi
+
+Inspect the service without accidentally starting a second server:
+
+| Command | Purpose |
+| --- | --- |
+| `sendspin-service status` | Show the running service version, its `aiosendspin` version and connected player count. |
+| `sendspin-service --version` | Show installed service, dependency and Python versions, even when the service is stopped. |
+| `sendspin-service update` | Update a 64-bit Raspberry Pi OS/Debian `.deb` installation to the latest stable release. |
+
+Status distinguishes the installed version from the running process, helping identify a service that still needs restarting after an update. It also supports remote service URLs and JSON output for scripts.
+
+The updater shows the installed and target versions, asks for confirmation, verifies the downloaded package checksum, preserves configuration and restarts the service. An exact release can be selected with `update <release-tag>`; `--yes` confirms unattended updates. Docker installations continue to update by pulling and recreating their container. Existing relay commands remain available.
+
+### Browser playback and compatibility checks
+
+Disconnecting, leaving the player page or failing to connect now releases the browser player's audio resources instead of retaining an unused audio output.
+
+Automated compatibility checks now cover both stable and development RotorHazard versions. Daily checks against the latest upstream stable release and development branch help detect new incompatibilities without waiting for a manual test-version update.
+
 ## [2.1.0] - 2026-10-29
 
 ### Faster lap announcements

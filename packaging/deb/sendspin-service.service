@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=-/etc/default/sendspin-service
-ExecStart=/opt/sendspin-service/bin/sendspin-service
+ExecStart=/opt/sendspin-service/bin/sendspin-service serve
 Restart=on-failure
 RestartSec=2
 DynamicUser=yes

@@ -341,8 +341,10 @@ export function App() {
     resetDetailLogs();
     addLog(`Connecting to ${normalizedUrl}`);
 
+    const websocketUrl = new URL(`${normalizedUrl}/sendspin`);
+    websocketUrl.protocol = websocketUrl.protocol === "https:" ? "wss:" : "ws:";
     const player = new SendspinPlayer({
-      baseUrl: normalizedUrl,
+      url: websocketUrl.toString(),
       clientName: "Race Voice Browser Player",
       codecs: [...CODECS],
       correctionMode,
@@ -398,7 +400,7 @@ export function App() {
       setServerOpen(false);
       addLog("Connected");
     } catch (err) {
-      player.disconnect("shutdown");
+      player.destroy("shutdown");
       playerRef.current = null;
       hasConnectedRef.current = false;
       const message = err instanceof Error ? err.message : "Connection failed";
@@ -414,7 +416,7 @@ export function App() {
     hasConnectedRef.current = false;
     lastPlayingRef.current = false;
     resetDetailLogs();
-    if (player) player.disconnect("user_request");
+    if (player) player.destroy("user_request");
     setState("disconnected");
     setServerOpen(true);
     setSnapshot((current) => ({ ...current, isConnected: false, isPlaying: false, format: null, timeSynced: false }));
@@ -468,7 +470,7 @@ export function App() {
 
   useEffect(
     () => () => {
-      playerRef.current?.disconnect("shutdown");
+      playerRef.current?.destroy("shutdown");
     },
     [],
   );

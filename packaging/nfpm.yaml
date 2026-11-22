@@ -29,6 +29,10 @@ contents:
     dst: /lib/systemd/system/sendspin-service.service
     file_info:
       mode: 0644
+  - src: tools/install-sendspin-service.sh
+    dst: /opt/sendspin-service/bin/install-sendspin-service.sh
+    file_info:
+      mode: 0755
   - src: packaging/deb/sendspin-service.default
     dst: /etc/default/sendspin-service
     type: config|noreplace

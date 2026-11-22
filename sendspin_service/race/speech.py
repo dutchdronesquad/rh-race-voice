@@ -101,16 +101,24 @@ class SpeechEngine:
     ) -> tuple[bytes, ...]:
         """Do not return partial/obsolete speech after expiry, stop or heat changes."""
 
-        async def generate(segment: CalloutSegment) -> dict | None:
+        async def generate(index: int, segment: CalloutSegment) -> dict | None:
             if not is_current() or time.monotonic() >= deadline:
                 return None
+            started = time.monotonic()
             result = await self.worker.request(
                 self._request(settings, segment),
                 deadline=deadline,
                 priority=priority,
             )
             if on_segment is not None:
-                on_segment(result)
+                on_segment(
+                    {
+                        **result,
+                        "segment_index": index,
+                        "subdir": segment.subdir,
+                        "request_ms": round((time.monotonic() - started) * 1000, 3),
+                    }
+                )
             if not is_current() or time.monotonic() >= deadline:
                 return None
             return result
@@ -119,7 +127,10 @@ class SpeechEngine:
         # worker still runs one operation at a time, but queued background
         # preparation can no longer slip between these live segments.
         segments = self.segments(event, settings["model"])
-        tasks = [asyncio.create_task(generate(segment)) for segment in segments]
+        tasks = [
+            asyncio.create_task(generate(index, segment))
+            for index, segment in enumerate(segments)
+        ]
 
         async def publish_prefix() -> None:
             prefix = await asyncio.gather(*tasks[:-1])

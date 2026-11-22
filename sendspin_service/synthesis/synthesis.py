@@ -37,6 +37,7 @@ class _Job:
     waiters: int = field(default=0, compare=False)
     running: bool = field(default=False, compare=False)
     cache_epoch: int = field(default=0, compare=False)
+    enqueued_at: float = field(default_factory=time.monotonic, compare=False)
 
 
 @dataclass(frozen=True)
@@ -217,6 +218,7 @@ class SynthesisWorker:
                 "memory_cache_hit": True,
                 "model_warm": self._model_is_warm(cached.model, signature),
                 "duration_ms": 0,
+                "worker_wait_ms": 0,
             }
         del self._audio_cache[key]
         self._audio_cache_bytes -= len(cached.audio)
@@ -342,7 +344,9 @@ class SynthesisWorker:
                     and self._warm_model[0] != payload.get("model")
                 ):
                     self._warm_model = None
+                worker_wait_ms = round((time.monotonic() - job.enqueued_at) * 1000, 3)
                 result = await self._execute(job.request)
+                result["worker_wait_ms"] = worker_wait_ms
                 if payload.get("operation") in {"synthesize", "warmup"}:
                     signature = result.get("model_signature")
                     self._warm_model = (

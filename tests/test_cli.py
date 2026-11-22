@@ -39,6 +39,7 @@ runpy.run_module('sendspin_service', run_name='__main__')
             (["version"], 0, "aiosendspin:"),
             (["status", "--help"], 0, "--url"),
             (["update", "--help"], 0, "--yes"),
+            (["diagnostics", "--help"], 0, "export"),
             (["unknown"], 2, "invalid choice"),
             (["--port", "8766"], 2, "invalid choice"),
         ):

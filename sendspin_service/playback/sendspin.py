@@ -18,9 +18,15 @@ from typing import TYPE_CHECKING, Protocol
 import numpy as np
 from aiosendspin.noise.keys import Identity
 from aiosendspin.noise.trust_store import FileServerPairingStore, PskCategory
-from aiosendspin.server import AudioFormat, ClientConnectedEvent
+from aiosendspin.server import (
+    AudioFormat,
+    ClientConnectedEvent,
+    ClientDisconnectedEvent,
+)
 from aiosendspin.server import SendspinServer as AioSendspinServer
 from aiosendspin.server.push_stream import MAIN_CHANNEL, StreamStoppedError
+
+from sendspin_service.race import telemetry
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -51,6 +57,7 @@ class _StreamOptions:
     volume: float = 1.0
     cancelled: threading.Event | None = None
     group: SendspinGroup | None = None
+    clock: _SendspinClock | None = None
 
 
 @dataclass(frozen=True)
@@ -59,6 +66,9 @@ class _WavClip:
     audio_format: AudioFormat
     pcm_data: bytes
     duration_s: float
+    event_id: str | None = None
+    destination: str | None = None
+    segment_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -336,6 +346,18 @@ class SendSpinServer:
         )
 
     def _on_client_event(self, server: AioSendspinServer, event: SendspinEvent) -> None:
+        if isinstance(event, (ClientConnectedEvent, ClientDisconnectedEvent)):
+            client = server.get_client(event.client_id)
+            info = client.info_or_none if client is not None else None
+            device = getattr(info, "device_info", None)
+            telemetry.record(
+                "players",
+                "client_connected"
+                if isinstance(event, ClientConnectedEvent)
+                else "client_disconnected",
+                client_product=getattr(device, "product_name", None),
+                client_software=getattr(device, "software_version", None),
+            )
         if isinstance(event, ClientConnectedEvent):
             task = asyncio.create_task(self._connect_player(server, event.client_id))
             self._client_tasks.add(task)
@@ -515,7 +537,7 @@ class SendSpinServer:
                 clips, expires_at, play_at, duration_s, volume, cancelled
             )
 
-    async def _append_to_stream_locked(  # noqa: C901, PLR0913, PLR0911
+    async def _append_to_stream_locked(  # noqa: C901, PLR0913, PLR0911, PLR0912
         self,
         clips: list[_WavClip],
         expires_at: float | None,
@@ -547,6 +569,7 @@ class SendSpinServer:
         )
 
         now_us = server.clock.now_us()
+        schedule_now = time.monotonic()
         play_start_us, stream_options = self._resolve_play_start(
             play_at, now_us, group, volume, cancelled, duration_s
         )
@@ -572,6 +595,25 @@ class SendSpinServer:
                 "Sendspin service dropped stale audio before Sendspin scheduling"
             )
             return False
+        if clips[0].event_id is not None:
+            start = schedule_now + (play_start_us - now_us) / 1_000_000
+            telemetry.record(
+                clips[0].event_id,
+                "sendspin_schedule",
+                destination=clips[0].destination,
+                start_in_ms=round((play_start_us - now_us) / 1000, 3),
+                target_late_ms=round(max(0.0, start - play_at) * 1000, 3)
+                if play_at is not None
+                else None,
+                audio_ms=round(duration_s * 1000, 3),
+                scheduled_start=start,
+                scheduled_end=start + duration_s,
+                schedule_gap_ms=round(
+                    max(0, play_start_us - self._next_play_start_us) / 1000, 3
+                )
+                if self._next_play_start_us is not None
+                else 0,
+            )
         commit_start_us = self._bridge_gap_with_silence(clips, play_start_us)
         self._retained_audio = [
             item
@@ -752,6 +794,7 @@ class SendSpinServer:
                 cancelled=cancelled,
                 volume=volume,
                 group=group,
+                clock=self._server.clock if self._server is not None else None,
             )
         play_start_us = self._next_play_start_us
         if play_start_us is None or play_start_us <= now_us:
@@ -761,6 +804,7 @@ class SendSpinServer:
             volume=volume,
             cancelled=cancelled,
             group=group,
+            clock=self._server.clock if self._server is not None else None,
         )
 
     def _bridge_gap_with_silence(
@@ -808,6 +852,7 @@ class SendSpinServer:
                 play_start_us=next_play_start_us,
                 sync_clients=sync_clients,
                 options=options,
+                expected_start_us=play_end_us,
             )
             if options.cancelled is not None and options.cancelled.is_set():
                 break
@@ -948,13 +993,14 @@ def _scheduled_buffer_limit_us(
     )
 
 
-async def _stream_wav(
+async def _stream_wav(  # noqa: C901, PLR0913
     stream: _PushStream,
     clip: _WavClip,
     *,
     play_start_us: int | None,
     sync_clients: Callable[[], Awaitable[int]],
     options: _StreamOptions,
+    expected_start_us: int | None = None,
 ) -> tuple[int | None, int | None, int]:
     client_count = await sync_clients()
     audio_format = clip.audio_format
@@ -970,6 +1016,10 @@ async def _stream_wav(
     chunk_frames = max(1, int(audio_format.sample_rate * _CHUNK_DURATION_S))
     chunk_bytes = chunk_frames * bytes_per_frame
     play_end_us: int | None = None
+    max_gap_us = 0
+    min_lead_us: int | None = None
+    maximum_buffer_us = options.max_buffer_us
+    previous_end_us = expected_start_us
 
     for offset in range(0, len(pcm_data), chunk_bytes):
         if stream.is_stopped:
@@ -991,6 +1041,7 @@ async def _stream_wav(
                     _group_lead_time_us(options.group) + _BUFFER_SAFETY_MARGIN_US,
                 )
             await stream.sleep_to_limit_buffer(max_buffer_us=buffer_us)
+            maximum_buffer_us = max(maximum_buffer_us, buffer_us)
         if stream.is_stopped:
             raise StreamStoppedError
         if options.cancelled is not None and options.cancelled.is_set():
@@ -998,10 +1049,29 @@ async def _stream_wav(
         chunk = pcm_data[offset : offset + chunk_bytes]
         stream.prepare_audio(chunk, audio_format, channel_id=MAIN_CHANNEL)
         chunk_start_us = await stream.commit_audio(play_start_us=play_start_us)
+        if previous_end_us is not None:
+            max_gap_us = max(max_gap_us, chunk_start_us - previous_end_us)
+        if options.clock is not None:
+            lead_us = chunk_start_us - options.clock.now_us()
+            min_lead_us = lead_us if min_lead_us is None else min(min_lead_us, lead_us)
         frames_in_chunk = len(chunk) // bytes_per_frame
         chunk_duration_us = int(frames_in_chunk * 1_000_000 / audio_format.sample_rate)
         play_end_us = chunk_start_us + chunk_duration_us
+        previous_end_us = play_end_us
         play_start_us = None
+    if clip.event_id is not None:
+        telemetry.record(
+            clip.event_id,
+            "sendspin_chunks",
+            destination=clip.destination,
+            segment_index=clip.segment_index,
+            chunk_gap_ms=round(max_gap_us / 1000, 3),
+            min_lead_ms=round(min_lead_us / 1000, 3)
+            if min_lead_us is not None
+            else None,
+            client_count=client_count,
+            max_buffer_ms=round(maximum_buffer_us / 1000, 3),
+        )
     return play_start_us, play_end_us, client_count
 
 
@@ -1014,9 +1084,8 @@ def _skip_elapsed_audio(clips: list[_WavClip], elapsed_us: int) -> list[_WavClip
             continue
         frames = elapsed_us * clip.audio_format.sample_rate // 1_000_000
         frame_bytes = clip.audio_format.channels * (clip.audio_format.bit_depth // 8)
-        suffix = _WavClip(
-            name=clip.name,
-            audio_format=clip.audio_format,
+        suffix = replace(
+            clip,
             pcm_data=clip.pcm_data[frames * frame_bytes :],
             duration_s=clip.duration_s - frames / clip.audio_format.sample_rate,
         )
@@ -1028,9 +1097,8 @@ def _with_silent_tail(clip: _WavClip) -> _WavClip:
     """Feed the resampler/encoder enough trailing PCM to deliver a short tone."""
     frames = int(clip.audio_format.sample_rate * _SCHEDULED_TAIL_S)
     frame_bytes = clip.audio_format.channels * (clip.audio_format.bit_depth // 8)
-    return _WavClip(
-        name=clip.name,
-        audio_format=clip.audio_format,
+    return replace(
+        clip,
         pcm_data=clip.pcm_data + bytes(frames * frame_bytes),
         duration_s=clip.duration_s + frames / clip.audio_format.sample_rate,
     )
@@ -1040,9 +1108,8 @@ def _with_silent_prefix(clip: _WavClip, seconds: float) -> _WavClip:
     """Prepend real silence so this clip is a genuine stream continuation."""
     frames = int(clip.audio_format.sample_rate * seconds)
     frame_bytes = clip.audio_format.channels * (clip.audio_format.bit_depth // 8)
-    return _WavClip(
-        name=clip.name,
-        audio_format=clip.audio_format,
+    return replace(
+        clip,
         pcm_data=bytes(frames * frame_bytes) + clip.pcm_data,
         duration_s=clip.duration_s + frames / clip.audio_format.sample_rate,
     )
@@ -1140,6 +1207,9 @@ def _read_wav(item: WavItem) -> _WavClip | None:
                 audio_format=audio_format,
                 pcm_data=wav_file.readframes(frame_count),
                 duration_s=frame_count / sample_rate,
+                event_id=item.event_id,
+                destination=item.destination,
+                segment_index=item.segment_index,
             )
     except Exception:
         logger.exception("Sendspin service: cannot read WAV: %s", item.name)

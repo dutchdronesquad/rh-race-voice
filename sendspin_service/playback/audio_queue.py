@@ -23,3 +23,6 @@ class WavItem:
     name: str
     path: str | None = None
     data: bytes | None = None
+    event_id: str | None = None
+    destination: str | None = None
+    segment_index: int | None = None

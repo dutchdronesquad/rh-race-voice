@@ -20,6 +20,14 @@ Cloud relay uploads available cached lap segments while the time is being prepar
 
 Playback buffering now respects connected players that request more preparation time than the default queue limits. This prevents the Sendspin scheduler from inserting silence between chunks of a buzzer or spoken announcement. Minimum buffer requirements and output delay also contribute to startup timing.
 
+### Automatic audio diagnostics
+
+The voice service now automatically saves recent audio diagnostics while it runs. Nothing needs enabling before a race. Records stay on disk across service restarts, with a rolling limit of 64 MiB; the oldest data is replaced when that limit is reached.
+
+After racing, run `sendspin-service diagnostics export` to create a ZIP in the current directory with a name such as `race-audio-2026-11-22-143000Z.zip` (UTC). Use `--output` only to choose a different name or location. Export keeps recording running and never overwrites an existing file.
+
+The export includes synthesis, queue, relay and playback-scheduling measurements to help investigate delays and interruptions. Speech text and tokens are excluded. The browser player also automatically keeps its latest ten minutes of buffer and synchronization measurements, available as a separate download under **Diagnostics**. See the [capture guide](docs/latency-validation.md#capturing-a-baseline) for collection and interpretation limits.
+
 ## [2.2.0] - 2026-11-22
 
 Race Voice 2.2.0 makes the standalone service easier to inspect and update on Raspberry Pi and upgrades the browser player to Sendspin JS 6. This release includes two changes to account for when upgrading.

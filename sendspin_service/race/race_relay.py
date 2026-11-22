@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 import aiohttp
 
+from . import telemetry
 from .race_planner import record_output
 
 if TYPE_CHECKING:
@@ -80,16 +81,24 @@ class RaceRelaySink:
                 # segments during that wait, but never publish a partial event.
                 # A failed speculative upload is retried by normal delivery.
                 try:
-                    await self._upload_audio(plan.audio, cancelled)
+                    await self._upload_audio(plan.audio, cancelled, event_id=event_id)
                 except (aiohttp.ClientError, TimeoutError):
                     logger.debug("Sendspin relay: prefix upload failed", exc_info=True)
             plan = await self._complete_plan(plan)
             if plan is None:
                 return
         for attempt in range(_MAX_ATTEMPTS):
+            telemetry.record(
+                event_id,
+                "relay_attempt",
+                destination=self._destination,
+                attempts=attempt + 1,
+            )
             try:
                 await self._ensure_clock()
-                hashes = await self._upload_audio(plan.audio, cancelled)
+                hashes = await self._upload_audio(
+                    plan.audio, cancelled, event_id=event_id
+                )
                 if cancelled.is_set():
                     record_output(
                         plan,
@@ -98,7 +107,14 @@ class RaceRelaySink:
                         destination=self._destination,
                     )
                     return
+                started = time.monotonic()
                 await self._send_event(plan, hashes)
+                telemetry.record(
+                    event_id,
+                    "relay_delivery",
+                    destination=self._destination,
+                    delivery_ms=round((time.monotonic() - started) * 1000, 3),
+                )
             except (aiohttp.ClientError, TimeoutError):
                 out_of_attempts = attempt + 1 >= _MAX_ATTEMPTS
                 expired = plan.deadline <= time.monotonic()
@@ -120,18 +136,35 @@ class RaceRelaySink:
                 return
 
     async def _upload_audio(
-        self, audio: tuple[bytes, ...], cancelled: threading.Event
+        self, audio: tuple[bytes, ...], cancelled: threading.Event, *, event_id: str
     ) -> list[str]:
         """Populate the content cache without making any callout playable."""
         hashes = [hashlib.sha256(data).hexdigest() for data in audio]
         if cancelled.is_set():
             return hashes
-        missing = await self._announce(hashes, audio)
-        for content_id, data in zip(hashes, audio, strict=True):
-            if cancelled.is_set():
-                break
-            if content_id in missing:
-                await self._upload(content_id, data)
+        started = time.monotonic()
+        missing: set[str] = set()
+        uploaded = 0
+        outcome = "failed"
+        try:
+            missing = await self._announce(hashes, audio)
+            for content_id, data in zip(hashes, audio, strict=True):
+                if cancelled.is_set():
+                    break
+                if content_id in missing:
+                    await self._upload(content_id, data)
+                    uploaded += len(data)
+            outcome = "cancelled" if cancelled.is_set() else "complete"
+        finally:
+            telemetry.record(
+                event_id,
+                "relay_assets",
+                destination=self._destination,
+                upload_ms=round((time.monotonic() - started) * 1000, 3),
+                missing_assets=len(missing),
+                upload_bytes=uploaded,
+                outcome=outcome,
+            )
         return hashes
 
     async def _complete_plan(self, plan: CalloutPlan) -> CalloutPlan | None:

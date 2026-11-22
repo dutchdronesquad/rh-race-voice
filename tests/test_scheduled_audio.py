@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
@@ -51,6 +52,35 @@ class ScheduledBufferLimitTests(unittest.TestCase):
 
 class ScheduledAudioTests(unittest.IsolatedAsyncioTestCase):
     """Verify PCM delivery without requiring a Windows audio device."""
+
+    async def test_chunk_rebase_is_recorded_without_claiming_speaker_output(
+        self,
+    ) -> None:
+        """Expose a 100 ms SDK timestamp hole inside an otherwise complete clip."""
+        stream = Mock(is_stopped=False)
+        stream.sleep_to_limit_buffer = AsyncMock()
+        stream.commit_audio = AsyncMock(side_effect=[1_000_000, 1_150_000, 1_200_000])
+        clip = _WavClip(
+            "buzzer",
+            AudioFormat(1000, 16, 1),
+            bytes(300),
+            0.15,
+            event_id="session:1",
+            destination="local",
+        )
+        with self.assertLogs("sendspin_service.telemetry", level="INFO") as logs:
+            await _stream_wav(
+                stream,
+                clip,
+                play_start_us=1_000_000,
+                sync_clients=AsyncMock(return_value=1),
+                options=_StreamOptions(max_buffer_us=500_000),
+            )
+        record = json.loads(logs.records[-1].getMessage())
+        self.assertEqual(record["stage"], "sendspin_chunks")
+        self.assertEqual(record["event_id"], "session:1")
+        self.assertEqual(record["chunk_gap_ms"], 100)
+        self.assertIsNone(record["min_lead_ms"])
 
     async def test_tone_and_silent_tail_are_sent_in_bounded_chunks(self) -> None:
         """Preserve every original sample and feed trailing buffered samples."""

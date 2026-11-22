@@ -433,6 +433,8 @@ class RaceIngest:
             lap=event.lap,
             heat_id=event.context.heat_id,
             generation=event.context.generation,
+            asset=event.asset,
+            model=self._state["voice"]["model"] if self._state else None,
         )
         if self._blocked:
             raise web.HTTPConflict(reason="Output clear failed; retry state update")

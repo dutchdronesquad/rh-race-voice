@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import threading
 import time
 import unittest
@@ -144,6 +145,29 @@ class RaceRelaySinkTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.server.events[0]["version"], RELAY_VERSION)
         self.assertEqual(self.server.assets_requests[0]["version"], RELAY_VERSION)
+
+    async def test_diagnostics_separate_slow_upload_from_delivery(self) -> None:
+        """A gated network transfer is measured without attributing it to synthesis."""
+        self.server.upload_gate = asyncio.Event()
+        with self.assertLogs("sendspin_service.telemetry", level="INFO") as captured:
+            task = asyncio.create_task(
+                self.sink.play(_plan(1, audio=(b"gated",)), threading.Event())
+            )
+            try:
+                async with asyncio.timeout(2):
+                    await self.server.upload_entered.wait()
+                await asyncio.sleep(0.04)
+            finally:
+                self.server.upload_gate.set()
+            await task
+        records = [json.loads(record.getMessage()) for record in captured.records]
+        uploads = [item for item in records if item["stage"] == "relay_assets"]
+        self.assertEqual(len(uploads), 1)
+        self.assertGreaterEqual(uploads[0]["upload_ms"], 30)
+        self.assertEqual(uploads[0]["upload_bytes"], 5)
+        self.assertEqual(uploads[0]["outcome"], "complete")
+        self.assertEqual(sum(item["stage"] == "relay_delivery" for item in records), 1)
+        self.assertFalse(any(item["stage"] == "synthesis_end" for item in records))
 
     async def test_progressive_local_plan_is_relayed_as_one_complete_event(
         self,

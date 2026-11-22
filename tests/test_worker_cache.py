@@ -95,6 +95,9 @@ class WorkerCacheTests(unittest.TestCase):
         """Reject filesystem paths and nonfinite synthesis settings."""
         for changes in (
             {"model": "../../outside"},
+            {"model": "en_GB-cori-high"},
+            {"model": "en_US-lessac-high"},
+            {"model": "de_DE-thorsten-high"},
             {"subdir": "../../outside"},
             {"speed": 0},
             {"noise": float("nan")},

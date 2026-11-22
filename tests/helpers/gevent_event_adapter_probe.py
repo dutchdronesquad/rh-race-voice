@@ -240,6 +240,56 @@ class AdapterTests(unittest.TestCase):
         self.adapter._startup()
         wait_for(self.adapter._publisher._ready)
 
+    def test_saved_high_voice_migrates_before_first_snapshot(self) -> None:
+        """Keep Cori selected after upgrade and persist the visible medium setting."""
+        self.options[const.VOICE_MODEL_OPTION] = "en_GB-cori-high"
+        with self.assertLogs(
+            "custom_plugins.race_voice.event_adapter", level="WARNING"
+        ):
+            self.connect()
+        self.assertEqual(self.service.state["voice"]["model"], "en_GB-cori-medium")
+        self.assertEqual(self.options[const.VOICE_MODEL_OPTION], "en_GB-cori-medium")
+        self.assertEqual(
+            self.service.state["context"]["revision"], self.adapter._revision
+        )
+        self.rh.ui.message_notify.assert_called_once()
+        self.assertIn("Prepare pre-cache", self.rh.ui.message_notify.call_args.args[0])
+        self.adapter._refresh()
+        self.rh.ui.message_notify.assert_called_once()
+        model_writes = [
+            call.args[1]
+            for call in self.rh.db.option_set.call_args_list
+            if call.args[0] == const.VOICE_MODEL_OPTION
+        ]
+        self.assertEqual(model_writes, ["en_GB-cori-medium"])
+
+    def test_restored_high_voices_keep_voice_in_published_state(self) -> None:
+        """An old setting restored while RH runs must keep its voice and language."""
+        self.connect()
+        for retired, replacement in (
+            ("en_GB-cori-high", "en_GB-cori-medium"),
+            ("en_US-lessac-high", "en_US-lessac-medium"),
+            ("de_DE-thorsten-high", "de_DE-thorsten-medium"),
+        ):
+            with (
+                self.subTest(model=retired),
+                self.assertLogs(
+                    "custom_plugins.race_voice.event_adapter", level="WARNING"
+                ),
+            ):
+                revision = self.adapter._revision
+                self.rh.db.option_set(const.VOICE_MODEL_OPTION, retired)
+                self.adapter._option_changed({"option": const.VOICE_MODEL_OPTION})
+                published_revision = self.adapter._revision
+                wait_for(
+                    lambda published_revision=published_revision: (
+                        self.service.state["context"]["revision"] == published_revision
+                    )
+                )
+                self.assertEqual(self.options[const.VOICE_MODEL_OPTION], replacement)
+                self.assertEqual(self.service.state["voice"]["model"], replacement)
+                self.assertGreater(published_revision, revision)
+
     def test_publisher_epoch_is_resolved_at_startup_not_construction(self) -> None:
         """Reading it in __init__ would race RH's not-yet-primed options cache."""
         self.assertNotIn(_PUBLISHER_EPOCH_OPTION, self.options)

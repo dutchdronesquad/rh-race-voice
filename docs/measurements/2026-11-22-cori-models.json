@@ -1,0 +1,210 @@
+{
+  "measured_on": "2026-11-22",
+  "revision": "89a3d1c",
+  "scope": "Isolated synthesis preparation on a four-vCPU x86_64 development host; not Raspberry Pi measurements, audible output, or deployment changes.",
+  "parameters": {
+    "speed": 1,
+    "noise": 0.667,
+    "noise_w": 0.8,
+    "onnx_compute_threads": 2,
+    "graph_optimization": "ONNX Runtime default (all)"
+  },
+  "method": {
+    "worker": "Production tools.benchmark_race_voice, serial runs per model, 12 unique lap times and 30 reusable-pair lookups per variant; temporary caches and an isolated persistent synthesis subprocess.",
+    "phase_profile": "30 unique time strings 23.0 through 25.9 per model after production warmup, with perf_counter wrappers around Piper phonemize and ONNX session.run; complete includes revision selection, WAV writing and silence padding. Profile ran separately from worker comparisons and tests."
+  },
+  "model_sources": {
+    "en_GB-cori-high": "https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_GB/cori/high",
+    "en_GB-cori-medium": "https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_GB/cori/medium"
+  },
+  "model_files": {
+    "en_GB-cori-high": {
+      "en_GB-cori-high.onnx": {
+        "bytes": 114219352,
+        "sha256": "470b4dd634c98f8a4850d7626ffc3dfc90774628eeef6605a6dd8f88f30a5903"
+      },
+      "en_GB-cori-high.onnx.json": {
+        "bytes": 4963,
+        "sha256": "9e7fb5b5671612c22f3c81cbe46c1ae87b031a4632bcb509e499dad6f1e2adec"
+      }
+    },
+    "en_GB-cori-medium": {
+      "en_GB-cori-medium.onnx": {
+        "bytes": 63221984,
+        "sha256": "2e0a55e140de672aa19b182602b407607bd2e6c35fc6020c0b1516053c02e995"
+      },
+      "en_GB-cori-medium.onnx.json": {
+        "bytes": 6354,
+        "sha256": "7204f5ead17759278419129290e51ebb414f09f7ac6cd0e567532592956bbbac"
+      }
+    }
+  },
+  "worker_comparison": {
+    "en_GB-cori-high": {
+      "environment": {
+        "architecture": "x86_64",
+        "logical_cpus": 4,
+        "python": "3.13.3",
+        "piper_tts": "1.8.0",
+        "onnxruntime": "1.31.1"
+      },
+      "model": "en_GB-cori-high",
+      "scope": "Speech preparation only; excludes HTTP, playback and player latency",
+      "disk": {
+        "ram_cache_bytes": 0,
+        "cold_first_name_ms": 3770.546,
+        "uncached_lap_preparation": {
+          "samples": 12,
+          "p50_ms": 2024.354,
+          "p95_ms": 2263.97
+        },
+        "first_audio_ready": {
+          "samples": 12,
+          "p50_ms": 2024.354,
+          "p95_ms": 2263.97
+        },
+        "early_cached_prefixes": 0,
+        "uncached_lap_worker_jobs": 36,
+        "cached_name_and_lap_pair": {
+          "samples": 30,
+          "p50_ms": 1.974,
+          "p95_ms": 2.145
+        },
+        "cached_pair_worker_jobs": 60
+      },
+      "ram": {
+        "ram_cache_bytes": 8388608,
+        "cold_first_name_ms": 3495.949,
+        "uncached_lap_preparation": {
+          "samples": 12,
+          "p50_ms": 1965.188,
+          "p95_ms": 2271.559
+        },
+        "first_audio_ready": {
+          "samples": 12,
+          "p50_ms": 0.765,
+          "p95_ms": 3.778
+        },
+        "early_cached_prefixes": 12,
+        "uncached_lap_worker_jobs": 12,
+        "cached_name_and_lap_pair": {
+          "samples": 30,
+          "p50_ms": 0.473,
+          "p95_ms": 0.547
+        },
+        "cached_pair_worker_jobs": 0
+      },
+      "cached_restart": {
+        "cached_wavs_only": {
+          "setup_ms": 460.501,
+          "first_lap_preparation_ms": 4290.516
+        },
+        "model_warmed": {
+          "setup_ms": 3448.793,
+          "first_lap_preparation_ms": 1868.548
+        }
+      }
+    },
+    "en_GB-cori-medium": {
+      "environment": {
+        "architecture": "x86_64",
+        "logical_cpus": 4,
+        "python": "3.13.3",
+        "piper_tts": "1.8.0",
+        "onnxruntime": "1.31.1"
+      },
+      "model": "en_GB-cori-medium",
+      "scope": "Speech preparation only; excludes HTTP, playback and player latency",
+      "disk": {
+        "ram_cache_bytes": 0,
+        "cold_first_name_ms": 1804.82,
+        "uncached_lap_preparation": {
+          "samples": 12,
+          "p50_ms": 195.605,
+          "p95_ms": 212.255
+        },
+        "first_audio_ready": {
+          "samples": 12,
+          "p50_ms": 195.605,
+          "p95_ms": 212.255
+        },
+        "early_cached_prefixes": 0,
+        "uncached_lap_worker_jobs": 36,
+        "cached_name_and_lap_pair": {
+          "samples": 30,
+          "p50_ms": 1.921,
+          "p95_ms": 2.616
+        },
+        "cached_pair_worker_jobs": 60
+      },
+      "ram": {
+        "ram_cache_bytes": 8388608,
+        "cold_first_name_ms": 1801.632,
+        "uncached_lap_preparation": {
+          "samples": 12,
+          "p50_ms": 197.637,
+          "p95_ms": 201.285
+        },
+        "first_audio_ready": {
+          "samples": 12,
+          "p50_ms": 0.786,
+          "p95_ms": 3.488
+        },
+        "early_cached_prefixes": 12,
+        "uncached_lap_worker_jobs": 12,
+        "cached_name_and_lap_pair": {
+          "samples": 30,
+          "p50_ms": 0.447,
+          "p95_ms": 0.651
+        },
+        "cached_pair_worker_jobs": 0
+      },
+      "cached_restart": {
+        "cached_wavs_only": {
+          "setup_ms": 330.031,
+          "first_lap_preparation_ms": 1496.796
+        },
+        "model_warmed": {
+          "setup_ms": 1762.723,
+          "first_lap_preparation_ms": 202.975
+        }
+      }
+    }
+  },
+  "phase_profile": {
+    "en_GB-cori-high": {
+      "phonemize": {
+        "samples": 30,
+        "p50_ms": 0.308,
+        "total_ms": 10.008
+      },
+      "inference": {
+        "samples": 30,
+        "p50_ms": 1914.303,
+        "total_ms": 59526.555
+      },
+      "complete": {
+        "samples": 30,
+        "p50_ms": 1915.837,
+        "total_ms": 59570.033
+      }
+    },
+    "en_GB-cori-medium": {
+      "phonemize": {
+        "samples": 30,
+        "p50_ms": 0.341,
+        "total_ms": 11.229
+      },
+      "inference": {
+        "samples": 30,
+        "p50_ms": 194.98,
+        "total_ms": 5878.964
+      },
+      "complete": {
+        "samples": 30,
+        "p50_ms": 196.475,
+        "total_ms": 5923.362
+      }
+    }
+  }
+}

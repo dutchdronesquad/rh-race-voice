@@ -272,7 +272,7 @@ Use **Sync** for most race-day setups. Switch to **Quality** if playback resets 
 
 - **Enable plugin audio**: Turns Race Voice callout generation on or off.
 - **Sendspin service URL**: HTTP API endpoint for `sendspin-service` — the local primary by default (`http://127.0.0.1:8766`), or a cloud instance's address for a [cloud-direct](#docker-image) deployment. A [relay](#docker-image) to a second, cloud destination is configured on the service itself, not here.
-- **Voice model**: Piper voice model. Models are downloaded once and reused.
+- **Voice model**: Medium-quality Piper voice model. Models are downloaded once and reused. High-quality models are no longer supported for race callouts. Saved Cori High, Lessac High and Thorsten High selections are replaced by the matching Medium voice, preserving the voice and language choice. The setting is saved and the operator is notified. Update the plugin and primary service together, then run **Prepare pre-cache** before racing to download and warm the replacement model if needed. Existing High model files and caches are retained on disk.
 - **Speech speed**: Speaking rate. `1.0` is Piper default. Range: `0.5`–`2.0`.
 - **Noise scale**: Voice variation. `0.0` is monotone, `1.0` is expressive. Default: `0.667`.
 - **Phoneme width noise**: Duration variation between phonemes. `0.0` is uniform, `1.0` is varied. Default: `0.8`.

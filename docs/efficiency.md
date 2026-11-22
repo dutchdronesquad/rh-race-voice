@@ -58,6 +58,24 @@ A follow-up run on the same host/model exercised thirty unique new lap times wit
 
 This removes waiting for new time synthesis from the first-audio path. It does not speed up that synthesis: the complete-announcement measurements varied, and no throughput improvement is established here. These figures stop at the speech engine's audio-ready callback; they exclude event delivery, output queueing, Sendspin scheduling and player buffering. These historical measurements describe the early-prefix behavior released in 2.1.0. Local playback now waits for complete audio to prevent synthesis pauses within an announcement. Regression tests verify that no prefix is submitted while time synthesis is blocked, other pilots cannot interleave, and stop, signal, failure and expiry paths discard incomplete audio.
 
+## Cori High and Medium comparison (2026-11-22)
+
+A race-day operator reported using Cori High, probably on a Raspberry Pi 4. The following comparison uses the merged audio fixes at `89a3d1c` on the development host: four x86_64 virtual CPUs, Python 3.13.3, Piper 1.8.0, ONNX Runtime 1.31.1 and the production two-thread configuration. It is not a measurement of that Pi. Both models were downloaded into an isolated benchmark directory; production models, settings and race caches were unchanged. The [measurement artifact](measurements/2026-11-22-cori-models.json) records file hashes, parameters and the full results.
+
+The production benchmark ran separately for each model with 12 unique lap times, prepared name/number segments and 30 cached-pair lookups. These figures measure complete speech preparation, excluding HTTP, output queues, client buffering and speakers.
+
+| Warm preparation | Cori High | Cori Medium |
+| --- | ---: | ---: |
+| New lap, median | 1,965 ms | 198 ms |
+| New lap, 95th percentile | 2,272 ms | 201 ms |
+| Cached name/number pair, median | 0.473 ms | 0.447 ms |
+
+A separate 30-time phase profile attributed over 99% of generation wall time to ONNX inference for both models. Cori High's 30 generations spent 59.53 seconds in inference out of 59.57 seconds total; phonemization took 10 ms across that entire run. This points to model compute rather than additional Python or reusable-segment caching as the primary cost on this host. The observed roughly tenfold difference between models must not be projected onto ARM hardware without measuring it.
+
+Following this comparison, High-quality models were removed from the supported race-voice catalog. Saved Cori, Lessac and Thorsten High selections migrate to the matching Medium voice. Run **Prepare pre-cache** before racing to prepare the replacement. These timing results cover Cori only; they do not establish a numerical speedup for Lessac or Thorsten. A possible further optimization is explicitly bounded preparation of common complete lap-time phrases, preserving RH's phonetic format and normal synthesis on cache misses. That is not implemented here. More inference threads also need Pi measurements alongside RH responsiveness before changing the existing CPU budget.
+
+To reproduce the historical High comparison, use the benchmark and model catalog at revision `89a3d1c`; the current catalog no longer accepts High models. Run once per model with an existing model directory, `--laps 12 --cached-rounds 30`, and a distinct output file. Model warmup remains useful for startup: in the Cori High restart observation, the first new lap took 4,291 ms with cached WAVs alone versus 1,869 ms after explicit warmup. Each restart variant is one observation, not an acceptance bound; warmup does not remove the inference needed for subsequent new times.
+
 ## Remaining limits
 
 Initial subprocess imports and model setup took about 2.4 seconds in the exploratory runs. A new time phrase took about 0.22 seconds on this host. RAM reuse removes repeated file/pipe work; it does not remove the neural synthesis required for a new lap time. The model must still be prepared after a service restart if first-lap responsiveness matters.

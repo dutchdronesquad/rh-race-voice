@@ -23,6 +23,13 @@ DEFAULT_SENDSPIN_CLOUD_TIMEOUT = "5"
 
 _HF = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
 
+# Persisted RH selections migrate to the same voice at medium quality.
+REPLACED_VOICE_MODELS = {
+    "en_GB-cori-high": "en_GB-cori-medium",
+    "en_US-lessac-high": "en_US-lessac-medium",
+    "de_DE-thorsten-high": "de_DE-thorsten-medium",
+}
+
 VOICE_MODELS = {
     "en_GB-alan-medium": {
         "label": "English (GB) - Alan (medium)",
@@ -32,10 +39,6 @@ VOICE_MODELS = {
         "label": "English (GB) - Cori (medium)",
         "base_url": f"{_HF}/en/en_GB/cori/medium/en_GB-cori-medium",
     },
-    "en_GB-cori-high": {
-        "label": "English (GB) - Cori (high)",
-        "base_url": f"{_HF}/en/en_GB/cori/high/en_GB-cori-high",
-    },
     "en_US-joe-medium": {
         "label": "English (US) - Joe (medium)",
         "base_url": f"{_HF}/en/en_US/joe/medium/en_US-joe-medium",
@@ -43,10 +46,6 @@ VOICE_MODELS = {
     "en_US-lessac-medium": {
         "label": "English (US) - Lessac (medium)",
         "base_url": f"{_HF}/en/en_US/lessac/medium/en_US-lessac-medium",
-    },
-    "en_US-lessac-high": {
-        "label": "English (US) - Lessac (high)",
-        "base_url": f"{_HF}/en/en_US/lessac/high/en_US-lessac-high",
     },
     "nl_NL-alex-medium": {
         "label": "Dutch (NL) - Alex (medium)",
@@ -67,9 +66,5 @@ VOICE_MODELS = {
     "de_DE-thorsten-medium": {
         "label": "German (DE) - Thorsten (medium)",
         "base_url": f"{_HF}/de/de_DE/thorsten/medium/de_DE-thorsten-medium",
-    },
-    "de_DE-thorsten-high": {
-        "label": "German (DE) - Thorsten (high)",
-        "base_url": f"{_HF}/de/de_DE/thorsten/high/de_DE-thorsten-high",
     },
 }

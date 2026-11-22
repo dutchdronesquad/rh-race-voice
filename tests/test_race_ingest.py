@@ -345,6 +345,9 @@ class RaceIngestTests(unittest.IsolatedAsyncioTestCase):
         for key, value in (
             ("speed", True),
             ("model", "../../bad"),
+            ("model", "en_GB-cori-high"),
+            ("model", "en_US-lessac-high"),
+            ("model", "de_DE-thorsten-high"),
             ("noise", float("nan")),
             ("enabled", 1),
             ("callout_flags", {"unknown": True}),

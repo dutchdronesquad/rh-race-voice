@@ -1,7 +1,7 @@
 {
   "repository": "RotorHazard/RotorHazard",
   "revisions": {
-    "stable": "ac20904737d7e85285aaccf9eb39b980c9622057",
-    "development": "8f9718e83d98ec799847dc75670d218a15453c2a"
+    "stable": "v4.5.1@ac20904737d7e85285aaccf9eb39b980c9622057",
+    "development": "main@8f9718e83d98ec799847dc75670d218a15453c2a"
   }
 }

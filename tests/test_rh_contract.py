@@ -16,13 +16,16 @@ PIN = json.loads((ROOT / "tests/rotorhazard.json").read_text())
 
 
 def rotorhazard_source() -> Path | None:
-    """Require the pinned upstream source whenever contract testing is enabled."""
+    """Require the pinned source or the exact revision resolved by daily CI."""
     source = os.environ.get("RACE_VOICE_RH_SOURCE")
     if not source:
         return None
     root = Path(source).resolve()
     target = os.environ.get("RACE_VOICE_RH_TARGET", "development")
-    expected = PIN["revisions"][target]
+    expected = (
+        os.environ.get("RACE_VOICE_RH_REVISION")
+        or PIN["revisions"][target].rsplit("@", 1)[1]
+    )
     revision = subprocess.check_output(  # noqa: S603
         ["git", "-C", str(root), "rev-parse", "HEAD"],  # noqa: S607
         text=True,

@@ -10,6 +10,30 @@
       ],
       "datasourceTemplate": "pypi",
       "versioningTemplate": "pep440"
+    },
+    {
+      "customType": "regex",
+      "description": "Update the RotorHazard stable compatibility pin",
+      "managerFilePatterns": ["/^tests/rotorhazard\\.json$/"],
+      "matchStrings": [
+        "\"stable\"\\s*:\\s*\"(?<currentValue>[^\"@]+)@(?<currentDigest>[a-f0-9]{40})\""
+      ],
+      "depNameTemplate": "RotorHazard stable",
+      "packageNameTemplate": "RotorHazard/RotorHazard",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "Update the RotorHazard development compatibility pin",
+      "managerFilePatterns": ["/^tests/rotorhazard\\.json$/"],
+      "matchStrings": [
+        "\"development\"\\s*:\\s*\"(?<currentValue>[^\"@]+)@(?<currentDigest>[a-f0-9]{40})\""
+      ],
+      "depNameTemplate": "RotorHazard development",
+      "packageNameTemplate": "RotorHazard/RotorHazard",
+      "datasourceTemplate": "github-digest",
+      "versioningTemplate": "exact"
     }
   ],
   "packageRules": [
@@ -31,6 +55,15 @@
       "matchManagers": ["npm"],
       "matchUpdateTypes": ["minor", "patch"],
       "automerge": true
+    },
+    {
+      "description": "Review RotorHazard compatibility pin updates through the normal PR tests",
+      "matchFileNames": ["tests/rotorhazard.json"],
+      "pinDigests": true,
+      "ignoreUnstable": true,
+      "automerge": false,
+      "groupName": "RotorHazard compatibility pins",
+      "addLabels": ["enhancement"]
     }
   ]
 }

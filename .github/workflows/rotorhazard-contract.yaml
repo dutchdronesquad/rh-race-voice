@@ -1,0 +1,83 @@
+---
+name: RotorHazard compatibility
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_call:
+    inputs:
+      latest:
+        description: Resolve current upstream revisions instead of test pins
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: RotorHazard contract tests (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [stable, development]
+    env:
+      RACE_VOICE_RH_SOURCE: ${{ github.workspace }}/.test-deps/rotorhazard
+      RACE_VOICE_RH_TARGET: ${{ matrix.target }}
+    steps:
+      - name: Check out Race Voice
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read pinned RotorHazard revision
+        id: pin
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+          from pathlib import Path
+          pin = json.loads(Path("tests/rotorhazard.json").read_text())
+          ref, revision = pin['revisions'][os.environ['RACE_VOICE_RH_TARGET']].rsplit('@', 1)
+          print(f"repository={pin['repository']}")
+          print(f"revision={revision}")
+          print(f"ref={ref}")
+          PY
+      - name: Resolve latest upstream revision
+        if: inputs.latest
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RH_REPOSITORY: ${{ steps.pin.outputs.repository }}
+        run: |
+          if [ "$RACE_VOICE_RH_TARGET" = stable ]; then
+            rh_ref=$(gh api "repos/$RH_REPOSITORY/releases/latest" --jq .tag_name)
+          else
+            rh_ref=main
+          fi
+          rh_revision=$(gh api "repos/$RH_REPOSITORY/commits/$rh_ref" --jq .sha)
+          echo "revision=$rh_revision" >> "$GITHUB_OUTPUT"
+          echo "ref=$rh_ref" >> "$GITHUB_OUTPUT"
+      - name: Record tested revision
+        env:
+          RH_REPOSITORY: ${{ steps.pin.outputs.repository }}
+          RH_REVISION: ${{ steps.upstream.outputs.revision || steps.pin.outputs.revision }}
+          RH_REF: ${{ steps.upstream.outputs.ref || steps.pin.outputs.ref }}
+        run: |
+          echo "$RACE_VOICE_RH_TARGET: $RH_REPOSITORY $RH_REF ($RH_REVISION)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Check out upstream RotorHazard
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.pin.outputs.repository }}
+          ref: ${{ steps.upstream.outputs.revision || steps.pin.outputs.revision }}
+          path: .test-deps/rotorhazard
+          persist-credentials: false
+      - name: Set up UV
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "latest"
+          python-version: "3.13"
+          enable-cache: true
+      - name: Test actual RH APIs and end-to-end Sendspin delivery
+        env:
+          RACE_VOICE_RH_REVISION: ${{ steps.upstream.outputs.revision }}
+        run: >-
+          uv run --locked --group rh-contract --extra sendspin-service --no-dev
+          python -m unittest tests.test_rh_contract tests.test_rh_sendspin_chain -v

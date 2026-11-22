@@ -15,10 +15,15 @@ env:
 
 jobs:
   rotorhazard-contract:
-    name: RotorHazard contract tests
+    name: RotorHazard contract tests (${{ matrix.target }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [stable, development]
     env:
       RACE_VOICE_RH_SOURCE: ${{ github.workspace }}/.test-deps/rotorhazard
+      RACE_VOICE_RH_TARGET: ${{ matrix.target }}
     steps:
       - name: Check out Race Voice
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -27,9 +32,11 @@ jobs:
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
+          import os
           from pathlib import Path
-          for key, value in json.loads(Path("tests/rotorhazard.json").read_text()).items():
-              print(f"{key}={value}")
+          pin = json.loads(Path("tests/rotorhazard.json").read_text())
+          print(f"repository={pin['repository']}")
+          print(f"revision={pin['revisions'][os.environ['RACE_VOICE_RH_TARGET']]}")
           PY
       - name: Check out upstream RotorHazard
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

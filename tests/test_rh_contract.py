@@ -21,12 +21,14 @@ def rotorhazard_source() -> Path | None:
     if not source:
         return None
     root = Path(source).resolve()
+    target = os.environ.get("RACE_VOICE_RH_TARGET", "development")
+    expected = PIN["revisions"][target]
     revision = subprocess.check_output(  # noqa: S603
         ["git", "-C", str(root), "rev-parse", "HEAD"],  # noqa: S607
         text=True,
     ).strip()
-    if revision != PIN["revision"]:
-        message = f"Expected RH {PIN['revision']}, found {revision}"
+    if revision != expected:
+        message = f"Expected RH {target} {expected}, found {revision}"
         raise AssertionError(message)
     changes = subprocess.check_output(  # noqa: S603
         ["git", "-C", str(root), "status", "--porcelain", "--", "src"],  # noqa: S607

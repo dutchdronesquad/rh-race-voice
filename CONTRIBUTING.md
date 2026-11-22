@@ -85,16 +85,18 @@ Both build commands run the TypeScript build and write production output to `cus
 
 ## RotorHazard contract tests
 
-The `RotorHazard contract tests` CI job loads the actual upstream RHAPI, event manager, filters and RHUI phonetic emitters at the revision recorded in `tests/rotorhazard.json`. Only persistence, configuration and browser socket emission use test doubles. These tests run in a separate gevent-patched interpreter and do not start RotorHazard hardware or play audio.
+The `RotorHazard contract tests` CI matrix loads the actual upstream RHAPI, event manager, filters and RHUI phonetic emitters at both revisions recorded in `tests/rotorhazard.json`: stable RotorHazard v4.5.1 and development commit `8f9718e8` (checked on 21 November 2026). Only persistence, configuration and browser socket emission use test doubles. These tests run in a separate gevent-patched interpreter and do not start RotorHazard hardware or play audio.
 
-To run locally, check out that exact revision of `RotorHazard/RotorHazard`, then run:
+To run locally, check out the exact development revision of `RotorHazard/RotorHazard`, then run:
 
 ```sh
 uv sync --all-groups --extra sendspin-service
 RACE_VOICE_RH_SOURCE=/path/to/RotorHazard uv run python -m unittest tests.test_rh_contract tests.test_rh_sendspin_chain -v
 ```
 
-The source must be unmodified. Without `RACE_VOICE_RH_SOURCE`, the ordinary suite skips this optional integration test; the dedicated CI job supplies the checkout and fails for a missing or mismatched revision. Updating the pin is an explicit compatibility check, not an automatic tracking of upstream `main`. This verifies the pinned version, rather than claiming coverage of every release allowed by the plugin's API minimum.
+To check the stable revision instead, also set `RACE_VOICE_RH_TARGET=stable` and point `RACE_VOICE_RH_SOURCE` at a checkout of the stable pin. The default target is `development`.
+
+The source must be unmodified. Without `RACE_VOICE_RH_SOURCE`, the ordinary suite skips these optional integration tests; the dedicated CI jobs supply each checkout and fail for a missing or mismatched revision. Updating either pin is an explicit compatibility check, not an automatic tracking of upstream `main`. This verifies the pinned versions, rather than claiming coverage of every release allowed by the plugin's API minimum.
 
 The Sendspin chain test runs real RH events and phonetic emitters in the gevent subprocess, the plugin's HTTP publisher, the service application and admission/clock handshake, synthesis worker pipes and caches, output planners, and an encrypted connection to an actual SDK player. Only native inference returns synthetic WAV segments. Each phrase has a distinct PCM marker, so the receiving client can check exact segment order, sample count and content for four pilots followed by a winner. Other assertions cover `lap=None`, subminimum laps, cancellation reaching the client, and fresh audio after cancellation. PCM fixtures use 24 kHz to avoid fractional sample-to-microsecond rounding at chunk boundaries; this chain does not exercise resampling.
 

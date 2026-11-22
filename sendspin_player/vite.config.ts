@@ -1,6 +1,7 @@
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 import { defineConfig } from "vite";
 
 function fromConfig(relativePath: string): string {
@@ -8,6 +9,11 @@ function fromConfig(relativePath: string): string {
 }
 
 export default defineConfig({
+  define: {
+    __SENDSPIN_VERSION__: JSON.stringify(JSON.parse(readFileSync(
+      fromConfig("package-lock.json"), "utf8",
+    )).packages["node_modules/@sendspin/sendspin-js"].version),
+  },
   base: process.env.VITE_PLAYER_BASE ?? "/",
   plugins: [react(), tailwindcss()],
   resolve: {

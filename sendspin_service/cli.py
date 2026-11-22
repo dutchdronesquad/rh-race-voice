@@ -67,6 +67,7 @@ def main(argv: list[str]) -> int:
         "--yes", "-y", action="store_true", help="Confirm the update without prompting"
     )
     commands.add_parser("relay", help="Configure the cloud relay")
+    commands.add_parser("diagnostics", help="Capture and export race-audio diagnostics")
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()

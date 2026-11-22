@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import threading
 import time
 import unittest
@@ -44,6 +45,26 @@ def _wav(duration_s: float) -> WavItem:
 
 class FirstListenerTests(unittest.IsolatedAsyncioTestCase):
     """Use actual encrypted SDK connections and the public synchronous play API."""
+
+    async def test_late_buzzer_reports_scheduled_lateness_and_chunk_lead(self) -> None:
+        """A real SDK connection reports lateness separately from buffer starvation."""
+        await self.connect()
+        tone = replace(_wav(0.2), event_id="session:late", destination="local")
+        with self.assertLogs("sendspin_service.telemetry", level="INFO") as logs:
+            self.assertTrue(
+                await asyncio.to_thread(
+                    self.backend.play,
+                    [tone],
+                    play_at=time.monotonic() - 0.1,
+                )
+            )
+        records = [json.loads(record.getMessage()) for record in logs.records]
+        scheduled = next(r for r in records if r["stage"] == "sendspin_schedule")
+        chunks = next(r for r in records if r["stage"] == "sendspin_chunks")
+        self.assertEqual(scheduled["event_id"], "session:late")
+        self.assertGreaterEqual(scheduled["target_late_ms"], 300)
+        self.assertGreater(chunks["min_lead_ms"], 0)
+        self.assertLessEqual(chunks["chunk_gap_ms"], 0.001)
 
     async def asyncSetUp(self) -> None:
         """Bind an ephemeral test listener without mDNS or production clients."""

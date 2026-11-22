@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
 
 # Hardcoded rather than __name__-based: this name is a documented, stable
 # operator-facing attach point (see docs/latency-validation.md) and must not
 # shift if this module ever moves again.
 logger = logging.getLogger("sendspin_service.telemetry")
+CLOCK_ID = uuid.uuid4().hex
 
 
 def record(event_id: str, stage: str, /, **fields: object) -> None:
@@ -20,7 +22,13 @@ def record(event_id: str, stage: str, /, **fields: object) -> None:
     """
     if not logger.isEnabledFor(logging.INFO):
         return
-    payload = {"event_id": event_id, "stage": stage, "t": time.monotonic(), **fields}
+    payload = {
+        "event_id": event_id,
+        "stage": stage,
+        "t": time.monotonic(),
+        "clock_id": CLOCK_ID,
+        **fields,
+    }
     try:
         line = json.dumps(payload, allow_nan=False)
     except (TypeError, ValueError):

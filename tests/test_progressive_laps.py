@@ -103,6 +103,13 @@ class ProgressiveLapTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.played_audio(), [])
             self.assertFalse(self.release.is_set())
             self.assertFalse(self.plans[0].completion.done())
+            pending_stages = [
+                json.loads(record.getMessage())["stage"] for record in captured.records
+            ]
+            self.assertIn("synthesis_start", pending_stages)
+            self.assertIn("prefix_ready", pending_stages)
+            self.assertNotIn("synthesis_end", pending_stages)
+            self.assertNotIn("output_ready", pending_stages)
             self.release.set()
             await until(lambda: self.backend.play.call_count == 1)
             await until(lambda: self.output._active is None)
@@ -113,6 +120,14 @@ class ProgressiveLapTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(stages.count("output_played"), 1)
         self.assertNotIn("output_dropped", stages)
+        records = [json.loads(record.getMessage()) for record in captured.records]
+        segments = [record for record in records if record["stage"] == "segment"]
+        self.assertEqual(
+            sorted(record["segment_index"] for record in segments), [0, 1, 2]
+        )
+        self.assertTrue(all(record["request_ms"] >= 0 for record in segments))
+        self.assertLess(stages.index("synthesis_end"), stages.index("output_ready"))
+        self.assertLess(stages.index("output_ready"), stages.index("output_played"))
         self.assertEqual(self.plans[0].retained_audio, (*self.prefix, self.tail))
         self.assertAlmostEqual(self.plans[0].duration_s, 1.8)
 

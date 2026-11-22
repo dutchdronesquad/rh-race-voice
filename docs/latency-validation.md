@@ -1,6 +1,6 @@
 # Race-audio latency correlation telemetry
 
-Progress on #304, part of epic #296. This covers instrumentation and deterministic regression scenarios; hardware and audible validation remain outstanding. #304 stays open.
+Race-day capture for #487 builds on the correlation telemetry from #304, part of epic #296. Hardware and audible validation remain outstanding; queue acceptance does not establish gate-to-speaker latency.
 
 ## What's implemented
 
@@ -18,19 +18,31 @@ Pending expiry, invalidation, preemption, playback failure, stop-barrier failure
 
 `tests/test_race_session.py` runs two complete six-round races, with four and eight pilots, through real HTTP admission, the production planners, speech planning, RAM reuse and a real synthesis-worker pipe. Only native voice generation and speaker output are replaced by controlled fakes. The scenarios start cold, explicitly prepare audio, then exercise warm prefixes, repeated bursts, explained overflow, a duplicate event, the finish buzzer and winner, heat changes, stop, expiry, a worker subprocess crash and recovery, a fresh staging signal and shutdown with work outstanding. A full output and an even-pilot selection are audited independently. Every accepted event must have exactly one global preparation failure or one final record per configured output; completed lap deliveries must contain all three segments without duplicate clips and preserve passage order. The RH adapter integration separately sends a `lap=None` finish payload before a winner and verifies that the invalid lap triggers no synthesis while the winner still reaches the service.
 
-There is deliberately no report/analysis tool yet — building one now would be guessing at a shape before there's a real telemetry log to look at. The output is one JSON object per line (`event_id`, `stage`, `t`, plus stage-specific fields), so a short ad-hoc script or `jq` is enough once there's an actual baseline to analyze.
-
 ## Capturing a baseline
 
-Attach a `logging.FileHandler` to the `sendspin_service.telemetry` logger (at `INFO` or lower) before running a race:
+On the primary service host, enable recording without changing Python or restarting the service:
 
-```python
-import logging
-
-handler = logging.FileHandler("race-telemetry.jsonl")
-logging.getLogger("sendspin_service.telemetry").addHandler(handler)
-logging.getLogger("sendspin_service.telemetry").setLevel(logging.INFO)
+```sh
+sendspin-service diagnostics start
+sendspin-service diagnostics status
+# Reproduce the problem, then preserve the retained window:
+sendspin-service diagnostics stop
+sendspin-service diagnostics export --output race-audio-primary.zip
 ```
+
+The CLI reads the local API URL and `SENDSPIN_API_TOKEN` from `/etc/default/sendspin-service`, with an environment token taking precedence. Use `--env-file PATH` for another configuration or `--url https://audio.example.com` for a remote service. Run the same capture on a relay receiver and export it separately. The `/v2/diagnostics/start`, `/stop`, `/status` and `/export` endpoints use the existing service API authentication; listener controls do not grant recording access.
+
+Capture is off by default and after a service restart. Starting an already active capture keeps it; starting after stopping replaces the previous recording, so export it first. Export also works during capture and for retained files after a restart. The default directory is `diagnostics` beside the race-cache directory, under the service state directory for packaged installations. Override it with `SENDSPIN_DIAGNOSTICS_DIR` or `serve --diagnostics-dir PATH`.
+
+The service retains five rotating files of up to 1 MiB each, with a bounded queue of 2,048 records. This is a recent event window, not a guarantee of an entire evening. Disk writes and ZIP construction run off the audio event loops. A full queue drops diagnostic records instead of delaying audio; storage failures disable writes and appear in status/export. Recording does not include speech text, audio, pilot names, service URLs or tokens. Numeric race IDs and model names remain available for correlation.
+
+The ZIP includes a versioned `manifest.json` with capture and clock IDs, service/dependency versions, architecture, available device model and output configuration; retained JSONL events; `summary.json`; and interpretation notes. Summaries group each service clock and destination separately, report drop reasons and timing distributions with sample counts, and show p95 only with at least 20 samples and p99 with at least 100. Counts cover retained records only; rotation or recorded loss can leave an event without all its stages.
+
+Worker queue wait is distinct from synthesis request time. Segment index/cache location, disk/RAM cache hits, preparation time, output waits, relay upload/delivery attempts, Sendspin planned starts, tone lateness, timestamp gaps and scheduling lead help locate a delay. Some waits overlap; do not add all durations together. A gap between deliberately separate tones is different from a timestamp gap inside one WAV. `output_played` still means queued, not audible.
+
+In the browser player's **Diagnostics**, choose **Start new recording** before the race, use **Mark audio issue** when you hear a problem, then stop and download the recording. The separate JSON retains the latest 1,200 half-second samples (about ten minutes in an active tab) and 200 connection/marker events. Background-tab throttling can reduce sampling. It records available buffer runway, resync counters, time-sync uncertainty, output latency and render timestamps; unsupported measurements are `null`. Browser recordings stay in the tab until downloaded and are lost on reload. Download them alongside the corresponding primary and relay ZIPs.
+
+Service `t` values are monotonic and comparable only within the same `clock_id`; shared `event_id` values link primary and relay stages without subtracting their clocks. Browser `performance.now()` is another clock domain. Its server timestamp is the SDK's mapped estimate with reported sync uncertainty, not a shared raw clock. A zero buffer or resync is an observation, not proof of a speaker underrun. WindowsSpin connection/product information is available from the service, but authoritative Windows render, underrun and speaker timing are unavailable through this integration. Record its version and observations separately.
 
 ## What remains outstanding
 

@@ -20,6 +20,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from .relay_cli import main as relay_main  # noqa: PLC0415
 
         return relay_main(args[1:])
+    if args[:1] == ["diagnostics"]:
+        from .diagnostics_cli import main as diagnostics_main  # noqa: PLC0415
+
+        return diagnostics_main(args[1:])
     from .cli import main as management_main  # noqa: PLC0415
 
     return management_main(args)

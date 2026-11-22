@@ -16,6 +16,8 @@ from urllib.parse import urlsplit
 
 from aiohttp import web
 
+from .diagnostics import DiagnosticCapture
+from .diagnostics_routes import add_routes as add_diagnostic_routes
 from .playback.audio_cache import AudioCache
 from .playback.player import add_player_routes
 from .playback.sendspin import SendSpinServer
@@ -58,6 +60,7 @@ class ServiceConfig:
     relay_timeout_s: float = DEFAULT_RELAY_TIMEOUT_S
     local_enabled: bool = True
     relay_receiver_enabled: bool = False
+    diagnostics_dir: Path | None = None
 
 
 class SendspinService:
@@ -101,6 +104,21 @@ class SendspinService:
             host=config.sendspin_host,
             port=config.sendspin_port,
             advertise=config.advertise,
+        )
+        self.diagnostics = DiagnosticCapture(
+            config.diagnostics_dir or config.race_cache_dir.parent / "diagnostics",
+            {
+                "versions": {
+                    "service": SERVICE_VERSION,
+                    **{
+                        name: version(name)
+                        for name in ("aiosendspin", "piper-tts", "onnxruntime")
+                    },
+                },
+                "local_output": config.local_enabled,
+                "relay_configured": bool(config.relay_url),
+                "relay_receiver": config.relay_receiver_enabled,
+            },
         )
 
     def start(self) -> None:
@@ -235,6 +253,7 @@ def _create_app(service: SendspinService) -> web.Application:
     app.router.add_get("/health", _health)
     service.add_race_routes(app)
     service.add_relay_receiver_routes(app)
+    add_diagnostic_routes(app, service.diagnostics)
     add_player_routes(app, service.player_dir)
     return app
 
@@ -384,6 +403,12 @@ def _parse_args(argv: Sequence[str] | None = None) -> ServiceConfig:
         help="Piper synthesis cache directory for the race-event ingest routes",
     )
     parser.add_argument(
+        "--diagnostics-dir",
+        type=Path,
+        default=_env_path("SENDSPIN_DIAGNOSTICS_DIR"),
+        help="Recording directory; enable capture with the diagnostics command",
+    )
+    parser.add_argument(
         "--relay-url",
         default=_env_str("SENDSPIN_RELAY_URL", ""),
         help="Remote relay base URL for cloud output; empty disables the relay",
@@ -432,6 +457,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> ServiceConfig:
         relay_timeout_s=args.relay_timeout_s,
         local_enabled=args.local_enabled,
         relay_receiver_enabled=args.relay_receiver_enabled,
+        diagnostics_dir=args.diagnostics_dir,
     )
 
 

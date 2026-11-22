@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "build:plugin": "VITE_PLAYER_BASE=/player/ npm run build",
     "lint": "oxlint .",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {

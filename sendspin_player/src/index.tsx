@@ -23,6 +23,7 @@ import { QrCodeSvg } from "@/components/qr-code-svg";
 import { StatusRing } from "@/components/status-ring";
 import type { ConnectionState } from "@/components/status-ring";
 import { useAudioAnalyser } from "@/lib/use-audio-analyser";
+import { PlayerDiagnosticCapture, bufferedRunwayMs } from "@/lib/player-diagnostics";
 import "./index.css";
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -75,6 +76,8 @@ type PlayerSnapshot = {
   correctionMethod: string;
   playbackRate: number | null;
   timeSynced: boolean;
+  bufferedRunwayMs: number | null;
+  resyncCount: number | null;
 };
 
 type LogEntry = {
@@ -200,6 +203,9 @@ export function App() {
   const [correctionMode, setCorrectionMode] = useState<CorrectionMode>(initialCorrectionMode);
   const [serverOpen, setServerOpen] = useState(true);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [hasRecording, setHasRecording] = useState(false);
+  const captureRef = useRef(new PlayerDiagnosticCapture());
   const [shareOpen, setShareOpen] = useState(false);
   const [state, setState] = useState<ConnectionState>("disconnected");
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -215,6 +221,8 @@ export function App() {
     correctionMethod: "none",
     playbackRate: null,
     timeSynced: false,
+    bufferedRunwayMs: null,
+    resyncCount: null,
   });
 
   const playerRef = useRef<SendspinPlayer | null>(null);
@@ -265,6 +273,8 @@ export function App() {
       correctionMethod: syncInfo.correctionMethod,
       playbackRate: syncInfo.playbackRate,
       timeSynced: player.timeSyncInfo.synced,
+      bufferedRunwayMs: bufferedRunwayMs(player),
+      resyncCount: syncInfo.resyncCount,
     };
   }
 
@@ -352,10 +362,12 @@ export function App() {
       reconnect: {
         ...RECONNECT_CONFIG,
         onReconnecting: (attempt) => {
+          captureRef.current.event("reconnecting");
           setState("reconnecting");
           addLog(`Reconnecting (${attempt})`, "warn");
         },
         onReconnected: () => {
+          captureRef.current.event("reconnected");
           hasConnectedRef.current = true;
           resetDetailLogs();
           const nextSnapshot = readSnapshot(player);
@@ -393,6 +405,7 @@ export function App() {
     try {
       await player.unlock();
       await player.connect();
+      captureRef.current.event("connected");
       hasConnectedRef.current = true;
       const nextSnapshot = readSnapshot(player);
       setSnapshot(nextSnapshot);
@@ -400,6 +413,7 @@ export function App() {
       setServerOpen(false);
       addLog("Connected");
     } catch (err) {
+      captureRef.current.event("error");
       player.destroy("shutdown");
       playerRef.current = null;
       hasConnectedRef.current = false;
@@ -411,6 +425,7 @@ export function App() {
   }
 
   function disconnect() {
+    captureRef.current.event("disconnected");
     const player = playerRef.current;
     playerRef.current = null;
     hasConnectedRef.current = false;
@@ -458,6 +473,7 @@ export function App() {
   useEffect(() => {
     const interval = window.setInterval(() => {
       const player = playerRef.current;
+      captureRef.current.sample(player);
       if (player) {
         const nextSnapshot = readSnapshot(player);
         setSnapshot(nextSnapshot);
@@ -467,6 +483,30 @@ export function App() {
     }, 500);
     return () => window.clearInterval(interval);
   }, []);
+
+  function toggleRecording() {
+    if (captureRef.current.active) {
+      captureRef.current.stop();
+      setRecording(false);
+    } else {
+      captureRef.current.start();
+      captureRef.current.sample(playerRef.current);
+      setHasRecording(true);
+      setRecording(true);
+    }
+  }
+
+  function downloadRecording() {
+    const report = captureRef.current.snapshot(__SENDSPIN_VERSION__, navigator.userAgent);
+    const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `race-player-${report.capture_id}.json`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
 
   useEffect(
     () => () => {
@@ -767,11 +807,28 @@ export function App() {
               <Metric label="Time sync" value={snapshot.timeSynced ? "yes" : "no"} />
               <Metric label="Sync error" value={formatNumber(snapshot.syncErrorMs, " ms")} />
               <Metric label="Output latency" value={formatNumber(snapshot.outputLatencyMs, " ms")} />
+              <Metric label="Buffered audio" value={formatNumber(snapshot.bufferedRunwayMs, " ms")} />
+              <Metric label="Resyncs" value={snapshot.resyncCount === null ? "-" : String(snapshot.resyncCount)} />
               <Metric label="Correction" value={snapshot.correctionMethod} />
               <Metric
                 label="Rate"
                 value={snapshot.playbackRate === null ? "-" : snapshot.playbackRate.toFixed(3)}
               />
+            </div>
+            <div className="space-y-2 border-t border-border px-5 py-3">
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" onClick={toggleRecording}>
+                  {recording ? "Stop recording" : "Start new recording"}
+                </Button>
+                <Button size="sm" variant="outline" disabled={!recording} onClick={() => {
+                  captureRef.current.event("operator_marker");
+                  addLog("Audio issue marked in diagnostic recording", "warn");
+                }}>Mark audio issue</Button>
+                <Button size="sm" variant="outline" disabled={!hasRecording} onClick={downloadRecording}>Download recording</Button>
+              </div>
+              <p className="text-[0.71rem] leading-snug text-muted-foreground">
+                Keeps the latest 10 minutes of player measurements in this tab. Download after an audio issue; the service recording is collected separately.
+              </p>
             </div>
           </CollapsibleContent>
         </Collapsible>

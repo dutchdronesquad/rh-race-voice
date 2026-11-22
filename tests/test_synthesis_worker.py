@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 import unittest
@@ -68,6 +69,27 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first, second)
         next_result = await self.submit({})
         self.assertEqual(next_result["count"], 2)
+
+    async def test_worker_queue_wait_is_distinct_from_synthesis(self) -> None:
+        """A queued request reports the time spent behind an active operation."""
+        entered, release = asyncio.Event(), asyncio.Event()
+        execute = self.worker._execute  # noqa: SLF001
+
+        async def held(request: bytes) -> dict:
+            if json.loads(request).get("hold"):
+                entered.set()
+                await release.wait()
+            return await execute(request)
+
+        with patch.object(self.worker, "_execute", side_effect=held):
+            active = self.submit({"hold": True})
+            await entered.wait()
+            queued = self.submit({"text": "waiting"})
+            await asyncio.sleep(0.06)
+            release.set()
+            first, second = await asyncio.gather(active, queued)
+        self.assertGreater(second["worker_wait_ms"], 40)
+        self.assertGreater(second["worker_wait_ms"], first["worker_wait_ms"])
 
     async def test_cancelling_one_subscriber_preserves_other_subscriber(self) -> None:
         """A personal stream leaving must not cancel another listener's speech."""

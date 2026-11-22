@@ -357,10 +357,16 @@ class PreparationPlanner:
             self._ready(replace(plan, audio=audio, completion=completion))
             telemetry.record(plan.event.event_id, "prefix_ready")
 
+        started = time.monotonic()
         telemetry.record(
             plan.event.event_id,
             "synthesis_start",
             wait_ms=round((time.monotonic() - item.enqueued_at) * 1000, 1),
+            model=item.settings.get("model"),
+            speed=item.settings.get("speed"),
+            noise=item.settings.get("noise"),
+            noise_w=item.settings.get("noise_w"),
+            depth=len(self._pending),
         )
         audio = ()
         try:
@@ -376,6 +382,10 @@ class PreparationPlanner:
                     cache_hit=result.get("cache_hit"),
                     memory_cache_hit=result.get("memory_cache_hit", False),
                     duration_ms=result.get("duration_ms"),
+                    segment_index=result.get("segment_index"),
+                    subdir=result.get("subdir"),
+                    request_ms=result.get("request_ms"),
+                    worker_wait_ms=result.get("worker_wait_ms"),
                 ),
                 on_prefix=publish_prefix,
             )
@@ -389,7 +399,12 @@ class PreparationPlanner:
                 completion.set_result(
                     audio if not item.cancelled and self._usable(plan) else ()
                 )
-        telemetry.record(plan.event.event_id, "synthesis_end", empty=not audio)
+        telemetry.record(
+            plan.event.event_id,
+            "synthesis_end",
+            empty=not audio,
+            duration_ms=round((time.monotonic() - started) * 1000, 3),
+        )
         if completion is not None:
             # The reserved output slot owns delivery and its terminal telemetry.
             return
@@ -481,13 +496,25 @@ class SendspinPlaybackSink:
         # Reserve the callout's slot, but never speak its prefix before its
         # time is ready: an empty client buffer would create a mid-sentence gap.
         try:
+            started = time.monotonic()
             audio = await plan.complete_audio()
         except TimeoutError:
             return False
         if not audio or cancelled.is_set() or time.monotonic() >= deadline:
             return False
+        telemetry.record(
+            plan.event.event_id,
+            "output_ready",
+            destination=self._destination,
+            wait_ms=round((time.monotonic() - started) * 1000, 3),
+        )
         clips = [
-            WavItem(name=f"{plan.event.event_id}-{index}.wav", data=data)
+            WavItem(
+                name=f"{plan.event.event_id}-{index}.wav",
+                data=data,
+                event_id=plan.event.event_id,
+                destination=self._destination,
+            )
             for index, data in enumerate(audio)
         ]
         return bool(
@@ -772,6 +799,7 @@ class PlaybackPlanner:
                     wait_ms=round((time.monotonic() - item.enqueued_at) * 1000, 1),
                     duration_ms=round(item.plan.duration_s * 1000, 1),
                     destination=self._destination,
+                    depth=len(self._pending),
                 )
                 try:
                     await self._sink.play(item.plan, item.cancelled)

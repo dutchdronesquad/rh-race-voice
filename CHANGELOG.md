@@ -20,11 +20,13 @@ Cloud relay uploads available cached lap segments while the time is being prepar
 
 Playback buffering now respects connected players that request more preparation time than the default queue limits. This prevents the Sendspin scheduler from inserting silence between chunks of a buzzer or spoken announcement. Minimum buffer requirements and output delay also contribute to startup timing.
 
-### Race-day audio diagnostics
+### Automatic audio diagnostics
 
-The service automatically records audio diagnostics throughout the evening, with no start/stop action needed. Operators can export the retained races afterwards with `sendspin-service diagnostics export`, while recording continues. Exports get a timestamped English filename in the current directory; `--output` is optional. Recordings include synthesis/cache timing, queue outcomes, relay transfer timing and Sendspin scheduling, with a summary and software/hardware context. Recording keeps up to 64 MiB on disk across service restarts and excludes speech text and tokens.
+The voice service now automatically saves recent audio diagnostics while it runs. Nothing needs enabling before a race. Records stay on disk across service restarts, with a rolling limit of 64 MiB; the oldest data is replaced when that limit is reached.
 
-The browser player automatically keeps recent buffer and synchronization measurements. Its Diagnostics panel can mark an audible issue and download a separate JSON file. These observations help locate interruptions; they do not measure sound at the speaker. See the [capture guide](docs/latency-validation.md#capturing-a-baseline) for local and cloud workflows.
+After racing, run `sendspin-service diagnostics export` to create a ZIP in the current directory with a name such as `race-audio-2026-11-22-143000Z.zip` (UTC). Use `--output` only to choose a different name or location. Export keeps recording running and never overwrites an existing file.
+
+The export includes synthesis, queue, relay and playback-scheduling measurements to help investigate delays and interruptions. Speech text and tokens are excluded. The browser player also automatically keeps its latest ten minutes of buffer and synchronization measurements, available as a separate download under **Diagnostics**. See the [capture guide](docs/latency-validation.md#capturing-a-baseline) for collection and interpretation limits.
 
 ## [2.2.0] - 2026-11-22
 

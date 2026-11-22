@@ -220,7 +220,7 @@ Multiple devices can connect simultaneously and will receive the same audio in s
 
 The player stores the server URL in the browser's local storage and reconnects automatically if the connection drops.
 
-Race Voice checks each configured Sendspin service's health and installed `aiosendspin` version automatically in the background when RotorHazard starts. Successful checks are logged; problems produce warnings. **Play audio check** queues the test audio directly. The bundled browser player requires `aiosendspin` 9.0.0 or newer; the plugin and service release numbers do not need to match. Passing the minimum-version check does not verify browser connectivity or audio output.
+Race Voice checks each configured Sendspin service's health and installed `aiosendspin` version automatically in the background when RotorHazard starts. Successful checks are logged; problems produce warnings. **Play audio check** queues the test audio directly. The bundled browser player uses Sendspin JS 6 and requires `aiosendspin` 10.0.0 or newer for the Sendspin 1.0.0-rc1 protocol; the plugin and service release numbers do not need to match. Passing the minimum-version check does not verify browser connectivity or audio output.
 
 An older service may not report its `aiosendspin` version. In that case the plugin warns that browser compatibility cannot be verified. A startup warning does not disable later playback attempts. Update the separate `sendspin-service` installation to address a backend version mismatch: updating RotorHazard's venv does not update the service's bundled Python environment. If an update prevents the service from starting, check `journalctl -u sendspin-service` for dependency or startup errors.
 

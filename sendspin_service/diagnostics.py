@@ -1,4 +1,4 @@
-"""Bounded, opt-in race-audio capture; disk work never runs on an audio callback."""
+"""Bounded, automatic race-audio capture; disk work never runs on an audio callback."""
 
 from __future__ import annotations
 
@@ -24,12 +24,14 @@ from .race import telemetry
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-MAX_FILE_BYTES = 1024 * 1024
-BACKUP_COUNT = 4
+MAX_FILE_BYTES = 8 * 1024 * 1024
+BACKUP_COUNT = 7
 MAX_QUEUE_RECORDS = 2048
+MAX_CAPTURE_CONTEXTS = 20
 _README = """Race Voice audio diagnostics
 
-manifest.json identifies the capture, software, hardware and clock domain.
+manifest.json identifies the current capture and up to 20 previous capture contexts.
+Retained events can span restarts; each clock_id remains a separate clock domain.
 summary.json contains counts and timing distributions from retained events only.
 events.jsonl.N files are oldest first (largest N), followed by events.jsonl.
 
@@ -40,7 +42,7 @@ A scheduled silence between tones is expected; a chunk gap inside a clip is diff
 Queue waits can overlap synthesis: do not add every duration to estimate audible delay.
 Never subtract timestamps with different clock_id values, including separate services.
 
-Start a browser recording under Diagnostics and download its JSON after an issue.
+The browser automatically keeps recent measurements; download under Diagnostics.
 The browser file is separate; it contains no service token or stable player identity.
 Buffer/resync observations do not prove an underrun or physical sound output.
 WindowsSpin does not send authoritative speaker/underrun measurements to this service.
@@ -236,6 +238,7 @@ class DiagnosticCapture:
         self._control_lock = threading.Lock()
         self._manifest: dict = {}
         self._previous_level = logging.NOTSET
+        self._previous_propagate = True
 
     def status(self) -> dict:
         """Return cheap operational state without inspecting files or audio clients."""
@@ -252,15 +255,14 @@ class DiagnosticCapture:
         }
 
     def start(self) -> dict:
-        """Begin a new capture, replacing only the previous diagnostic recording."""
+        """Resume rotating capture without erasing evidence from previous runs."""
         with self._control_lock:
             if self._handler is not None:
                 return self.status()
             if self._thread is not None and self._thread.is_alive():
                 raise RuntimeError("Previous diagnostic writer is still stopping")
             self.directory.mkdir(parents=True, exist_ok=True)
-            for name in ("events.jsonl", *(f"events.jsonl.{i}" for i in range(1, 5))):
-                (self.directory / name).unlink(missing_ok=True)
+            previous = self._previous_contexts()
             writer = _Writer(
                 self.directory / "events.jsonl",
                 maxBytes=self.max_bytes,
@@ -272,6 +274,7 @@ class DiagnosticCapture:
             self.error = None
             self._manifest = {
                 "schema": "race-audio-diagnostics/1",
+                "previous_captures": previous,
                 "capture_id": uuid.uuid4().hex,
                 "clock_id": telemetry.CLOCK_ID,
                 "started_utc": datetime.now(UTC).isoformat(),
@@ -296,6 +299,8 @@ class DiagnosticCapture:
             )
             self._thread.start()
             self._previous_level = telemetry.logger.level
+            self._previous_propagate = telemetry.logger.propagate
+            telemetry.logger.propagate = False
             if not telemetry.logger.isEnabledFor(logging.INFO):
                 telemetry.logger.setLevel(logging.INFO)
             self._handler = _CaptureHandler(self)
@@ -310,6 +315,7 @@ class DiagnosticCapture:
             telemetry.logger.removeHandler(self._handler)
             self._handler.close()
             self._handler = None
+            telemetry.logger.propagate = self._previous_propagate
             if telemetry.logger.level == logging.INFO:
                 telemetry.logger.setLevel(self._previous_level)
             try:
@@ -350,6 +356,24 @@ class DiagnosticCapture:
                     self.records.task_done()
         finally:
             writer.close()
+
+    def _previous_contexts(self) -> list[dict]:
+        """Keep bounded restart context; damaged metadata must not erase event files."""
+        try:
+            with (self.directory / "manifest.json").open(
+                "r", encoding="utf-8"
+            ) as source:
+                previous = json.loads(source.read(65537))
+            if not isinstance(previous, dict):
+                return []
+            history = previous.pop("previous_captures", [])
+            if not isinstance(history, list):
+                history = []
+            return [item for item in [*history, previous] if isinstance(item, dict)][
+                -MAX_CAPTURE_CONTEXTS:
+            ]
+        except (OSError, ValueError):
+            return []
 
     def _save_manifest(self) -> None:
         self._manifest["capture_status"] = self.status()

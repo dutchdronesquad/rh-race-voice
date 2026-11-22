@@ -53,29 +53,16 @@ function ordered(values: RecordData[], count: number, limit: number): RecordData
 }
 
 export class PlayerDiagnosticCapture {
-  active = false;
   private samples: RecordData[] = [];
   private events: RecordData[] = [];
   private sampleCount = 0;
   private eventCount = 0;
-  private captureId = "";
-  private startedUtc = "";
+  private captureId = [...crypto.getRandomValues(new Uint8Array(16))]
+    .map(value => value.toString(16).padStart(2, "0")).join("");
+  private startedUtc = new Date().toISOString();
   private generation = 0;
 
-  start(): void {
-    this.samples = [];
-    this.events = [];
-    this.sampleCount = this.eventCount = this.generation = 0;
-    this.captureId = [...crypto.getRandomValues(new Uint8Array(16))]
-      .map(value => value.toString(16).padStart(2, "0")).join("");
-    this.startedUtc = new Date().toISOString();
-    this.active = true;
-  }
-
-  stop(): void { this.active = false; }
-
   event(kind: EventKind): void {
-    if (!this.active) return;
     if (kind === "connected" || kind === "reconnected") this.generation += 1;
     this.events[this.eventCount++ % MAX_EVENTS] = {
       kind, t_ms: performance.now(), utc_ms: Date.now(), connection: this.generation,
@@ -83,7 +70,6 @@ export class PlayerDiagnosticCapture {
   }
 
   sample(player: SendspinPlayer | null): void {
-    if (!this.active) return;
     const sample: RecordData = {
       t_ms: performance.now(), utc_ms: Date.now(), connection: this.generation,
       connected: player?.isConnected ?? false,

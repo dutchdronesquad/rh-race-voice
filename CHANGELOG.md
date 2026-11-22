@@ -14,9 +14,9 @@ Playback buffering now respects connected players that request more preparation 
 
 ### Race-day audio diagnostics
 
-Operators can start, stop and export a bounded diagnostic recording with `sendspin-service diagnostics`, without editing Python or restarting audio. Recordings include synthesis/cache timing, queue outcomes, relay transfer timing and Sendspin scheduling, with a summary and software/hardware context. Capture is off by default and excludes speech text and tokens.
+The service automatically records audio diagnostics throughout the evening, with no start/stop action needed. Operators can export the retained races afterwards with `sendspin-service diagnostics export`, while recording continues. Recordings include synthesis/cache timing, queue outcomes, relay transfer timing and Sendspin scheduling, with a summary and software/hardware context. Recording keeps up to 64 MiB on disk across service restarts and excludes speech text and tokens.
 
-The browser player's Diagnostics panel can record recent buffer and synchronization measurements, mark an audible issue and download a separate JSON file. These observations help locate interruptions; they do not measure sound at the speaker. See the [capture guide](docs/latency-validation.md#capturing-a-baseline) for local and cloud workflows.
+The browser player automatically keeps recent buffer and synchronization measurements. Its Diagnostics panel can mark an audible issue and download a separate JSON file. These observations help locate interruptions; they do not measure sound at the speaker. See the [capture guide](docs/latency-validation.md#capturing-a-baseline) for local and cloud workflows.
 
 ## [2.2.0] - 2026-11-22
 

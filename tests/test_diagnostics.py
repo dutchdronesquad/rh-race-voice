@@ -15,16 +15,19 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from sendspin_service.__main__ import main
 from sendspin_service.diagnostics import (
     BACKUP_COUNT,
+    MAX_CAPTURE_CONTEXTS,
     MAX_QUEUE_RECORDS,
     DiagnosticCapture,
     _Writer,
     summarize,
 )
+from sendspin_service.diagnostics_routes import add_routes
 from sendspin_service.race import telemetry
 from sendspin_service.server import SendspinService, ServiceConfig, _create_app
 
@@ -45,7 +48,7 @@ class CaptureTests(unittest.TestCase):
         self.capture = DiagnosticCapture(self.root / "diagnostics", {}, max_bytes=4096)
         self.addCleanup(self.capture.stop)
 
-    def test_recording_is_opt_in_and_export_survives_restart(self) -> None:
+    def test_recording_resumes_without_erasing_previous_evidence(self) -> None:
         """A stopped service's last recording remains downloadable by its successor."""
         telemetry.record("before", "received")
         self.assertFalse(self.capture.directory.exists())
@@ -65,6 +68,18 @@ class CaptureTests(unittest.TestCase):
         restored = unpack(successor.export())
         self.assertFalse(json.loads(restored["manifest.json"])["recording_active"])
         self.assertEqual(restored["events.jsonl"], data["events.jsonl"])
+        with patch.object(telemetry, "CLOCK_ID", "next-process"):
+            successor.start()
+            self.addCleanup(successor.stop)
+            telemetry.record("lap:2", "received")
+            resumed = unpack(successor.export())
+        self.assertIn(b"lap:1", resumed["events.jsonl"])
+        self.assertIn(b"lap:2", resumed["events.jsonl"])
+        manifest = json.loads(resumed["manifest.json"])
+        self.assertEqual(manifest["clock_id"], "next-process")
+        self.assertEqual(
+            manifest["previous_captures"][0]["capture_id"], started["capture_id"]
+        )
         self.assertIn(
             "queued, not audible", json.loads(data["summary.json"])["delivery_meaning"]
         )
@@ -94,6 +109,28 @@ class CaptureTests(unittest.TestCase):
         self.assertNotIn(b"secret-token", raw)
         self.assertNotIn(b'"event_id": "lap:0"', raw)
         self.assertIn(b'"event_id": "lap:299"', raw)
+
+    def test_restart_history_stays_bounded_and_recovers_from_bad_metadata(self) -> None:
+        """Repeated restarts and a damaged manifest must not erase race evidence."""
+        self.capture.start()
+        telemetry.record("first-race", "received")
+        self.capture.stop()
+        for _ in range(MAX_CAPTURE_CONTEXTS + 2):
+            self.capture.start()
+            self.capture.stop()
+        data = unpack(self.capture.export())
+        self.assertIn(b"first-race", data["events.jsonl"])
+        self.assertEqual(
+            len(json.loads(data["manifest.json"])["previous_captures"]),
+            MAX_CAPTURE_CONTEXTS,
+        )
+        (self.capture.directory / "manifest.json").write_text("interrupted write")
+        self.capture.start()
+        telemetry.record("later-race", "received")
+        data = unpack(self.capture.export())
+        self.assertIn(b"first-race", data["events.jsonl"])
+        self.assertIn(b"later-race", data["events.jsonl"])
+        self.assertEqual(json.loads(data["manifest.json"])["previous_captures"], [])
 
     def test_disk_stall_only_drops_bounded_diagnostic_records(self) -> None:
         """The producer can finish while a writer is deliberately blocked on disk."""
@@ -177,24 +214,23 @@ class DiagnosticApiTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(self.client.close)
         self.headers = {"Authorization": f"Bearer {self.token}"}
 
-    async def test_controls_require_admin_token_and_export_is_safe(self) -> None:
-        """Listeners cannot enable capture or read a private diagnostic recording."""
+    async def test_automatic_recording_requires_admin_token_to_export(self) -> None:
+        """Recording starts with the service; listeners cannot read its private data."""
         for method, path in (
-            ("post", "start"),
-            ("post", "stop"),
             ("get", "status"),
             ("get", "export"),
         ):
             response = await getattr(self.client, method)(f"/v2/diagnostics/{path}")
             self.assertEqual(response.status, 401)
-        response = await self.client.post("/v2/diagnostics/start", headers=self.headers)
+        response = await self.client.get("/v2/diagnostics/status", headers=self.headers)
         self.assertTrue((await response.json())["active"])
         telemetry.record("lap:1", "received", api_token=self.token)
         response = await self.client.get("/v2/diagnostics/export", headers=self.headers)
         data = await response.read()
         self.assertEqual(response.status, 200)
         self.assertNotIn(self.token.encode(), b"".join(unpack(data).values()))
-        await self.client.post("/v2/diagnostics/stop", headers=self.headers)
+        self.assertTrue(self.service.diagnostics.status()["active"])
+        await self.client.close()
         self.assertFalse(self.service.diagnostics.status()["active"])
 
     async def test_management_cli_round_trip_and_no_overwrite(self) -> None:
@@ -203,9 +239,6 @@ class DiagnosticApiTests(unittest.IsolatedAsyncioTestCase):
         env_file.write_text(f'SENDSPIN_API_TOKEN="{self.token}"\n')
         common = ["--url", str(self.client.make_url("")), "--env-file", str(env_file)]
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(
-                await asyncio.to_thread(main, ["diagnostics", "start", *common]), 0
-            )
             telemetry.record("lap:1", "received")
             target = self.root / "capture.zip"
             command = ["diagnostics", "export", *common, "--output", str(target)]
@@ -214,3 +247,23 @@ class DiagnosticApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("manifest.json", unpack(first))
             self.assertEqual(await asyncio.to_thread(main, command), 1)
             self.assertEqual(target.read_bytes(), first)
+
+
+class AutomaticStartupTests(unittest.IsolatedAsyncioTestCase):
+    """Automatic diagnostics must never prevent the HTTP service starting."""
+
+    async def test_unwritable_storage_keeps_service_available(self) -> None:
+        """A broken diagnostic directory becomes status, not a service outage."""
+        root = Path(self.enterContext(TemporaryDirectory()))
+        blocked = root / "not-a-directory"
+        blocked.write_text("existing file")
+        capture = DiagnosticCapture(blocked, {})
+        app = web.Application()
+        add_routes(app, capture)
+        async with TestClient(TestServer(app)) as client:
+            response = await client.get("/v2/diagnostics/status")
+            self.assertEqual(response.status, 200)
+            status = await response.json()
+            self.assertFalse(status["active"])
+            self.assertEqual(status["storage_error"], "FileExistsError")
+            self.assertEqual(blocked.read_text(), "existing file")

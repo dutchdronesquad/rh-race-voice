@@ -203,9 +203,7 @@ export function App() {
   const [correctionMode, setCorrectionMode] = useState<CorrectionMode>(initialCorrectionMode);
   const [serverOpen, setServerOpen] = useState(true);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
-  const [recording, setRecording] = useState(false);
-  const [hasRecording, setHasRecording] = useState(false);
-  const captureRef = useRef(new PlayerDiagnosticCapture());
+  const [capture] = useState(() => new PlayerDiagnosticCapture());
   const [shareOpen, setShareOpen] = useState(false);
   const [state, setState] = useState<ConnectionState>("disconnected");
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -362,12 +360,12 @@ export function App() {
       reconnect: {
         ...RECONNECT_CONFIG,
         onReconnecting: (attempt) => {
-          captureRef.current.event("reconnecting");
+          capture.event("reconnecting");
           setState("reconnecting");
           addLog(`Reconnecting (${attempt})`, "warn");
         },
         onReconnected: () => {
-          captureRef.current.event("reconnected");
+          capture.event("reconnected");
           hasConnectedRef.current = true;
           resetDetailLogs();
           const nextSnapshot = readSnapshot(player);
@@ -405,7 +403,7 @@ export function App() {
     try {
       await player.unlock();
       await player.connect();
-      captureRef.current.event("connected");
+      capture.event("connected");
       hasConnectedRef.current = true;
       const nextSnapshot = readSnapshot(player);
       setSnapshot(nextSnapshot);
@@ -413,7 +411,7 @@ export function App() {
       setServerOpen(false);
       addLog("Connected");
     } catch (err) {
-      captureRef.current.event("error");
+      capture.event("error");
       player.destroy("shutdown");
       playerRef.current = null;
       hasConnectedRef.current = false;
@@ -425,7 +423,7 @@ export function App() {
   }
 
   function disconnect() {
-    captureRef.current.event("disconnected");
+    capture.event("disconnected");
     const player = playerRef.current;
     playerRef.current = null;
     hasConnectedRef.current = false;
@@ -473,7 +471,7 @@ export function App() {
   useEffect(() => {
     const interval = window.setInterval(() => {
       const player = playerRef.current;
-      captureRef.current.sample(player);
+      capture.sample(player);
       if (player) {
         const nextSnapshot = readSnapshot(player);
         setSnapshot(nextSnapshot);
@@ -484,20 +482,8 @@ export function App() {
     return () => window.clearInterval(interval);
   }, []);
 
-  function toggleRecording() {
-    if (captureRef.current.active) {
-      captureRef.current.stop();
-      setRecording(false);
-    } else {
-      captureRef.current.start();
-      captureRef.current.sample(playerRef.current);
-      setHasRecording(true);
-      setRecording(true);
-    }
-  }
-
   function downloadRecording() {
-    const report = captureRef.current.snapshot(__SENDSPIN_VERSION__, navigator.userAgent);
+    const report = capture.snapshot(__SENDSPIN_VERSION__, navigator.userAgent);
     const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url;
@@ -817,17 +803,14 @@ export function App() {
             </div>
             <div className="space-y-2 border-t border-border px-5 py-3">
               <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant="outline" onClick={toggleRecording}>
-                  {recording ? "Stop recording" : "Start new recording"}
-                </Button>
-                <Button size="sm" variant="outline" disabled={!recording} onClick={() => {
-                  captureRef.current.event("operator_marker");
+                <Button size="sm" variant="outline" onClick={() => {
+                  capture.event("operator_marker");
                   addLog("Audio issue marked in diagnostic recording", "warn");
                 }}>Mark audio issue</Button>
-                <Button size="sm" variant="outline" disabled={!hasRecording} onClick={downloadRecording}>Download recording</Button>
+                <Button size="sm" variant="outline" onClick={downloadRecording}>Download recording</Button>
               </div>
               <p className="text-[0.71rem] leading-snug text-muted-foreground">
-                Keeps the latest 10 minutes of player measurements in this tab. Download after an audio issue; the service recording is collected separately.
+                Automatically keeps the latest 10 minutes of player measurements in this tab. Service diagnostics are recorded throughout the evening and exported separately.
               </p>
             </div>
           </CollapsibleContent>

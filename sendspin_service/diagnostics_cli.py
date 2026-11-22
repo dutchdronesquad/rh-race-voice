@@ -15,7 +15,7 @@ from urllib.request import Request, urlopen
 
 from .cli import ENV_FILE, _health_url, _local_url
 
-MAX_EXPORT_BYTES = 8 * 1024 * 1024
+MAX_EXPORT_BYTES = 80 * 1024 * 1024
 
 
 def _token(env_file: Path) -> str:
@@ -32,9 +32,9 @@ def _token(env_file: Path) -> str:
 
 
 def main(argv: list[str]) -> int:
-    """Start, stop, inspect or download a recording from the running service."""
+    """Inspect or download the automatic recording from the running service."""
     parser = argparse.ArgumentParser(prog="sendspin-service diagnostics")
-    parser.add_argument("action", choices=("start", "stop", "status", "export"))
+    parser.add_argument("action", choices=("status", "export"))
     parser.add_argument(
         "--url", help="Service API base URL; defaults to local configuration"
     )
@@ -59,7 +59,7 @@ def main(argv: list[str]) -> int:
         token = _token(args.env_file)
         request = Request(  # noqa: S310 -- scheme checked by _health_url
             url,
-            method="POST" if args.action in {"start", "stop"} else "GET",
+            method="GET",
             headers={"Authorization": f"Bearer {token}"} if token else {},
         )
         with urlopen(request, timeout=20) as response:  # noqa: S310

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -27,12 +28,7 @@ def add_routes(app: web.Application, capture: DiagnosticCapture) -> None:
                         )
                     },
                 )
-            operation = {
-                "start": capture.start,
-                "stop": capture.stop,
-                "status": capture.status,
-            }[request.match_info["action"]]
-            return web.json_response(await asyncio.to_thread(operation))
+            return web.json_response(capture.status())
         except FileNotFoundError as exc:
             raise web.HTTPNotFound(reason="No diagnostic recording yet") from exc
         except (OSError, RuntimeError, ValueError) as exc:
@@ -41,7 +37,17 @@ def add_routes(app: web.Application, capture: DiagnosticCapture) -> None:
             ) from exc
 
     app.router.add_get("/v2/diagnostics/{action:status|export}", handle)
-    app.router.add_post("/v2/diagnostics/{action:start|stop}", handle)
+
+    async def startup(_app: web.Application) -> None:
+        try:
+            await asyncio.to_thread(capture.start)
+        except (OSError, RuntimeError, ValueError) as exc:
+            capture.error = type(exc).__name__
+            logging.getLogger(__name__).warning(
+                "Automatic audio diagnostics unavailable: %s", type(exc).__name__
+            )
+
+    app.on_startup.append(startup)
 
     async def cleanup(_app: web.Application) -> None:
         await asyncio.to_thread(capture.stop)

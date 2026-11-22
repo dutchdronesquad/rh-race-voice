@@ -406,7 +406,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> ServiceConfig:
         "--diagnostics-dir",
         type=Path,
         default=_env_path("SENDSPIN_DIAGNOSTICS_DIR"),
-        help="Recording directory; enable capture with the diagnostics command",
+        help="Directory for automatic rotating audio diagnostics",
     )
     parser.add_argument(
         "--relay-url",

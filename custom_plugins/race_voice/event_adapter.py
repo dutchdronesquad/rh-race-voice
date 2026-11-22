@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import time
@@ -21,6 +22,7 @@ from .services.clock_callouts import ClockCallouts
 from .ui import register_ui
 
 _LOCALES = json.loads((Path(__file__).parent / "locales.json").read_text())
+logger = logging.getLogger(__name__)
 _COMPETITION_OPTION = "race_voice_competition_id"
 _PUBLISHER_EPOCH_OPTION = "race_voice_publisher_epoch"
 # The publisher's session handshake can still be in flight when a manual
@@ -126,6 +128,18 @@ class RaceEventAdapter:
 
     def _voice_settings(self) -> dict:
         model = self._option(const.VOICE_MODEL_OPTION, const.DEFAULT_MODEL)
+        if model in const.REPLACED_VOICE_MODELS:
+            previous = model
+            model = const.REPLACED_VOICE_MODELS[previous]
+            self._rhapi.db.option_set(const.VOICE_MODEL_OPTION, model)
+            logger.warning(
+                "Race Voice replaced retired model %s with %s", previous, model
+            )
+            self._rhapi.ui.message_notify(
+                "High-quality voices have been removed. Selected "
+                f"{const.VOICE_MODELS[model]['label']}. "
+                "Run Prepare pre-cache before racing."
+            )
         voice = {
             "model": model if model in const.VOICE_MODELS else const.DEFAULT_MODEL,
             "enabled": str(self._option(const.ENABLE_OPTION, default=False)).lower()

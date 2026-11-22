@@ -11,7 +11,7 @@ import socket
 import threading
 import time
 import wave
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -38,7 +38,7 @@ _TIMEOUT_MARGIN_S = 10
 _BUFFER_LIMIT_US = 500_000
 _SCHEDULED_TAIL_S = 0.1
 _MAX_BRIDGED_GAP_US = 1_500_000
-_SCHEDULED_BUFFER_MARGIN_US = 100_000
+_BUFFER_SAFETY_MARGIN_US = 100_000
 _SCHEDULED_BUFFER_CEILING_US = 1_200_000
 _STARTUP_TIMEOUT_S = 30.0
 _LATE_JOIN_SYNC_INTERVAL_S = 0.1
@@ -50,6 +50,7 @@ class _StreamOptions:
     max_buffer_us: int
     volume: float = 1.0
     cancelled: threading.Event | None = None
+    group: SendspinGroup | None = None
 
 
 @dataclass(frozen=True)
@@ -662,7 +663,7 @@ class SendSpinServer:
                     clips,
                     play_start_us=start_us,
                     sync_clients=sync_clients,
-                    options=item.options,
+                    options=replace(item.options, group=group),
                 )
         except StreamStoppedError:
             play_end_us = max(
@@ -750,12 +751,16 @@ class SendSpinServer:
                 ),
                 cancelled=cancelled,
                 volume=volume,
+                group=group,
             )
         play_start_us = self._next_play_start_us
         if play_start_us is None or play_start_us <= now_us:
             play_start_us = now_us + _group_lead_time_us(group)
         return play_start_us, _StreamOptions(
-            max_buffer_us=_BUFFER_LIMIT_US, volume=volume, cancelled=cancelled
+            max_buffer_us=_BUFFER_LIMIT_US,
+            volume=volume,
+            cancelled=cancelled,
+            group=group,
         )
 
     def _bridge_gap_with_silence(
@@ -882,7 +887,7 @@ def _handle_loop_exception(
 
 
 def _group_lead_time_us(group: SendspinGroup) -> int:
-    """Return the max required lead time across all players in the group.
+    """Return the largest startup/buffer floor plus output delay in the group.
 
     Falls back to _INITIAL_PLAYBACK_DELAY_S when the player role or timing
     data is unavailable (e.g. old clients or before the role is negotiated).
@@ -894,7 +899,11 @@ def _group_lead_time_us(group: SendspinGroup) -> int:
         if role is None:
             return floor
         lead_times = [
-            active_role.get_required_lead_time_us()
+            max(
+                active_role.get_required_lead_time_us(),
+                active_role.get_min_buffer_us(),
+            )
+            + active_role.get_output_delay_us()
             for client in role.get_player_clients()
             for active_role in client.active_roles
             if hasattr(active_role, "get_required_lead_time_us")
@@ -934,7 +943,7 @@ def _scheduled_buffer_limit_us(
         _SCHEDULED_BUFFER_CEILING_US,
         max(
             _BUFFER_LIMIT_US,
-            scheduled_delay_us + duration_us + _SCHEDULED_BUFFER_MARGIN_US,
+            scheduled_delay_us + duration_us + _BUFFER_SAFETY_MARGIN_US,
         ),
     )
 
@@ -972,7 +981,16 @@ async def _stream_wav(
             # announces its target time; aiosendspin's own throttle sleep
             # can take up to 1s per call, so skipping it here keeps that
             # announcement prompt regardless of how full the buffer is.
-            await stream.sleep_to_limit_buffer(max_buffer_us=options.max_buffer_us)
+            buffer_us = options.max_buffer_us
+            if options.group is not None:
+                # The SDK rebases continuation timestamps below the player's
+                # send-ahead floor. Throttling below that floor inserts silence
+                # inside a clip. Recheck after client sync for late joiners.
+                buffer_us = max(
+                    buffer_us,
+                    _group_lead_time_us(options.group) + _BUFFER_SAFETY_MARGIN_US,
+                )
+            await stream.sleep_to_limit_buffer(max_buffer_us=buffer_us)
         if stream.is_stopped:
             raise StreamStoppedError
         if options.cancelled is not None and options.cancelled.is_set():

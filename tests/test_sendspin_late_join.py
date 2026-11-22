@@ -97,6 +97,19 @@ class FirstListenerTests(unittest.IsolatedAsyncioTestCase):
         client.add_audio_chunk_listener(receive)
         self.addAsyncCleanup(client.disconnect)
         await client.connect(str(self.http.make_url("/sendspin")))
+        # connect() completes before client/state reaches the server. These
+        # scenarios depend on the requested 20 ms timing, not the SDK's
+        # provisional one-second minimum buffer during negotiation.
+        async with asyncio.timeout(2):
+            while True:
+                server_client = self.backend._server.get_client(client.identity.peer_id)
+                if server_client is not None and server_client.is_connected:
+                    roles = server_client.active_roles
+                    if not unpaired or any(
+                        role.get_min_buffer_us() == 20_000 for role in roles
+                    ):
+                        break
+                await asyncio.sleep(0.001)
         return client
 
     async def test_first_listener_joins_current_position_after_admission_deadline(

@@ -4,11 +4,13 @@
 
 from __future__ import annotations
 
+import time
 import unittest
+from itertools import pairwise
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
@@ -17,7 +19,7 @@ from aiosendspin.server import AudioFormat
 from aiosendspin.server.push_stream import MAIN_CHANNEL, PushStream
 from aiosendspin.server.roles import AudioRequirements
 
-from sendspin_service.playback.sendspin import SendSpinServer
+from sendspin_service.playback.sendspin import SendSpinServer, _stream_wav, _WavClip
 
 if TYPE_CHECKING:
     from aiosendspin.server.client import SendspinClient
@@ -107,6 +109,72 @@ class IndependentGroupTests(unittest.IsolatedAsyncioTestCase):
         await self.send(stream, b"\x04\x00")
         self.assertEqual(self.samples("listener"), before)
         self.assertTrue(self.samples("venue").endswith(b"\x04\x00" * 2205))
+
+    async def test_scheduled_tone_keeps_contiguous_chunks_for_high_lead_player(
+        self,
+    ) -> None:
+        """Buffer throttling must not make the SDK rebase inside a start buzzer."""
+        await self.assert_contiguous_audio(
+            scheduled=True, lead_us=1_600_000, min_buffer_us=1_600_000
+        )
+
+    async def test_normal_audio_respects_minimum_buffer_above_startup_lead(
+        self,
+    ) -> None:
+        """Speech needs the same protection even when required startup lead is low."""
+        await self.assert_contiguous_audio(
+            scheduled=False, lead_us=100_000, min_buffer_us=750_000
+        )
+
+    async def assert_contiguous_audio(
+        self, *, scheduled: bool, lead_us: int, min_buffer_us: int
+    ) -> None:
+        """Use real SDK pacing/encoding and controlled negotiated role metadata."""
+        client = self.client("high-lead")
+        role = client.role("player@v1")
+        with (
+            patch.object(
+                type(client),
+                "active_roles",
+                new_callable=PropertyMock,
+                return_value=(role,),
+            ),
+            patch.object(
+                client.group.group_role("player"),
+                "get_player_clients",
+                return_value=[client],
+            ),
+            patch.object(role, "get_required_lead_time_us", return_value=lead_us),
+            patch.object(role, "get_min_buffer_us", return_value=min_buffer_us),
+            patch.object(role, "get_output_delay_us", return_value=0),
+        ):
+            stream = client.group.start_stream()
+            start_us, options = self.backend._resolve_play_start(
+                time.monotonic() + 1.7 if scheduled else None,
+                self.server.clock.now_us(),
+                client.group,
+                1.0,
+                None,
+                0.8,
+            )
+            clip = _WavClip(
+                "buzzer", AudioFormat(22050, 16, 1), b"\x01\x00" * 17640, 0.8
+            )
+            await _stream_wav(
+                stream,
+                clip,
+                play_start_us=start_us,
+                sync_clients=AsyncMock(return_value=1),
+                options=options,
+            )
+        chunks = [call.args[0] for call in self.captures["high-lead"].call_args_list]
+        self.assertGreater(len(chunks), 2)
+        self.assertEqual(self.samples("high-lead"), clip.pcm_data)
+        gaps = [
+            following.timestamp_us - previous.timestamp_us - previous.duration_us
+            for previous, following in pairwise(chunks)
+        ]
+        self.assertLessEqual(max(abs(gap) for gap in gaps), 1)
 
 
 if __name__ == "__main__":

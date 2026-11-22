@@ -75,25 +75,21 @@ class RaceRelaySink:
             )
             return
         if plan.completion is not None:
+            if not plan.completion.done():
+                # Synthesis is already running independently. Transfer reusable
+                # segments during that wait, but never publish a partial event.
+                # A failed speculative upload is retried by normal delivery.
+                try:
+                    await self._upload_audio(plan.audio, cancelled)
+                except (aiohttp.ClientError, TimeoutError):
+                    logger.debug("Sendspin relay: prefix upload failed", exc_info=True)
             plan = await self._complete_plan(plan)
             if plan is None:
                 return
         for attempt in range(_MAX_ATTEMPTS):
             try:
                 await self._ensure_clock()
-                hashes = [hashlib.sha256(data).hexdigest() for data in plan.audio]
-                missing = await self._announce(hashes, plan.audio)
-                for content_id, data in zip(hashes, plan.audio, strict=True):
-                    if cancelled.is_set():
-                        record_output(
-                            plan,
-                            "output_dropped",
-                            reason="cancelled",
-                            destination=self._destination,
-                        )
-                        return
-                    if content_id in missing:
-                        await self._upload(content_id, data)
+                hashes = await self._upload_audio(plan.audio, cancelled)
                 if cancelled.is_set():
                     record_output(
                         plan,
@@ -123,8 +119,23 @@ class RaceRelaySink:
                 record_output(plan, "output_played", destination=self._destination)
                 return
 
+    async def _upload_audio(
+        self, audio: tuple[bytes, ...], cancelled: threading.Event
+    ) -> list[str]:
+        """Populate the content cache without making any callout playable."""
+        hashes = [hashlib.sha256(data).hexdigest() for data in audio]
+        if cancelled.is_set():
+            return hashes
+        missing = await self._announce(hashes, audio)
+        for content_id, data in zip(hashes, audio, strict=True):
+            if cancelled.is_set():
+                break
+            if content_id in missing:
+                await self._upload(content_id, data)
+        return hashes
+
     async def _complete_plan(self, plan: CalloutPlan) -> CalloutPlan | None:
-        """Keep relay/1 delivery atomic while local playback can start its prefix."""
+        """Keep relay/1 delivery atomic after any speculative content upload."""
         try:
             audio = await plan.complete_audio()
         except TimeoutError:

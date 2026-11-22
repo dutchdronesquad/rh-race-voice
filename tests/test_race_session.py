@@ -371,11 +371,19 @@ class RaceSessionTests(unittest.IsolatedAsyncioTestCase):
         self.worker.release.clear()
         self.local.entered.clear()
         self.local.release.clear()
+        self.selected.entered.clear()
+        self.selected.release.clear()
         active = await self._lap(2, 2)
         await asyncio.wait_for(self.worker.started.wait(), 3)
+        # Local playback needs the full lap now; release synthesis to enter
+        # the deliberately blocked backend, then hold the next lap's time.
+        self.worker.release.set()
         async with asyncio.timeout(3):
-            while not self.local.entered.is_set():  # noqa: ASYNC110
+            while not (  # noqa: ASYNC110
+                self.local.entered.is_set() and self.selected.entered.is_set()
+            ):
                 await asyncio.sleep(0.001)
+        self.worker.release.clear()
         waiting = await self._lap(3, 2)
         await self._state(stop=True)
         await self._settled([active, waiting])

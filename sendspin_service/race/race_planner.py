@@ -477,17 +477,21 @@ class SendspinPlaybackSink:
     async def _play_audio(
         self, plan: CalloutPlan, cancelled: threading.Event, deadline: float
     ) -> bool:
-        complete = plan.completion is None or plan.completion.done()
-        audio = await plan.complete_audio() if complete else plan.audio
-        offset = 0
-        while audio:
-            if cancelled.is_set() or time.monotonic() >= deadline:
-                return False
-            clips = [
-                WavItem(name=f"{plan.event.event_id}-{offset + index}.wav", data=data)
-                for index, data in enumerate(audio)
-            ]
-            queued = await asyncio.to_thread(
+        # A warm model does not bound inference time on a busy race host.
+        # Reserve the callout's slot, but never speak its prefix before its
+        # time is ready: an empty client buffer would create a mid-sentence gap.
+        try:
+            audio = await plan.complete_audio()
+        except TimeoutError:
+            return False
+        if not audio or cancelled.is_set() or time.monotonic() >= deadline:
+            return False
+        clips = [
+            WavItem(name=f"{plan.event.event_id}-{index}.wav", data=data)
+            for index, data in enumerate(audio)
+        ]
+        return bool(
+            await asyncio.to_thread(
                 self._backend.play,
                 clips,
                 deadline,
@@ -495,19 +499,7 @@ class SendspinPlaybackSink:
                 plan.volume,
                 cancelled=cancelled,
             )
-            if not queued or complete:
-                return bool(queued)
-            # Keep this output's one callout slot until its time is appended.
-            # The backend appends to the existing timeline, preserving the
-            # prefix's client lead and preventing another pilot interleaving.
-            offset += len(audio)
-            try:
-                full_audio = await plan.complete_audio()
-            except TimeoutError:
-                return False
-            audio = full_audio[offset:]
-            complete = True
-        return False
+        )
 
     async def stop(self) -> None:
         """Wait for the actual stream clear before the next plan can play."""

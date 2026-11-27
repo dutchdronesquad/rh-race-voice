@@ -29,7 +29,7 @@ rh-contract = [
 ]
 dev = [
   "pre-commit-hooks==6.0.0",
-  "prek==0.5.11",
+  "prek==0.5.12",
   "ruff==0.17.6",
 ]
 
